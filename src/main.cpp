@@ -708,6 +708,11 @@ void init_sensors_and_display() {
             log_i2c_devices();
         }
     }
+
+    if (display_initialized) {
+        draw_radar_ui(display, 0.0f, current_temperature.load(),
+                      current_sound_speed.load(), -100.0f);
+    }
 }
 
 // Periodično branje BME280
