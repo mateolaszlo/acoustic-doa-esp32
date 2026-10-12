@@ -58,9 +58,8 @@ The internal `rms_db` value is not inherently dB SPL. The network and display pa
 
 - Reads I2S DMA data.
 - Runs GCC-PHAT.
-- Sends valid results to both result queues.
-- Publishes at most two results per second to the network queue while
-  continuing to process audio and update the display at full rate.
+- Sends every valid result independently to the display and network queues.
+- Never performs Wi-Fi, HTTP, or network batching work.
 - Measures processing duration against the current audio-block deadline.
 - Resets the task watchdog and periodically reports timing, I2S, queue, and stack statistics.
 - Does not perform Wi-Fi, HTTP, OLED, or BME280 operations; it emits only
@@ -82,10 +81,13 @@ The internal `rms_db` value is not inherently dB SPL. The network and display pa
 
 - Waits for Wi-Fi.
 - Reconnects when disconnected.
+- Synchronizes UTC time with NTP before transmitting measurements.
 - Refreshes remote calibration at boot and approximately every 60 seconds.
-- Receives results from `network_queue`.
-- Performs HTTP requests with a five-second timeout.
-- Retries each failed measurement up to three times with increasing delays.
+- Receives timestamped results from `network_queue` and batches up to eight
+  measurements, flushing a partial batch after 200 ms.
+- Sends packed binary batches with HTTP keep-alive and a five-second timeout.
+- Targets at most five requests per second.
+- Retries each failed batch up to three times with increasing delays.
 - Priority: 2.
 - Stack: 8192 bytes.
 
@@ -98,11 +100,12 @@ The Arduino `loop()` only delays. Application work is performed by the explicit 
 - `display_queue` and `network_queue` contain independent copies of each valid result.
 - Temperature, speed of sound, and dB SPL offset are exposed through atomic values where they are shared between tasks.
 
-Queue sends are non-blocking. If a queue is full, the oldest queued result is
-discarded and the newest result is retained. Drop counters are included in the
-periodic DSP diagnostic summary. Network publication is additionally limited to
-one result every 500 ms (at most two per second). The DSP task never waits for
-the display or network consumer.
+Queue sends are non-blocking. If the bounded network queue is full, the oldest
+queued measurement is discarded and the newest result is retained. The display
+queue uses the same latest-result policy. Drop counters are included in the
+periodic DSP diagnostic summary. The DSP task never waits for the display or
+network consumer. The OLED shows `API OFFLINE` while server delivery is
+unavailable, but continues displaying the latest acoustic result.
 
 ## Configuration
 

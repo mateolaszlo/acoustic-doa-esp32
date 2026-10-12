@@ -72,32 +72,63 @@ reinitialization fails, the previous configuration remains active.
 
 ## Measurement upload
 
-For each valid DSP event, the client sends:
+For valid DSP events, the client sends binary batches:
 
 ```http
 POST /api/v1/meritve
 x-api-key: <device API key>
-Content-Type: application/json
+Content-Type: application/octet-stream
+Connection: keep-alive
 ```
 
-The firmware limits measurement publication to at most two requests per second
-(one request every 500 ms). The DSP and OLED continue operating at the active
-audio-block rate; only network enqueueing is rate-limited. If a queued request
-cannot be sent, the existing bounded retry policy applies.
+The configured API base URL is still used with `/meritve` appended. The API key
+identifies the device; the binary body does not contain a device ID. The
+firmware batches up to eight measurements and flushes a partial batch when its
+oldest measurement is 200 ms old. Requests are spaced by at least 200 ms, for a
+maximum target of five requests per second. The DSP and OLED continue operating
+at the active audio-block rate independently of network I/O.
 
-Current request body:
+## Binary request body
+
+All integer values are unsigned unless stated otherwise, encoded
+little-endian. Floating-point values are IEEE-754 binary32 values. The body
+starts with this 12-byte packed header:
+
+| Offset | Size | Field |
+|---:|---:|---|
+| 0 | 1 | Format version (`1`) |
+| 1 | 1 | Measurement count (`1` through `8`) |
+| 2 | 2 | Reserved, currently zero |
+| 4 | 8 | Unix UTC base timestamp in milliseconds |
+
+Each measurement then occupies exactly 20 bytes:
+
+| Offset | Size | Field |
+|---:|---:|---|
+| 0 | 4 | Millisecond offset from the batch base timestamp |
+| 4 | 4 | `angle_deg` as float32 |
+| 8 | 4 | `delay_us` as float32 |
+| 12 | 4 | Calibrated sound level in dB as float32 |
+| 16 | 4 | Correlation confidence as float32 |
+
+Therefore, the body size is `12 + (measurement_count * 20)` bytes. For
+example, eight measurements occupy 172 bytes. The timestamp of record `i` is
+`base_timestamp_ms + offset_ms`.
+
+The firmware synchronizes its wall clock with NTP after Wi-Fi connects and
+does not transmit a batch until a valid Unix timestamp is available.
+
+The previous JSON representation is no longer sent. Its fields correspond to
+the binary record as follows:
 
 ```json
 {
-  "naprava_id": 1,
   "kot_stopinje": -34.8,
   "casovna_zakasnitev_us": -132.4,
   "raven_zvoka_db": 76.5,
   "korelacijski_koeficient": 0.78
 }
 ```
-
-The `naprava_id` field is sent in addition to the API key. The backend should verify that it matches the device associated with the API key, or explicitly choose the API key as authoritative.
 
 `raven_zvoka_db` is calculated as the internal dBFS value plus the configured dB SPL offset. It is only a physically meaningful dB SPL value after calibration.
 
@@ -123,18 +154,21 @@ For calibration failures, the client logs the HTTP status and response body and 
 
 For measurement failures:
 
-1. The event is attempted up to three times.
+1. The batch is attempted up to three times.
 2. Each retry uses a five-second HTTP timeout.
 3. Retry delays increase between attempts.
-4. After the final failure, the event is dropped.
+4. After the final failure, the batch is dropped from RAM.
 
-The retry queue is RAM-only. Events do not survive reset and are not written to flash.
+The measurement queue is RAM-only. While Wi-Fi/API delivery is unavailable,
+the DSP and display continue operating. If the bounded network queue fills,
+the oldest queued measurements are discarded and the newest measurements are
+retained. Measurements do not survive reset and are not written to flash.
 
 Examples of backend statuses that should be diagnosed from serial logs:
 
 - `400`: request validation or field mismatch.
 - `401`/`403`: invalid or unauthorized API key.
-- `404`: wrong base URL, device ID, or route.
+- `404`: wrong base URL or route.
 - `5xx`: backend/server failure.
 - Negative client status: connection, DNS, timeout, or transport failure.
 
@@ -144,8 +178,8 @@ The backend should:
 
 - Expose `/naprave/:id/kalibracija` with API-key authentication.
 - Expose `/meritve` with API-key authentication.
-- Accept the exact Slovenian JSON field names shown above.
-- Accept the extra `naprava_id` field or intentionally ignore it after validating the API-key mapping.
+- Accept version 1 of the documented little-endian binary batch format.
+- Validate the content length against the count field before decoding.
 - Return 2xx for accepted measurements.
 - Return useful JSON error bodies for failed requests.
 - Not require ambient temperature in the calibration response.

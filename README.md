@@ -39,6 +39,10 @@ The backend, database, and web dashboard are separate systems. See [REST API int
 
 - The DSP defaults to 44100 Hz with a 1024-sample FFT window. Supported remote values are 44100 or 48000 Hz and 512, 1024, or 2048 samples; other values are rejected.
 - The DSP reports raw signal level internally as dBFS. The uploaded `raven_zvoka_db` value is calculated as dBFS plus a user-provided offset and should only be called dB SPL after that offset has been calibrated.
-- Failed measurements are retried in RAM three times and then dropped. They are not persisted across reboot.
-- Network publication is limited to at most two measurements per second; the OLED still receives the latest valid result at DSP rate.
+- Measurements are sent in timestamped binary batches of up to eight records, with
+  a target limit of five requests per second. Failed batches are retried in RAM
+  three times and then dropped; they are not persisted across reboot.
+- The OLED continues receiving valid results at DSP rate. When the server is
+  unavailable, the network queue keeps newer measurements and the OLED shows
+  `API OFFLINE`.
 - GPIO 0 is used for setup detection, but it is also an ESP32-S3 boot strap pin. Holding it low during reset can enter the ROM download bootloader. The setup procedure therefore requires a normal application boot followed by pressing GPIO 0 during the startup detection window.

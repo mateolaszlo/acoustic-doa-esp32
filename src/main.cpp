@@ -11,6 +11,9 @@
 #include <Adafruit_BME280.h>
 #include <esp_task_wdt.h>
 #include <atomic>
+#include <ctime>
+#include <cstring>
+#include <sys/time.h>
 
 #include "gcc_phat.h"
 
@@ -23,7 +26,11 @@
 #define SETUP_AP_PASSWORD "configure123"
 #define CONFIG_REFRESH_INTERVAL_MS 60000UL
 #define HTTP_RETRY_COUNT 3
-#define NETWORK_UPLOAD_INTERVAL_MS 500UL
+#define NETWORK_MAX_REQUEST_INTERVAL_MS 200UL
+#define NETWORK_BATCH_MAX_MEASUREMENTS 8
+#define NETWORK_BATCH_FLUSH_INTERVAL_MS 200UL
+#define NETWORK_QUEUE_LENGTH 64
+#define NTP_SYNC_RETRY_INTERVAL_MS 10000UL
 #define DSP_MAX_WINDOW_SIZE 2048
 #define DSP_DIAGNOSTIC_INTERVAL_MS 10000UL
 #define TASK_WATCHDOG_TIMEOUT_SECONDS 30
@@ -45,6 +52,10 @@ static constexpr char DEFAULT_WIFI_SSID[] = "";
 static constexpr char DEFAULT_WIFI_PASSWORD[] = "";
 static constexpr char DEFAULT_API_URL[] = "";
 static constexpr char DEFAULT_API_KEY[] = "";
+static constexpr uint8_t MEASUREMENT_BATCH_VERSION = 1;
+static constexpr size_t MEASUREMENT_BATCH_HEADER_SIZE = 12;
+static constexpr size_t MEASUREMENT_RECORD_SIZE = 20;
+static constexpr time_t MIN_VALID_EPOCH = 1704067200; // 2024-01-01 UTC
 
 struct DeviceConfig {
     String wifi_ssid;
@@ -60,6 +71,11 @@ struct DeviceConfig {
     uint32_t window_size = N_SAMPLES;
 };
 
+struct NetworkMeasurement {
+    DoaResult result;
+    uint64_t timestamp_ms;
+};
+
 static GccPhat doa(44100, 0.08f, 20.0f); // 44.1 kHz, 8 cm, 20 °C
 static QueueHandle_t display_queue;
 static QueueHandle_t network_queue;
@@ -70,6 +86,7 @@ static SemaphoreHandle_t i2s_mutex;
 static Preferences preferences;
 static DeviceConfig device_config;
 static std::atomic<float> db_spl_offset(0.0f);
+static std::atomic<bool> server_available(false);
 static bool display_initialized = false;
 static bool bme_initialized = false;
 static bool setup_mode = false;
@@ -277,6 +294,106 @@ static bool enqueue_latest(QueueHandle_t queue, const DoaResult &result,
     return true;
 }
 
+static bool enqueue_network_measurement(const NetworkMeasurement &measurement) {
+    if (measurement.timestamp_ms == 0) {
+        network_queue_drops.fetch_add(1);
+        return false;
+    }
+
+    if (xQueueSend(network_queue, &measurement, 0) == pdPASS) {
+        return true;
+    }
+
+    NetworkMeasurement discarded;
+    if (xQueueReceive(network_queue, &discarded, 0) != pdPASS ||
+        xQueueSend(network_queue, &measurement, 0) != pdPASS) {
+        network_queue_drops.fetch_add(1);
+        return false;
+    }
+
+    network_queue_drops.fetch_add(1);
+    return true;
+}
+
+static uint64_t current_utc_timestamp_ms() {
+    const time_t now = time(nullptr);
+    if (now < MIN_VALID_EPOCH) {
+        return 0;
+    }
+
+    struct timeval time_value;
+    gettimeofday(&time_value, nullptr);
+    return static_cast<uint64_t>(time_value.tv_sec) * 1000ULL +
+           static_cast<uint64_t>(time_value.tv_usec) / 1000ULL;
+}
+
+static void append_u16_le(uint8_t *buffer, size_t &offset, uint16_t value) {
+    buffer[offset++] = static_cast<uint8_t>(value);
+    buffer[offset++] = static_cast<uint8_t>(value >> 8);
+}
+
+static void append_u32_le(uint8_t *buffer, size_t &offset, uint32_t value) {
+    for (unsigned int byte = 0; byte < sizeof(value); ++byte) {
+        buffer[offset++] = static_cast<uint8_t>(value >> (byte * 8));
+    }
+}
+
+static void append_u64_le(uint8_t *buffer, size_t &offset, uint64_t value) {
+    for (unsigned int byte = 0; byte < sizeof(value); ++byte) {
+        buffer[offset++] = static_cast<uint8_t>(value >> (byte * 8));
+    }
+}
+
+static void append_float_le(uint8_t *buffer, size_t &offset, float value) {
+    static_assert(sizeof(float) == sizeof(uint32_t), "Binary protocol requires 32-bit floats");
+    uint32_t bits = 0;
+    memcpy(&bits, &value, sizeof(bits));
+    append_u32_le(buffer, offset, bits);
+}
+
+static size_t serialize_measurement_batch(
+    const NetworkMeasurement *measurements, size_t count, uint8_t *payload,
+    size_t payload_capacity) {
+    if (measurements == nullptr || payload == nullptr || count == 0 ||
+        count > NETWORK_BATCH_MAX_MEASUREMENTS ||
+        payload_capacity < MEASUREMENT_BATCH_HEADER_SIZE +
+                                count * MEASUREMENT_RECORD_SIZE) {
+        return 0;
+    }
+
+    const uint64_t base_timestamp_ms = measurements[0].timestamp_ms;
+    if (base_timestamp_ms == 0) {
+        return 0;
+    }
+
+    size_t offset = 0;
+    payload[offset++] = MEASUREMENT_BATCH_VERSION;
+    payload[offset++] = static_cast<uint8_t>(count);
+    append_u16_le(payload, offset, 0);
+    append_u64_le(payload, offset, base_timestamp_ms);
+
+    for (size_t index = 0; index < count; ++index) {
+        if (measurements[index].timestamp_ms < base_timestamp_ms ||
+            measurements[index].timestamp_ms - base_timestamp_ms >
+                UINT32_MAX) {
+            return 0;
+        }
+
+        append_u32_le(
+            payload, offset,
+            static_cast<uint32_t>(measurements[index].timestamp_ms -
+                                  base_timestamp_ms));
+        append_float_le(payload, offset, measurements[index].result.angle_deg);
+        append_float_le(payload, offset, measurements[index].result.delay_us);
+        append_float_le(
+            payload, offset,
+            measurements[index].result.rms_db + db_spl_offset.load());
+        append_float_le(payload, offset, measurements[index].result.confidence);
+    }
+
+    return offset;
+}
+
 static void log_dsp_diagnostics() {
     static uint32_t last_log_ms = 0;
     const uint32_t now = millis();
@@ -321,7 +438,6 @@ static void initialize_task_watchdog() {
 void dsp_task(void *param) {
     static int32_t left_buf[DSP_MAX_WINDOW_SIZE];
     static int32_t right_buf[DSP_MAX_WINDOW_SIZE];
-    uint32_t last_network_enqueue_ms = 0;
     esp_task_wdt_add(nullptr);
 
     while (true) {
@@ -364,14 +480,9 @@ void dsp_task(void *param) {
             // Vsak potrošnik prejme svojo kopijo dogodka.
             if (res.valid) {
                 enqueue_latest(display_queue, res, display_queue_drops);
-                const uint32_t now_ms = millis();
-                if (last_network_enqueue_ms == 0 ||
-                    now_ms - last_network_enqueue_ms >=
-                        NETWORK_UPLOAD_INTERVAL_MS) {
-                    if (enqueue_latest(network_queue, res, network_queue_drops)) {
-                        last_network_enqueue_ms = now_ms;
-                    }
-                }
+                NetworkMeasurement measurement = {
+                    res, current_utc_timestamp_ms()};
+                enqueue_network_measurement(measurement);
             }
         } else {
             dsp_i2s_read_failures.fetch_add(1);
@@ -566,57 +677,90 @@ static bool fetch_remote_calibration() {
 }
 
 // --- OMREŽNI DEL ---
-static bool send_event_to_backend(const DoaResult& res) {
-    if (WiFi.status() != WL_CONNECTED || device_config.device_id == 0) {
-        if (device_config.device_id == 0) {
-            Serial.println("Measurement not sent: device ID is not configured");
+static bool send_batch_to_backend(HTTPClient &http, bool &http_initialized,
+                                  const NetworkMeasurement *measurements,
+                                  size_t count) {
+    if (WiFi.status() != WL_CONNECTED || device_config.api_url.isEmpty() ||
+        device_config.api_key.isEmpty()) {
+        server_available.store(false);
+        return false;
+    }
+
+    if (!http_initialized) {
+        String url = device_config.api_url + "/meritve";
+        if (!http.begin(url)) {
+            Serial.println("HTTP client initialization failed");
+            server_available.store(false);
+            return false;
         }
+        http.setReuse(true);
+        http.useHTTP10(false);
+        http.setTimeout(5000);
+        http.addHeader("Content-Type", "application/octet-stream");
+        http.addHeader("Connection", "keep-alive");
+        http.addHeader("x-api-key", device_config.api_key);
+        http_initialized = true;
+    }
+
+    constexpr size_t max_payload_size =
+        MEASUREMENT_BATCH_HEADER_SIZE +
+        NETWORK_BATCH_MAX_MEASUREMENTS * MEASUREMENT_RECORD_SIZE;
+    uint8_t payload[max_payload_size];
+    const size_t payload_size = serialize_measurement_batch(
+        measurements, count, payload, sizeof(payload));
+    if (payload_size == 0) {
+        Serial.println("Measurement batch serialization failed");
+        server_available.store(false);
         return false;
     }
 
-    HTTPClient http;
-    String url = device_config.api_url + "/meritve";
-    if (!http.begin(url)) {
-        Serial.println("HTTP client initialization failed");
-        return false;
-    }
-    http.setTimeout(5000);
-    http.addHeader("Content-Type", "application/json");
-    http.addHeader("x-api-key", device_config.api_key);
-
-    JsonDocument doc;
-    doc["naprava_id"] = device_config.device_id;
-    doc["kot_stopinje"] = res.angle_deg;
-    doc["casovna_zakasnitev_us"] = res.delay_us;
-    doc["raven_zvoka_db"] = res.rms_db + db_spl_offset.load();
-    doc["korelacijski_koeficient"] = res.confidence;
-
-    String json_str;
-    serializeJson(doc, json_str);
-
-    int httpResponseCode = http.POST(json_str);
-    String response = http.getString();
-    http.end();
+    const int httpResponseCode = http.POST(payload, payload_size);
 
     if (httpResponseCode < 200 || httpResponseCode >= 300) {
+        const String response = http.getString();
         Serial.printf("HTTP POST /meritve failed: %d, response: %s\n",
                       httpResponseCode, response.c_str());
+        http.end();
+        http_initialized = false;
+        server_available.store(false);
         return false;
     }
 
-    Serial.printf("Measurement accepted: HTTP %d, dB SPL: %.1f\n",
-                  httpResponseCode, res.rms_db + db_spl_offset.load());
+    server_available.store(true);
+    Serial.printf("Measurement batch accepted: HTTP %d, count: %u\n",
+                  httpResponseCode, static_cast<unsigned>(count));
     return true;
 }
 
 void network_task(void *param) {
-    DoaResult event;
+    NetworkMeasurement batch[NETWORK_BATCH_MAX_MEASUREMENTS];
     unsigned long last_calibration_refresh = 0;
+    unsigned long last_ntp_attempt = 0;
+    unsigned long last_request_ms = 0;
+    HTTPClient http;
+    bool http_initialized = false;
     esp_task_wdt_add(nullptr);
 
     while (true) {
         if (WiFi.status() != WL_CONNECTED) {
+            server_available.store(false);
+            if (http_initialized) {
+                http.end();
+                http_initialized = false;
+            }
             WiFi.reconnect();
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            esp_task_wdt_reset();
+            continue;
+        }
+
+        if (last_ntp_attempt == 0 ||
+            millis() - last_ntp_attempt >= NTP_SYNC_RETRY_INTERVAL_MS) {
+            configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+            last_ntp_attempt = millis();
+        }
+        if (current_utc_timestamp_ms() == 0) {
+            server_available.store(false);
             vTaskDelay(pdMS_TO_TICKS(1000));
             esp_task_wdt_reset();
             continue;
@@ -628,23 +772,52 @@ void network_task(void *param) {
             last_calibration_refresh = millis();
         }
 
-        if (xQueueReceive(network_queue, &event, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        size_t batch_count = 0;
+        if (xQueueReceive(network_queue, &batch[batch_count],
+                          pdMS_TO_TICKS(100)) == pdTRUE) {
+            ++batch_count;
+            const unsigned long flush_deadline =
+                millis() + NETWORK_BATCH_FLUSH_INTERVAL_MS;
+            while (batch_count < NETWORK_BATCH_MAX_MEASUREMENTS) {
+                const unsigned long now = millis();
+                if (now >= flush_deadline) {
+                    break;
+                }
+                const TickType_t wait_ticks = pdMS_TO_TICKS(flush_deadline - now);
+                if (xQueueReceive(network_queue, &batch[batch_count],
+                                  wait_ticks) != pdTRUE) {
+                    break;
+                }
+                ++batch_count;
+            }
+
+            const unsigned long now = millis();
+            if (last_request_ms != 0 &&
+                now - last_request_ms < NETWORK_MAX_REQUEST_INTERVAL_MS) {
+                vTaskDelay(pdMS_TO_TICKS(
+                    NETWORK_MAX_REQUEST_INTERVAL_MS - (now - last_request_ms)));
+            }
+
             bool sent = false;
             for (int attempt = 1; attempt <= HTTP_RETRY_COUNT && !sent; ++attempt) {
-                sent = send_event_to_backend(event);
+                sent = send_batch_to_backend(http, http_initialized, batch,
+                                             batch_count);
                 if (!sent && attempt < HTTP_RETRY_COUNT) {
                     vTaskDelay(pdMS_TO_TICKS(1000 * attempt));
                 }
             }
             if (!sent) {
-                Serial.println("Measurement dropped after RAM retry limit");
+                Serial.println("Measurement batch dropped after RAM retry limit");
+            } else {
+                last_request_ms = millis();
             }
         }
         esp_task_wdt_reset();
     }
 }
 
-void draw_radar_ui(Adafruit_SSD1306 &display, float angle_deg, float temp_c, float c_sound, float db) {
+void draw_radar_ui(Adafruit_SSD1306 &display, float angle_deg, float temp_c,
+                   float c_sound, float db, bool api_available) {
     display.clearDisplay();
 
     // 1. Izris polkrožnega radarja (središče spodaj na x=64, y=52, polmer r=42)
@@ -676,7 +849,11 @@ void draw_radar_ui(Adafruit_SSD1306 &display, float angle_deg, float temp_c, flo
 
     // 3. Spodnja vrstica s telemetrijo (BME280 + Akustika)
     display.setCursor(0, 56);
-    display.printf("%+.1f deg | %.1fC | %.0fm/s", angle_deg, temp_c, c_sound);
+    if (api_available) {
+        display.printf("%+.1f deg | %.1fC | %.0fm/s", angle_deg, temp_c, c_sound);
+    } else {
+        display.print("API OFFLINE");
+    }
 
     display.display();
 }
@@ -711,7 +888,8 @@ void init_sensors_and_display() {
 
     if (display_initialized) {
         draw_radar_ui(display, 0.0f, current_temperature.load(),
-                      current_sound_speed.load(), -100.0f);
+                      current_sound_speed.load(), -100.0f,
+                      server_available.load());
     }
 }
 
@@ -741,11 +919,14 @@ void update_environmental_compensation() {
 
 void sensor_display_task(void *param) {
     DoaResult event;
+    DoaResult last_event = {0.0f, 0.0f, 0.0f, -100.0f, false};
+    bool last_server_available = server_available.load();
 
     while (true) {
         update_environmental_compensation();
 
         if (xQueueReceive(display_queue, &event, pdMS_TO_TICKS(100))) {
+            last_event = event;
             float temp = current_temperature.load();
             float speed = current_sound_speed.load();
 
@@ -754,8 +935,20 @@ void sensor_display_task(void *param) {
                           event.rms_db + db_spl_offset.load());
 
             if (display_initialized) {
-                draw_radar_ui(display, event.angle_deg, temp, speed, event.rms_db);
+                last_server_available = server_available.load();
+                draw_radar_ui(display, event.angle_deg, temp, speed,
+                              event.rms_db, last_server_available);
             }
+        }
+
+        const bool current_server_available = server_available.load();
+        if (display_initialized &&
+            current_server_available != last_server_available) {
+            last_server_available = current_server_available;
+            draw_radar_ui(display, last_event.angle_deg,
+                          current_temperature.load(),
+                          current_sound_speed.load(), last_event.rms_db,
+                          last_server_available);
         }
     }
 }
@@ -780,7 +973,7 @@ void setup() {
 
     // Ustvari FreeRTOS objekte za prenos rezultatov in zaščito DSP konfiguracije
     display_queue = xQueueCreate(10, sizeof(DoaResult));
-    network_queue = xQueueCreate(10, sizeof(DoaResult));
+    network_queue = xQueueCreate(NETWORK_QUEUE_LENGTH, sizeof(NetworkMeasurement));
     doa_mutex = xSemaphoreCreateMutex();
     config_mutex = xSemaphoreCreateMutex();
     i2s_mutex = xSemaphoreCreateMutex();

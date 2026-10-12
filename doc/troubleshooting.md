@@ -84,15 +84,16 @@ supported at 44100 or 48000 Hz.
 
 ## API returns 400
 
-Compare the backend validation with [REST API integration](rest-api.md). The current measurement body includes:
+Compare the backend validation with [REST API integration](rest-api.md). The
+measurement body is a versioned little-endian binary batch with a 12-byte
+header and one 20-byte record per measurement. It uses:
 
-- `naprava_id`
-- `kot_stopinje`
-- `casovna_zakasnitev_us`
-- `raven_zvoka_db`
-- `korelacijski_koeficient`
+- Unix UTC milliseconds in the batch header.
+- A per-record millisecond offset.
+- `angle_deg`, `delay_us`, calibrated dB, and confidence as float32 values.
 
-The field names are case-sensitive.
+The endpoint must accept `Content-Type: application/octet-stream` and validate
+the body length against the record count.
 
 ## Calibration is rejected
 
@@ -102,10 +103,14 @@ Ambient temperature is intentionally not required in the response because the lo
 
 ## Measurements are dropped
 
-The client retries an upload three times in RAM. If all attempts fail, the serial log reports that the measurement was dropped. Failed events are not persisted across reboot.
+The client retries a batch three times in RAM. If all attempts fail, the
+serial log reports that the batch was dropped. During an outage, the bounded
+network queue discards its oldest measurements when full and retains newer
+ones. Failed measurements are not persisted across reboot. The OLED shows
+`API OFFLINE` while delivery is unavailable.
 
 The two event queues have finite capacity. The display keeps the newest result
-when full. Network publication is limited to two results per second, and the
-network queue also keeps the newest pending result when full. Older pending
-results may be discarded by design; the retry queue is not an archive of every
-DSP block.
+when full. Network batches contain up to eight records and are spaced by at
+least 200 ms. The network queue keeps newer pending measurements when full;
+older pending measurements may be discarded during prolonged outages by
+design. The retry queue is not an archive of every DSP block.
