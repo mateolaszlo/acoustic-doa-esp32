@@ -30,7 +30,6 @@
 #define NETWORK_BATCH_MAX_MEASUREMENTS 8
 #define NETWORK_BATCH_FLUSH_INTERVAL_MS 200UL
 #define NETWORK_QUEUE_LENGTH 64
-#define NTP_SYNC_RETRY_INTERVAL_MS 10000UL
 #define DSP_MAX_WINDOW_SIZE 2048
 #define DSP_DIAGNOSTIC_INTERVAL_MS 10000UL
 #define TASK_WATCHDOG_TIMEOUT_SECONDS 30
@@ -91,6 +90,8 @@ static Preferences preferences;
 static DeviceConfig device_config;
 static std::atomic<float> db_spl_offset(0.0f);
 static std::atomic<bool> server_available(false);
+static std::atomic<int64_t> ntp_utc_offset_ms(0);
+static std::atomic<bool> ntp_time_valid(false);
 static std::atomic<int64_t> server_utc_offset_ms(0);
 static std::atomic<bool> server_time_valid(false);
 static bool display_initialized = false;
@@ -322,20 +323,20 @@ static bool enqueue_network_measurement(const NetworkMeasurement &measurement) {
 }
 
 static NetworkMeasurement make_network_measurement(const DoaResult &result) {
-    const time_t now = time(nullptr);
-    if (now >= MIN_VALID_EPOCH) {
-        struct timeval time_value;
-        gettimeofday(&time_value, nullptr);
-        return {
-            result,
-            static_cast<uint64_t>(time_value.tv_sec) * 1000ULL +
-                static_cast<uint64_t>(time_value.tv_usec) / 1000ULL,
-            CLOCK_FLAG_UTC_SYNCHRONIZED};
+    const int64_t monotonic_ms =
+        static_cast<int64_t>(esp_timer_get_time() / 1000ULL);
+    if (ntp_time_valid.load()) {
+        const int64_t estimated_utc_ms =
+            monotonic_ms + ntp_utc_offset_ms.load();
+        if (estimated_utc_ms > 0) {
+            return {
+                result,
+                static_cast<uint64_t>(estimated_utc_ms),
+                CLOCK_FLAG_UTC_SYNCHRONIZED};
+        }
     }
 
     if (server_time_valid.load()) {
-        const int64_t monotonic_ms =
-            static_cast<int64_t>(esp_timer_get_time() / 1000ULL);
         const int64_t estimated_utc_ms =
             monotonic_ms + server_utc_offset_ms.load();
         if (estimated_utc_ms > 0) {
@@ -349,7 +350,7 @@ static NetworkMeasurement make_network_measurement(const DoaResult &result) {
 
     return {
         result,
-        static_cast<uint64_t>(esp_timer_get_time()) / 1000ULL,
+        static_cast<uint64_t>(monotonic_ms),
         CLOCK_FLAG_MONOTONIC_UPTIME};
 }
 
@@ -782,15 +783,17 @@ static bool send_batch_to_backend(HTTPClient &http, bool &http_initialized,
 void network_task(void *param) {
     NetworkMeasurement batch[NETWORK_BATCH_MAX_MEASUREMENTS];
     unsigned long last_calibration_refresh = 0;
-    unsigned long last_ntp_attempt = 0;
     unsigned long last_request_ms = 0;
     HTTPClient http;
     bool http_initialized = false;
+    bool ntp_started = false;
     esp_task_wdt_add(nullptr);
 
     while (true) {
         if (WiFi.status() != WL_CONNECTED) {
             server_available.store(false);
+            ntp_started = false;
+            ntp_time_valid.store(false);
             if (http_initialized) {
                 http.end();
                 http_initialized = false;
@@ -801,10 +804,23 @@ void network_task(void *param) {
             continue;
         }
 
-        if (last_ntp_attempt == 0 ||
-            millis() - last_ntp_attempt >= NTP_SYNC_RETRY_INTERVAL_MS) {
+        if (!ntp_started && time(nullptr) < MIN_VALID_EPOCH) {
             configTime(0, 0, "pool.ntp.org", "time.nist.gov");
-            last_ntp_attempt = millis();
+            ntp_started = true;
+        }
+        if (!ntp_time_valid.load() && time(nullptr) >= MIN_VALID_EPOCH) {
+            const int64_t monotonic_ms =
+                static_cast<int64_t>(esp_timer_get_time() / 1000ULL);
+            struct timeval time_value;
+            gettimeofday(&time_value, nullptr);
+            const int64_t utc_ms =
+                static_cast<int64_t>(time_value.tv_sec) * 1000LL +
+                static_cast<int64_t>(time_value.tv_usec) / 1000LL;
+            if (utc_ms >=
+                static_cast<int64_t>(MIN_VALID_EPOCH) * 1000LL) {
+                ntp_utc_offset_ms.store(utc_ms - monotonic_ms);
+                ntp_time_valid.store(true);
+            }
         }
         if (last_calibration_refresh == 0 ||
             millis() - last_calibration_refresh >= CONFIG_REFRESH_INTERVAL_MS) {

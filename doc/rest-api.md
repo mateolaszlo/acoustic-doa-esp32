@@ -144,8 +144,10 @@ example, eight measurements occupy 172 bytes. The timestamp of record `i` is
 `base_timestamp_ms + offset_ms`. For monotonic batches, this is uptime relative
 to the current boot.
 
-The firmware attempts to synchronize its wall clock with NTP after Wi-Fi
-connects, but measurements are not blocked while synchronization is pending.
+The firmware starts the SNTP client once after Wi-Fi connects, but measurements
+are not blocked while synchronization is pending. Measurement timestamps use
+the monotonic ESP timer plus the selected UTC offset, so later SNTP clock
+corrections cannot make offsets within a batch negative.
 The calibration request can independently establish a UTC offset from the
 server timestamp.
 

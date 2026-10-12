@@ -81,7 +81,8 @@ The internal `rms_db` value is not inherently dB SPL. The network and display pa
 
 - Waits for Wi-Fi.
 - Reconnects when disconnected.
-- Attempts UTC synchronization with NTP after Wi-Fi connects. It also accepts
+- Starts the SNTP client once per Wi-Fi connection instead of restarting it on
+  a fixed retry interval. It also accepts
   an optional `server_time_unix_ms` field from the calibration response and
   estimates a server-to-device UTC offset. If both sources are unavailable, it
   transmits monotonic uptime timestamps with an explicit clock flag instead of
@@ -105,6 +106,9 @@ The Arduino `loop()` only delays. Application work is performed by the explicit 
 - Temperature, speed of sound, and dB SPL offset are exposed through atomic values where they are shared between tasks.
 - Binary batch header clock flags distinguish synchronized UTC timestamps from
   server-synchronized UTC timestamps, and monotonic uptime timestamps.
+- Measurement timestamps are based on the monotonic ESP timer; UTC timestamps
+  apply a stored offset. This prevents SNTP clock corrections from creating
+  backwards batch offsets.
 
 Queue sends are non-blocking. If the bounded network queue is full, the oldest
 queued measurement is discarded and the newest result is retained. The display
