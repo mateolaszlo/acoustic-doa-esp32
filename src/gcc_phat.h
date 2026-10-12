@@ -1,6 +1,7 @@
 #pragma once
 #include <esp_dsp.h>
 #include <cmath>
+#include <cstddef>
 
 #define N_SAMPLES 1024 // Število vzorcev (potenca 2 za FFT)
 
@@ -15,7 +16,16 @@ struct DoaResult {
 class GccPhat {
 public:
     GccPhat(float sample_rate, float mic_distance_m, float temp_c);
+    GccPhat(float sample_rate, float mic_distance_m, float temp_c, size_t window_size);
+    ~GccPhat();
+
+    // Initializes the default 1024-sample window (or the size supplied to the
+    // size-aware constructor).
     bool init();
+    // Initializes the FFT and all working buffers for a power-of-two window.
+    bool init(size_t window_size);
+    // Atomically switches the sample rate and FFT size after successful setup.
+    bool configure(float sample_rate, size_t window_size);
     DoaResult process(const int32_t* left_channel, const int32_t* right_channel);
     void updateCalibration(float distance_m, float temp_c, float corr_thresh, float db_thresh);
 
@@ -25,12 +35,14 @@ private:
     float c_sound;
     float correlation_threshold;
     float db_threshold;
+    size_t fft_size;
 
     // Medpomnilniki za FFT (kompleksna števila: [Re, Im, Re, Im...])
-    float window[N_SAMPLES];
-    float fft_x1[N_SAMPLES * 2];
-    float fft_x2[N_SAMPLES * 2];
-    float ccorr[N_SAMPLES * 2];
+    float* window;
+    float* fft_x1;
+    float* fft_x2;
+    float* ccorr;
     
     float calculateSoundSpeed(float temp_c);
+    void releaseBuffers();
 };

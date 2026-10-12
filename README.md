@@ -27,14 +27,17 @@ The backend, database, and web dashboard are separate systems. See [REST API int
 
 ## Current target
 
-- Board: ESP32-S3-DevKitC-1-N8
+- Board: ESP32-S3-DevKitC-1-N16R8
+- Memory: 16 MB flash, 8 MB OPI PSRAM
+- USB: two USB ports on the board
+- On-board indicator: WS2812 RGB LED (not currently used by the firmware)
 - Framework: Arduino for ESP32
 - Build system: PlatformIO
 - Serial monitor: 115200 baud
 
 ## Important current limitations
 
-- The compiled DSP implementation supports a 44100 Hz sample rate and a 1024-sample FFT window. Remote values are validated, but other values are rejected as unsupported.
+- The DSP defaults to 44100 Hz with a 1024-sample FFT window. Supported remote values are 44100 or 48000 Hz and 512, 1024, or 2048 samples; other values are rejected.
 - The DSP reports raw signal level internally as dBFS. The uploaded `raven_zvoka_db` value is calculated as dBFS plus a user-provided offset and should only be called dB SPL after that offset has been calibrated.
 - Failed measurements are retried in RAM three times and then dropped. They are not persisted across reboot.
 - GPIO 0 is used for setup detection, but it is also an ESP32-S3 boot strap pin. Holding it low during reset can enter the ROM download bootloader. The setup procedure therefore requires a normal application boot followed by pressing GPIO 0 during the startup detection window.

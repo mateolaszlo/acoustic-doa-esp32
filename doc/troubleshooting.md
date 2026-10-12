@@ -8,7 +8,7 @@ Run the build from the directory containing `platformio.ini`:
 pio run
 ```
 
-If PlatformIO is not found, use the PlatformIO environment installed by VS Code or install PlatformIO Core. The project has previously built successfully for `esp32-s3-devkitc-1`.
+If PlatformIO is not found, use the PlatformIO environment installed by VS Code or install PlatformIO Core. The project uses the project-local `esp32-s3-devkitc-1-n16r8` board definition.
 
 ## Device enters the ROM bootloader
 
@@ -71,7 +71,9 @@ Check:
 - The correlation threshold is not too high.
 - Microphones are mechanically fixed and have a common ground.
 
-The firmware ignores incomplete I2S reads and processes only complete 1024-sample stereo blocks.
+The firmware ignores incomplete I2S reads and processes only complete blocks.
+The default is 1024 samples, while 512, 1024, and 2048 sample blocks are
+supported at 44100 or 48000 Hz.
 
 ## API returns 401 or 403
 
@@ -94,7 +96,7 @@ The field names are case-sensitive.
 
 ## Calibration is rejected
 
-The response must contain valid numeric values for distance, correlation threshold, sound threshold, sample rate, and window size. The current firmware rejects remote sample rates other than 44100 and window sizes other than 1024.
+The response must contain valid numeric values for distance, correlation threshold, sound threshold, sample rate, and window size. The firmware accepts only 44100 or 48000 Hz and window sizes 512, 1024, or 2048.
 
 Ambient temperature is intentionally not required in the response because the local BME280 supplies it.
 

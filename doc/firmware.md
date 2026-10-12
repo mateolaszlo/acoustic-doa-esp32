@@ -12,7 +12,9 @@
 
 ## Audio processing
 
-The DSP task reads 1024 stereo samples at 44100 Hz. Each block is processed as follows:
+The DSP task reads a configured stereo block. The default is 1024 samples at
+44100 Hz. Supported sample rates are 44100 and 48000 Hz; supported FFT/window
+sizes are 512, 1024, and 2048 samples. Each block is processed as follows:
 
 1. Convert the signed I2S samples to floating-point values.
 2. Apply a Hann window.
@@ -55,6 +57,8 @@ The internal `rms_db` value is not inherently dB SPL. The network and display pa
 - Reads I2S DMA data.
 - Runs GCC-PHAT.
 - Sends valid results to both result queues.
+- Measures processing duration against the current audio-block deadline.
+- Resets the task watchdog and periodically reports timing, I2S, queue, and stack statistics.
 - Does not perform Wi-Fi, HTTP, OLED, BME280, or serial operations.
 - Priority: 5.
 - Stack: 8192 bytes.
@@ -89,7 +93,10 @@ The Arduino `loop()` only delays. Application work is performed by the explicit 
 - `display_queue` and `network_queue` contain independent copies of each valid result.
 - Temperature, speed of sound, and dB SPL offset are exposed through atomic values where they are shared between tasks.
 
-Queue sends are non-blocking. If a queue is full, the event can be lost; the current code does not report individual queue-send failures.
+Queue sends are non-blocking. If a queue is full, the oldest queued result is
+discarded and the newest result is retained. Drop counters are included in the
+periodic DSP diagnostic summary. The DSP task never waits for the display or
+network consumer.
 
 ## Configuration
 
@@ -104,7 +111,30 @@ Configuration is loaded from ESP32 NVS namespace `acoustic`. It contains:
 - dB SPL offset.
 - Sample rate and FFT window size.
 
-The sample rate and window size are validated against the compiled DSP implementation. The current firmware accepts only 44100 Hz and `N_SAMPLES` (1024).
+The sample rate and window size are validated against a whitelist:
+
+| Setting | Supported values |
+|---|---|
+| Sample rate | 44100 Hz, 48000 Hz |
+| FFT/window size | 512, 1024, 2048 samples |
+
+Remote changes are applied by reinitializing the GCC-PHAT buffers and I2S
+driver while processing is synchronized. Invalid settings or failed
+reconfiguration are rejected and the previous valid configuration is retained.
+The active processing deadline is `window_size / sample_rate`.
+
+Every ten seconds, the DSP task emits a rate-limited summary similar to:
+
+```text
+DSP stats: blocks=430, deadline_misses=0, max_processing=5100 us,
+budget=23219 us, i2s_failures=0, display_drops=0, network_drops=0,
+stack_free=6000
+```
+
+Task watchdog monitoring is enabled with a thirty-second timeout for the DSP
+and network tasks. The timeout accommodates the network task's bounded HTTP
+timeouts and retries while still detecting a stuck task; deadline counters separately detect
+processing that is too slow even when the task continues to run.
 
 ## Display
 

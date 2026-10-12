@@ -3,7 +3,7 @@
 ## Requirements
 
 - Windows, macOS, or Linux with PlatformIO.
-- ESP32-S3-DevKitC-1-N8.
+- ESP32-S3-DevKitC-1-N16R8 (16 MB flash, 8 MB OPI PSRAM).
 - USB data cable.
 - Two compatible I2S microphones.
 - SSD1306 I2C OLED.
@@ -14,7 +14,7 @@
 
 The project is configured in [platformio.ini](../platformio.ini):
 
-- Environment: `esp32-s3-devkitc-1`
+- Environment: `esp32-s3-devkitc-1` using the project-local N16R8 board definition.
 - Platform: Espressif 32
 - Framework: Arduino
 - Serial monitor speed: 115200

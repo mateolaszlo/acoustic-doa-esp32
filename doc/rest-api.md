@@ -63,10 +63,12 @@ The firmware validates:
 - Positive correlation threshold.
 - A sound-level threshold above -200 dB.
 - Finite floating-point values.
-- A non-zero sample rate and window size.
-- Runtime support for exactly 44100 Hz and a 1024-sample window.
+- A supported sample rate: 44100 or 48000 Hz.
+- A supported window size: 512, 1024, or 2048 samples.
 
 Invalid responses are rejected and the previous local configuration remains active.
+Supported sample-rate/window changes reinitialize the audio and DSP path. If
+reinitialization fails, the previous configuration remains active.
 
 ## Measurement upload
 

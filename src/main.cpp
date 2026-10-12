@@ -9,6 +9,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <Adafruit_BME280.h>
+#include <esp_task_wdt.h>
 #include <atomic>
 
 #include "gcc_phat.h"
@@ -22,6 +23,9 @@
 #define SETUP_AP_PASSWORD "configure123"
 #define CONFIG_REFRESH_INTERVAL_MS 60000UL
 #define HTTP_RETRY_COUNT 3
+#define DSP_MAX_WINDOW_SIZE 2048
+#define DSP_DIAGNOSTIC_INTERVAL_MS 10000UL
+#define TASK_WATCHDOG_TIMEOUT_SECONDS 30
 
 // Globalne periferne enote
 Adafruit_BME280 bme; // I2C
@@ -32,6 +36,7 @@ std::atomic<float> current_temperature(20.0f);
 
 // Funkcije iz i2s_sampler.cpp
 bool init_i2s_microphones(uint32_t sample_rate);
+void deinit_i2s_microphones();
 bool read_i2s_stereo(int32_t* left, int32_t* right, size_t count);
 
 // Nastavitve sistema
@@ -60,6 +65,7 @@ static QueueHandle_t network_queue;
 static Adafruit_SSD1306 display(128, 64, &Wire, -1);
 static SemaphoreHandle_t doa_mutex;
 static SemaphoreHandle_t config_mutex;
+static SemaphoreHandle_t i2s_mutex;
 static Preferences preferences;
 static DeviceConfig device_config;
 static std::atomic<float> db_spl_offset(0.0f);
@@ -69,26 +75,46 @@ static bool setup_mode = false;
 static bool device_configured = false;
 static DNSServer setup_dns;
 static WebServer setup_server(80);
+static std::atomic<uint32_t> dsp_deadline_misses(0);
+static std::atomic<uint32_t> dsp_i2s_read_failures(0);
+static std::atomic<uint32_t> display_queue_drops(0);
+static std::atomic<uint32_t> network_queue_drops(0);
+static std::atomic<uint32_t> dsp_blocks_processed(0);
+static std::atomic<uint32_t> dsp_max_processing_us(0);
+
+static bool is_supported_audio_config(uint32_t sample_rate, uint32_t window_size) {
+    return (sample_rate == 44100 || sample_rate == 48000) &&
+           (window_size == 512 || window_size == 1024 || window_size == 2048);
+}
+
+static uint32_t audio_block_duration_us(uint32_t sample_rate, uint32_t window_size) {
+    return static_cast<uint32_t>(
+        (static_cast<uint64_t>(window_size) * 1000000ULL) / sample_rate);
+}
+
+static String get_preference_string(const char *key, const char *fallback) {
+    return preferences.isKey(key) ? preferences.getString(key) : String(fallback);
+}
+
+static float get_preference_float(const char *key, float fallback) {
+    return preferences.isKey(key) ? preferences.getFloat(key) : fallback;
+}
 
 static void load_device_config() {
     preferences.begin("acoustic", false);
 
-    device_config.wifi_ssid =
-        preferences.getString("wifi_ssid", DEFAULT_WIFI_SSID);
+    device_config.wifi_ssid = get_preference_string("wifi_ssid", DEFAULT_WIFI_SSID);
     device_config.wifi_password =
-        preferences.getString("wifi_pass", DEFAULT_WIFI_PASSWORD);
-    device_config.api_url =
-        preferences.getString("api_url", DEFAULT_API_URL);
-    device_config.api_key =
-        preferences.getString("api_key", DEFAULT_API_KEY);
+        get_preference_string("wifi_pass", DEFAULT_WIFI_PASSWORD);
+    device_config.api_url = get_preference_string("api_url", DEFAULT_API_URL);
+    device_config.api_key = get_preference_string("api_key", DEFAULT_API_KEY);
     device_config.device_id = preferences.getUInt("device_id", 0);
-    device_config.microphone_distance_m =
-        preferences.getFloat("mic_distance", 0.08f);
+    device_config.microphone_distance_m = get_preference_float("mic_distance", 0.08f);
     device_config.correlation_threshold =
-        preferences.getFloat("corr_threshold", 0.35f);
+        get_preference_float("corr_threshold", 0.35f);
     device_config.sound_level_threshold_db_spl =
-        preferences.getFloat("spl_threshold", 55.0f);
-    device_config.db_spl_offset = preferences.getFloat("spl_offset", 0.0f);
+        get_preference_float("spl_threshold", 55.0f);
+    device_config.db_spl_offset = get_preference_float("spl_offset", 0.0f);
     device_config.sample_rate = preferences.getUInt("sample_rate", 44100);
     device_config.window_size = preferences.getUInt("window_size", N_SAMPLES);
     db_spl_offset.store(device_config.db_spl_offset);
@@ -179,6 +205,23 @@ static void redirect_to_setup() {
     setup_server.send(302, "text/plain", "Redirecting to setup");
 }
 
+static void log_i2c_devices() {
+    bool found_device = false;
+
+    Serial.println("I2C scan:");
+    for (uint8_t address = 1; address < 127; ++address) {
+        Wire.beginTransmission(address);
+        if (Wire.endTransmission() == 0) {
+            Serial.printf("  Found device at 0x%02X\n", address);
+            found_device = true;
+        }
+    }
+
+    if (!found_device) {
+        Serial.println("  No I2C devices found");
+    }
+}
+
 static void enter_setup_mode() {
     setup_mode = true;
     WiFi.mode(WIFI_AP);
@@ -216,25 +259,116 @@ static void check_setup_button() {
     }
 }
 
+static bool enqueue_latest(QueueHandle_t queue, const DoaResult &result,
+                           std::atomic<uint32_t> &drop_counter) {
+    if (xQueueSend(queue, &result, 0) == pdPASS) {
+        return true;
+    }
+
+    DoaResult discarded;
+    if (xQueueReceive(queue, &discarded, 0) != pdPASS ||
+        xQueueSend(queue, &result, 0) != pdPASS) {
+        drop_counter.fetch_add(1);
+        return false;
+    }
+
+    drop_counter.fetch_add(1);
+    return true;
+}
+
+static void log_dsp_diagnostics() {
+    static uint32_t last_log_ms = 0;
+    const uint32_t now = millis();
+    if (now - last_log_ms < DSP_DIAGNOSTIC_INTERVAL_MS) {
+        return;
+    }
+
+    last_log_ms = now;
+
+    uint32_t sample_rate;
+    uint32_t window_size;
+    if (xSemaphoreTake(config_mutex, pdMS_TO_TICKS(10)) != pdTRUE) {
+        return;
+    }
+    sample_rate = device_config.sample_rate;
+    window_size = device_config.window_size;
+    xSemaphoreGive(config_mutex);
+
+    Serial.printf(
+        "DSP stats: blocks=%lu, deadline_misses=%lu, max_processing=%lu us, "
+        "budget=%lu us, i2s_failures=%lu, display_drops=%lu, network_drops=%lu, "
+        "stack_free=%u\n",
+        static_cast<unsigned long>(dsp_blocks_processed.load()),
+        static_cast<unsigned long>(dsp_deadline_misses.load()),
+        static_cast<unsigned long>(dsp_max_processing_us.load()),
+        static_cast<unsigned long>(audio_block_duration_us(sample_rate, window_size)),
+        static_cast<unsigned long>(dsp_i2s_read_failures.load()),
+        static_cast<unsigned long>(display_queue_drops.load()),
+        static_cast<unsigned long>(network_queue_drops.load()),
+        static_cast<unsigned int>(uxTaskGetStackHighWaterMark(nullptr)));
+}
+
+static void initialize_task_watchdog() {
+    esp_err_t result = esp_task_wdt_init(TASK_WATCHDOG_TIMEOUT_SECONDS, false);
+    if (result != ESP_OK && result != ESP_ERR_INVALID_STATE) {
+        Serial.printf("Task watchdog initialization failed: %s\n",
+                      esp_err_to_name(result));
+    }
+}
+
 // --- NALOGA NA JEDRU 1: DSP OBDELAVA ---
 void dsp_task(void *param) {
-    static int32_t left_buf[N_SAMPLES];
-    static int32_t right_buf[N_SAMPLES];
+    static int32_t left_buf[DSP_MAX_WINDOW_SIZE];
+    static int32_t right_buf[DSP_MAX_WINDOW_SIZE];
+    esp_task_wdt_add(nullptr);
 
     while (true) {
-        if (read_i2s_stereo(left_buf, right_buf, N_SAMPLES)) {
+        uint32_t window_size;
+        uint32_t sample_rate;
+        if (xSemaphoreTake(config_mutex, pdMS_TO_TICKS(10)) != pdTRUE) {
+            esp_task_wdt_reset();
+            continue;
+        }
+        sample_rate = device_config.sample_rate;
+        window_size = device_config.window_size;
+        xSemaphoreGive(config_mutex);
+
+        bool read_ok = false;
+        if (xSemaphoreTake(i2s_mutex, portMAX_DELAY) == pdTRUE) {
+            read_ok = read_i2s_stereo(left_buf, right_buf, window_size);
+            xSemaphoreGive(i2s_mutex);
+        }
+        if (read_ok) {
+            const uint32_t process_start = micros();
             if (xSemaphoreTake(doa_mutex, portMAX_DELAY) != pdTRUE) {
+                esp_task_wdt_reset();
                 continue;
             }
             DoaResult res = doa.process(left_buf, right_buf);
             xSemaphoreGive(doa_mutex);
+            const uint32_t processing_us = micros() - process_start;
+            const uint32_t block_budget_us =
+                audio_block_duration_us(sample_rate, window_size);
+            dsp_blocks_processed.fetch_add(1);
+            uint32_t previous_max = dsp_max_processing_us.load();
+            while (processing_us > previous_max &&
+                   !dsp_max_processing_us.compare_exchange_weak(
+                       previous_max, processing_us)) {
+            }
+            if (processing_us > block_budget_us) {
+                dsp_deadline_misses.fetch_add(1);
+            }
             
             // Vsak potrošnik prejme svojo kopijo dogodka.
             if (res.valid) {
-                xQueueSend(display_queue, &res, 0);
-                xQueueSend(network_queue, &res, 0);
+                enqueue_latest(display_queue, res, display_queue_drops);
+                enqueue_latest(network_queue, res, network_queue_drops);
             }
+        } else {
+            dsp_i2s_read_failures.fetch_add(1);
         }
+        log_dsp_diagnostics();
+        esp_task_wdt_reset();
     }
 }
 
@@ -256,8 +390,7 @@ static bool apply_dsp_calibration(float temperature_c) {
     if (microphone_distance_m <= 0.0f ||
         correlation_threshold <= 0.0f ||
         sound_level_threshold_db_spl <= -200.0f ||
-        sample_rate != 44100 ||
-        window_size != N_SAMPLES) {
+        !is_supported_audio_config(sample_rate, window_size)) {
         Serial.println("Invalid or unsupported remote calibration");
         return false;
     }
@@ -275,6 +408,62 @@ static bool apply_dsp_calibration(float temperature_c) {
     xSemaphoreGive(doa_mutex);
     db_spl_offset.store(configured_offset);
     return true;
+}
+
+static bool reconfigure_audio(uint32_t sample_rate, uint32_t window_size) {
+    if (!is_supported_audio_config(sample_rate, window_size)) {
+        Serial.printf("Unsupported audio configuration: rate=%lu, window=%lu\n",
+                      static_cast<unsigned long>(sample_rate),
+                      static_cast<unsigned long>(window_size));
+        return false;
+    }
+
+    uint32_t previous_rate;
+    uint32_t previous_window;
+    if (xSemaphoreTake(config_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        Serial.println("Could not lock configuration for audio reconfiguration");
+        return false;
+    }
+    previous_rate = device_config.sample_rate;
+    previous_window = device_config.window_size;
+    xSemaphoreGive(config_mutex);
+
+    if (xSemaphoreTake(doa_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        Serial.println("Could not lock DSP for audio reconfiguration");
+        return false;
+    }
+    const bool dsp_ready = doa.configure(
+        static_cast<float>(sample_rate), window_size);
+    xSemaphoreGive(doa_mutex);
+    if (!dsp_ready) {
+        Serial.println("GCC-PHAT rejected audio reconfiguration");
+        return false;
+    }
+
+    if (xSemaphoreTake(i2s_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        Serial.println("Could not lock I2S for audio reconfiguration");
+        xSemaphoreTake(doa_mutex, portMAX_DELAY);
+        doa.configure(static_cast<float>(previous_rate), previous_window);
+        xSemaphoreGive(doa_mutex);
+        return false;
+    }
+    deinit_i2s_microphones();
+    const bool i2s_ready = init_i2s_microphones(sample_rate);
+    xSemaphoreGive(i2s_mutex);
+    if (i2s_ready) {
+        return true;
+    }
+
+    Serial.println("I2S rejected audio reconfiguration; rolling back");
+    xSemaphoreTake(doa_mutex, portMAX_DELAY);
+    const bool dsp_rollback = doa.configure(
+        static_cast<float>(previous_rate), previous_window);
+    xSemaphoreGive(doa_mutex);
+    if (xSemaphoreTake(i2s_mutex, portMAX_DELAY) == pdTRUE) {
+        init_i2s_microphones(previous_rate);
+        xSemaphoreGive(i2s_mutex);
+    }
+    return dsp_rollback;
 }
 
 static bool fetch_remote_calibration() {
@@ -319,10 +508,11 @@ static bool fetch_remote_calibration() {
     float offset = doc["db_spl_offset"] | db_spl_offset.load();
 
     if (distance <= 0.0f || correlation <= 0.0f ||
-        spl_threshold <= -200.0f || sample_rate == 0 || window_size == 0 ||
+        spl_threshold <= -200.0f ||
+        !is_supported_audio_config(sample_rate, window_size) ||
         !isfinite(distance) || !isfinite(correlation) ||
         !isfinite(spl_threshold) || !isfinite(offset)) {
-        Serial.println("Calibration response contains invalid values");
+        Serial.println("Calibration response contains invalid or unsupported values");
         return false;
     }
 
@@ -331,6 +521,20 @@ static bool fetch_remote_calibration() {
         return false;
     }
     DeviceConfig previous = device_config;
+    xSemaphoreGive(config_mutex);
+
+    const bool audio_config_changed =
+        sample_rate != previous.sample_rate || window_size != previous.window_size;
+    if (audio_config_changed &&
+        !reconfigure_audio(sample_rate, window_size)) {
+        return false;
+    }
+
+    if (xSemaphoreTake(config_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        Serial.println("Could not lock device configuration for update");
+        reconfigure_audio(previous.sample_rate, previous.window_size);
+        return false;
+    }
     device_config.microphone_distance_m = distance;
     device_config.correlation_threshold = correlation;
     device_config.sound_level_threshold_db_spl = spl_threshold;
@@ -343,6 +547,7 @@ static bool fetch_remote_calibration() {
         xSemaphoreTake(config_mutex, portMAX_DELAY);
         device_config = previous;
         xSemaphoreGive(config_mutex);
+        reconfigure_audio(previous.sample_rate, previous.window_size);
         return false;
     }
 
@@ -398,11 +603,13 @@ static bool send_event_to_backend(const DoaResult& res) {
 void network_task(void *param) {
     DoaResult event;
     unsigned long last_calibration_refresh = 0;
+    esp_task_wdt_add(nullptr);
 
     while (true) {
         if (WiFi.status() != WL_CONNECTED) {
             WiFi.reconnect();
             vTaskDelay(pdMS_TO_TICKS(1000));
+            esp_task_wdt_reset();
             continue;
         }
 
@@ -424,6 +631,7 @@ void network_task(void *param) {
                 Serial.println("Measurement dropped after RAM retry limit");
             }
         }
+        esp_task_wdt_reset();
     }
 }
 
@@ -488,6 +696,7 @@ void init_sensors_and_display() {
         bme_initialized = bme.begin(0x77, &Wire);
         if (!bme_initialized) {
             Serial.println("BME280 senzor ni bil najden! Uporabljam privzeto c=343 m/s");
+            log_i2c_devices();
         }
     }
 }
@@ -541,6 +750,10 @@ void sensor_display_task(void *param) {
 
 void setup() {
     Serial.begin(115200);
+    Serial.printf("PSRAM: %s, size=%u bytes, free=%u bytes\n",
+                  psramFound() ? "found" : "not found",
+                  ESP.getPsramSize(),
+                  ESP.getFreePsram());
     load_device_config();
     check_setup_button();
     if (!device_configured) {
@@ -551,14 +764,34 @@ void setup() {
     // 1. OLED in BME280 zagon (Arduino)
     init_sensors_and_display();
 
-    // 2. DSP inicializacija (ESP-IDF / esp-dsp)
-    if (!doa.init()) {
+    // Ustvari FreeRTOS objekte za prenos rezultatov in zaščito DSP konfiguracije
+    display_queue = xQueueCreate(10, sizeof(DoaResult));
+    network_queue = xQueueCreate(10, sizeof(DoaResult));
+    doa_mutex = xSemaphoreCreateMutex();
+    config_mutex = xSemaphoreCreateMutex();
+    i2s_mutex = xSemaphoreCreateMutex();
+    if (display_queue == nullptr || network_queue == nullptr ||
+        doa_mutex == nullptr || config_mutex == nullptr || i2s_mutex == nullptr) {
+        Serial.println("FreeRTOS objektov ni bilo mogoce ustvariti!");
+        while (true) {
+            delay(1000);
+        }
+    }
+
+    if (!is_supported_audio_config(device_config.sample_rate,
+                                   device_config.window_size)) {
+        Serial.println("Unsupported saved audio configuration; using 44100 Hz / 1024 samples");
+        device_config.sample_rate = 44100;
+        device_config.window_size = 1024;
+    }
+    if (!doa.configure(static_cast<float>(device_config.sample_rate),
+                       device_config.window_size)) {
         Serial.println("GCC-PHAT inicializacija ni uspela!");
         while (true) {
             delay(1000);
         }
     }
-    if (!init_i2s_microphones(44100)) {
+    if (!init_i2s_microphones(device_config.sample_rate)) {
         Serial.println("I2S inicializacija ni uspela!");
         while (true) {
             delay(1000);
@@ -571,25 +804,14 @@ void setup() {
         WiFi.begin(
             device_config.wifi_ssid.c_str(), device_config.wifi_password.c_str());
     }
-    
-    // Ustvari FreeRTOS objekte za prenos rezultatov in zaščito DSP konfiguracije
-    display_queue = xQueueCreate(10, sizeof(DoaResult));
-    network_queue = xQueueCreate(10, sizeof(DoaResult));
-    doa_mutex = xSemaphoreCreateMutex();
-    config_mutex = xSemaphoreCreateMutex();
-    if (display_queue == nullptr || network_queue == nullptr ||
-        doa_mutex == nullptr || config_mutex == nullptr) {
-        Serial.println("FreeRTOS objektov ni bilo mogoce ustvariti!");
-        while (true) {
-            delay(1000);
-        }
-    }
+
     if (!apply_dsp_calibration(current_temperature.load())) {
         Serial.println("Initial DSP calibration is invalid");
         while (true) {
             delay(1000);
         }
     }
+    initialize_task_watchdog();
 
     // Zaženi DSP nalogo na Jedru 1 (prioriteta 5 - visoka)
     if (xTaskCreatePinnedToCore(dsp_task, "DSP_Task", 8192, NULL, 5, NULL, 1) != pdPASS) {

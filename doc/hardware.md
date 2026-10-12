@@ -2,9 +2,11 @@
 
 ## Main board
 
-The firmware targets an **ESP32-S3-DevKitC-1-N8** using the `esp32-s3-devkitc-1` PlatformIO board definition.
+The firmware targets an **ESP32-S3-DevKitC-1-N16R8**: 16 MB flash, 8 MB OPI PSRAM, two USB ports, and an on-board WS2812 RGB LED.
 
-The board provides the CPU, Wi-Fi, I2S peripheral, I2C bus, GPIO 0 setup-button input, and USB/serial connection.
+The board provides the CPU, Wi-Fi, I2S peripheral, I2C bus, GPIO 0 setup-button input, and two USB connections. The current firmware does not use the WS2812 LED.
+
+The project includes a custom PlatformIO board definition at [boards/esp32-s3-devkitc-1-n16r8.json](../boards/esp32-s3-devkitc-1-n16r8.json), so the N16R8 flash, partition, Arduino variant, and OPI PSRAM settings are explicit rather than inherited from the generic N8 definition.
 
 ## Pinout
 

@@ -6,6 +6,7 @@
 #define I2S_BCLK_PIN  GPIO_NUM_4
 #define I2S_WS_PIN    GPIO_NUM_5
 #define I2S_DIN_PIN   GPIO_NUM_6
+#define I2S_MAX_SAMPLES 2048
 
 bool init_i2s_microphones(uint32_t sample_rate) {
     i2s_config_t i2s_config = {
@@ -40,9 +41,14 @@ bool init_i2s_microphones(uint32_t sample_rate) {
     return true;
 }
 
+void deinit_i2s_microphones() {
+    i2s_driver_uninstall(I2S_PORT);
+}
+
 bool read_i2s_stereo(int32_t* left, int32_t* right, size_t count) {
-    static int32_t interleaved_buf[1024 * 2];
-    if (left == nullptr || right == nullptr || count == 0 || count > 1024) {
+    static int32_t interleaved_buf[I2S_MAX_SAMPLES * 2];
+    if (left == nullptr || right == nullptr || count == 0 ||
+        count > I2S_MAX_SAMPLES) {
         return false;
     }
 
