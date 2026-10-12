@@ -81,7 +81,11 @@ The internal `rms_db` value is not inherently dB SPL. The network and display pa
 
 - Waits for Wi-Fi.
 - Reconnects when disconnected.
-- Synchronizes UTC time with NTP before transmitting measurements.
+- Attempts UTC synchronization with NTP after Wi-Fi connects. It also accepts
+  an optional `server_time_unix_ms` field from the calibration response and
+  estimates a server-to-device UTC offset. If both sources are unavailable, it
+  transmits monotonic uptime timestamps with an explicit clock flag instead of
+  blocking or discarding measurements.
 - Refreshes remote calibration at boot and approximately every 60 seconds.
 - Receives timestamped results from `network_queue` and batches up to eight
   measurements, flushing a partial batch after 200 ms.
@@ -99,6 +103,8 @@ The Arduino `loop()` only delays. Application work is performed by the explicit 
 - `config_mutex` protects configuration values while they are copied or replaced.
 - `display_queue` and `network_queue` contain independent copies of each valid result.
 - Temperature, speed of sound, and dB SPL offset are exposed through atomic values where they are shared between tasks.
+- Binary batch header clock flags distinguish synchronized UTC timestamps from
+  server-synchronized UTC timestamps, and monotonic uptime timestamps.
 
 Queue sends are non-blocking. If the bounded network queue is full, the oldest
 queued measurement is discarded and the newest result is retained. The display

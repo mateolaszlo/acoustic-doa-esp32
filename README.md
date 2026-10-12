@@ -42,6 +42,10 @@ The backend, database, and web dashboard are separate systems. See [REST API int
 - Measurements are sent in timestamped binary batches of up to eight records, with
   a target limit of five requests per second. Failed batches are retried in RAM
   three times and then dropped; they are not persisted across reboot.
+- The calibration response may provide `server_time_unix_ms`; this lets the
+  firmware use API-server UTC time even when public NTP is unreachable.
+- If neither Internet/NTP nor API-server time is available, measurements
+  continue using monotonic uptime timestamps marked in the binary batch header.
 - The OLED continues receiving valid results at DSP rate. When the server is
   unavailable, the network queue keeps newer measurements and the OLED shows
   `API OFFLINE`.

@@ -18,13 +18,19 @@ Every device request uses:
 
 ```http
 x-api-key: <device API key>
+```
+
+Calibration requests additionally send:
+
+```http
 Accept: application/json
 ```
 
 Measurement uploads additionally send:
 
 ```http
-Content-Type: application/json
+Content-Type: application/octet-stream
+Connection: keep-alive
 ```
 
 The API key is entered through provisioning and stored in NVS. It is not retrieved from a user JWT.
@@ -49,13 +55,20 @@ The expected response contains:
   "okno_velikost": 1024,
   "prag_korelacije": 0.40,
   "prag_glasnosti_db": 55.0,
-  "db_spl_offset": 96.5
+  "db_spl_offset": 96.5,
+  "server_time_unix_ms": 1791830000123
 }
 ```
 
 `temperatura_okolice_c` is not required by the current firmware. The local BME280 is the source of temperature for sound-speed compensation.
 
 `db_spl_offset` is optional in the current parser. If absent, the previously stored offset is retained.
+`server_time_unix_ms` is optional. When present, the firmware estimates the
+server-to-device UTC offset using the midpoint of the calibration request and
+uses it for measurement timestamps when NTP has not synchronized the system
+clock. Missing or invalid server time does not invalidate otherwise valid
+calibration settings; the last valid server offset remains usable until a
+new valid synchronization is received.
 
 The firmware validates:
 
@@ -98,8 +111,23 @@ starts with this 12-byte packed header:
 |---:|---:|---|
 | 0 | 1 | Format version (`1`) |
 | 1 | 1 | Measurement count (`1` through `8`) |
-| 2 | 2 | Reserved, currently zero |
-| 4 | 8 | Unix UTC base timestamp in milliseconds |
+| 2 | 2 | Clock flags |
+| 4 | 8 | Base timestamp in milliseconds |
+
+Clock flags are:
+
+| Value | Meaning |
+|---:|---|
+| `0x0001` | Base timestamp is synchronized Unix UTC time |
+| `0x0003` | Base timestamp is Unix UTC time synchronized from the API server |
+| `0x0004` | Base timestamp is monotonic device uptime; it is not calendar time |
+
+The firmware uses UTC timestamps after NTP synchronization. If NTP is
+unavailable but the calibration response includes `server_time_unix_ms`, it
+uses the API server as the UTC source and marks batches `0x0003`. If neither
+source is available, it continues collecting and sending measurements with
+monotonic uptime timestamps marked `0x0004`. A batch never mixes clock
+sources.
 
 Each measurement then occupies exactly 20 bytes:
 
@@ -113,10 +141,13 @@ Each measurement then occupies exactly 20 bytes:
 
 Therefore, the body size is `12 + (measurement_count * 20)` bytes. For
 example, eight measurements occupy 172 bytes. The timestamp of record `i` is
-`base_timestamp_ms + offset_ms`.
+`base_timestamp_ms + offset_ms`. For monotonic batches, this is uptime relative
+to the current boot.
 
-The firmware synchronizes its wall clock with NTP after Wi-Fi connects and
-does not transmit a batch until a valid Unix timestamp is available.
+The firmware attempts to synchronize its wall clock with NTP after Wi-Fi
+connects, but measurements are not blocked while synchronization is pending.
+The calibration request can independently establish a UTC offset from the
+server timestamp.
 
 The previous JSON representation is no longer sent. Its fields correspond to
 the binary record as follows:

@@ -56,6 +56,9 @@ static constexpr uint8_t MEASUREMENT_BATCH_VERSION = 1;
 static constexpr size_t MEASUREMENT_BATCH_HEADER_SIZE = 12;
 static constexpr size_t MEASUREMENT_RECORD_SIZE = 20;
 static constexpr time_t MIN_VALID_EPOCH = 1704067200; // 2024-01-01 UTC
+static constexpr uint16_t CLOCK_FLAG_UTC_SYNCHRONIZED = 0x0001;
+static constexpr uint16_t CLOCK_FLAG_SERVER_SYNCHRONIZED = 0x0002;
+static constexpr uint16_t CLOCK_FLAG_MONOTONIC_UPTIME = 0x0004;
 
 struct DeviceConfig {
     String wifi_ssid;
@@ -74,6 +77,7 @@ struct DeviceConfig {
 struct NetworkMeasurement {
     DoaResult result;
     uint64_t timestamp_ms;
+    uint16_t clock_flags;
 };
 
 static GccPhat doa(44100, 0.08f, 20.0f); // 44.1 kHz, 8 cm, 20 °C
@@ -87,6 +91,8 @@ static Preferences preferences;
 static DeviceConfig device_config;
 static std::atomic<float> db_spl_offset(0.0f);
 static std::atomic<bool> server_available(false);
+static std::atomic<int64_t> server_utc_offset_ms(0);
+static std::atomic<bool> server_time_valid(false);
 static bool display_initialized = false;
 static bool bme_initialized = false;
 static bool setup_mode = false;
@@ -295,7 +301,7 @@ static bool enqueue_latest(QueueHandle_t queue, const DoaResult &result,
 }
 
 static bool enqueue_network_measurement(const NetworkMeasurement &measurement) {
-    if (measurement.timestamp_ms == 0) {
+    if (measurement.timestamp_ms == 0 || measurement.clock_flags == 0) {
         network_queue_drops.fetch_add(1);
         return false;
     }
@@ -315,16 +321,36 @@ static bool enqueue_network_measurement(const NetworkMeasurement &measurement) {
     return true;
 }
 
-static uint64_t current_utc_timestamp_ms() {
+static NetworkMeasurement make_network_measurement(const DoaResult &result) {
     const time_t now = time(nullptr);
-    if (now < MIN_VALID_EPOCH) {
-        return 0;
+    if (now >= MIN_VALID_EPOCH) {
+        struct timeval time_value;
+        gettimeofday(&time_value, nullptr);
+        return {
+            result,
+            static_cast<uint64_t>(time_value.tv_sec) * 1000ULL +
+                static_cast<uint64_t>(time_value.tv_usec) / 1000ULL,
+            CLOCK_FLAG_UTC_SYNCHRONIZED};
     }
 
-    struct timeval time_value;
-    gettimeofday(&time_value, nullptr);
-    return static_cast<uint64_t>(time_value.tv_sec) * 1000ULL +
-           static_cast<uint64_t>(time_value.tv_usec) / 1000ULL;
+    if (server_time_valid.load()) {
+        const int64_t monotonic_ms =
+            static_cast<int64_t>(esp_timer_get_time() / 1000ULL);
+        const int64_t estimated_utc_ms =
+            monotonic_ms + server_utc_offset_ms.load();
+        if (estimated_utc_ms > 0) {
+            return {
+                result,
+                static_cast<uint64_t>(estimated_utc_ms),
+                static_cast<uint16_t>(CLOCK_FLAG_UTC_SYNCHRONIZED |
+                                      CLOCK_FLAG_SERVER_SYNCHRONIZED)};
+        }
+    }
+
+    return {
+        result,
+        static_cast<uint64_t>(esp_timer_get_time()) / 1000ULL,
+        CLOCK_FLAG_MONOTONIC_UPTIME};
 }
 
 static void append_u16_le(uint8_t *buffer, size_t &offset, uint16_t value) {
@@ -362,18 +388,20 @@ static size_t serialize_measurement_batch(
     }
 
     const uint64_t base_timestamp_ms = measurements[0].timestamp_ms;
-    if (base_timestamp_ms == 0) {
+    const uint16_t clock_flags = measurements[0].clock_flags;
+    if (base_timestamp_ms == 0 || clock_flags == 0) {
         return 0;
     }
 
     size_t offset = 0;
     payload[offset++] = MEASUREMENT_BATCH_VERSION;
     payload[offset++] = static_cast<uint8_t>(count);
-    append_u16_le(payload, offset, 0);
+    append_u16_le(payload, offset, clock_flags);
     append_u64_le(payload, offset, base_timestamp_ms);
 
     for (size_t index = 0; index < count; ++index) {
-        if (measurements[index].timestamp_ms < base_timestamp_ms ||
+        if (measurements[index].clock_flags != clock_flags ||
+            measurements[index].timestamp_ms < base_timestamp_ms ||
             measurements[index].timestamp_ms - base_timestamp_ms >
                 UINT32_MAX) {
             return 0;
@@ -480,9 +508,7 @@ void dsp_task(void *param) {
             // Vsak potrošnik prejme svojo kopijo dogodka.
             if (res.valid) {
                 enqueue_latest(display_queue, res, display_queue_drops);
-                NetworkMeasurement measurement = {
-                    res, current_utc_timestamp_ms()};
-                enqueue_network_measurement(measurement);
+                enqueue_network_measurement(make_network_measurement(res));
             }
         } else {
             dsp_i2s_read_failures.fetch_add(1);
@@ -603,8 +629,12 @@ static bool fetch_remote_calibration() {
     http.addHeader("Accept", "application/json");
     http.addHeader("x-api-key", device_config.api_key);
 
+    const int64_t request_start_ms =
+        static_cast<int64_t>(esp_timer_get_time() / 1000ULL);
     int status = http.GET();
     String response = http.getString();
+    const int64_t request_end_ms =
+        static_cast<int64_t>(esp_timer_get_time() / 1000ULL);
     http.end();
 
     if (status < 200 || status >= 300) {
@@ -618,6 +648,23 @@ static bool fetch_remote_calibration() {
     if (error) {
         Serial.printf("Calibration response JSON error: %s\n", error.c_str());
         return false;
+    }
+
+    JsonVariant server_time_value = doc["server_time_unix_ms"];
+    if (!server_time_value.isNull()) {
+        const uint64_t server_time_ms =
+            server_time_value.as<uint64_t>();
+        const int64_t midpoint_ms =
+            request_start_ms + (request_end_ms - request_start_ms) / 2;
+        if (server_time_ms >=
+                static_cast<uint64_t>(MIN_VALID_EPOCH) * 1000ULL &&
+            midpoint_ms >= 0) {
+            server_utc_offset_ms.store(
+                static_cast<int64_t>(server_time_ms) - midpoint_ms);
+            server_time_valid.store(true);
+        } else {
+            Serial.println("Calibration server time is invalid");
+        }
     }
 
     float distance = doc["razdalja_mikrofonov_m"] | 0.0f;
@@ -759,13 +806,6 @@ void network_task(void *param) {
             configTime(0, 0, "pool.ntp.org", "time.nist.gov");
             last_ntp_attempt = millis();
         }
-        if (current_utc_timestamp_ms() == 0) {
-            server_available.store(false);
-            vTaskDelay(pdMS_TO_TICKS(1000));
-            esp_task_wdt_reset();
-            continue;
-        }
-
         if (last_calibration_refresh == 0 ||
             millis() - last_calibration_refresh >= CONFIG_REFRESH_INTERVAL_MS) {
             fetch_remote_calibration();
@@ -781,6 +821,11 @@ void network_task(void *param) {
             while (batch_count < NETWORK_BATCH_MAX_MEASUREMENTS) {
                 const unsigned long now = millis();
                 if (now >= flush_deadline) {
+                    break;
+                }
+                NetworkMeasurement next_measurement;
+                if (xQueuePeek(network_queue, &next_measurement, 0) != pdTRUE ||
+                    next_measurement.clock_flags != batch[0].clock_flags) {
                     break;
                 }
                 const TickType_t wait_ticks = pdMS_TO_TICKS(flush_deadline - now);
