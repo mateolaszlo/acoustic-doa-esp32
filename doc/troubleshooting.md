@@ -104,4 +104,8 @@ Ambient temperature is intentionally not required in the response because the lo
 
 The client retries an upload three times in RAM. If all attempts fail, the serial log reports that the measurement was dropped. Failed events are not persisted across reboot.
 
-The two event queues have finite capacity. A sustained event rate can fill a queue and lose events because queue sends are non-blocking.
+The two event queues have finite capacity. The display keeps the newest result
+when full. Network publication is limited to two results per second, and the
+network queue also keeps the newest pending result when full. Older pending
+results may be discarded by design; the retry queue is not an archive of every
+DSP block.

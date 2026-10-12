@@ -21,10 +21,12 @@ sizes are 512, 1024, and 2048 samples. Each block is processed as follows:
 3. Calculate an FFT for each channel.
 4. Calculate the cross-power spectrum `X1 * conj(X2)`.
 5. Normalize each frequency bin by its magnitude (PHAT weighting).
-6. Perform the inverse transform to obtain the correlation function.
-7. Search only physically possible lags for the configured microphone distance.
-8. Refine the peak with parabolic interpolation.
-9. Calculate:
+6. Apply a mirrored 300-2200 Hz bandpass with 100 Hz raised-cosine
+   transition ramps to suppress spatial aliasing and abrupt spectral edges.
+7. Perform the inverse transform to obtain the correlation function.
+8. Search only physically possible lags for the configured microphone distance.
+9. Refine the peak with parabolic interpolation.
+10. Calculate:
    - Delay in microseconds.
    - Angle using `asin(c * delay / distance)`.
    - Correlation confidence.
@@ -57,9 +59,12 @@ The internal `rms_db` value is not inherently dB SPL. The network and display pa
 - Reads I2S DMA data.
 - Runs GCC-PHAT.
 - Sends valid results to both result queues.
+- Publishes at most two results per second to the network queue while
+  continuing to process audio and update the display at full rate.
 - Measures processing duration against the current audio-block deadline.
 - Resets the task watchdog and periodically reports timing, I2S, queue, and stack statistics.
-- Does not perform Wi-Fi, HTTP, OLED, BME280, or serial operations.
+- Does not perform Wi-Fi, HTTP, OLED, or BME280 operations; it emits only
+  rate-limited diagnostic summaries to Serial.
 - Priority: 5.
 - Stack: 8192 bytes.
 
@@ -95,8 +100,9 @@ The Arduino `loop()` only delays. Application work is performed by the explicit 
 
 Queue sends are non-blocking. If a queue is full, the oldest queued result is
 discarded and the newest result is retained. Drop counters are included in the
-periodic DSP diagnostic summary. The DSP task never waits for the display or
-network consumer.
+periodic DSP diagnostic summary. Network publication is additionally limited to
+one result every 500 ms (at most two per second). The DSP task never waits for
+the display or network consumer.
 
 ## Configuration
 

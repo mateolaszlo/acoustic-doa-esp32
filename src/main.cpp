@@ -23,6 +23,7 @@
 #define SETUP_AP_PASSWORD "configure123"
 #define CONFIG_REFRESH_INTERVAL_MS 60000UL
 #define HTTP_RETRY_COUNT 3
+#define NETWORK_UPLOAD_INTERVAL_MS 500UL
 #define DSP_MAX_WINDOW_SIZE 2048
 #define DSP_DIAGNOSTIC_INTERVAL_MS 10000UL
 #define TASK_WATCHDOG_TIMEOUT_SECONDS 30
@@ -320,6 +321,7 @@ static void initialize_task_watchdog() {
 void dsp_task(void *param) {
     static int32_t left_buf[DSP_MAX_WINDOW_SIZE];
     static int32_t right_buf[DSP_MAX_WINDOW_SIZE];
+    uint32_t last_network_enqueue_ms = 0;
     esp_task_wdt_add(nullptr);
 
     while (true) {
@@ -362,7 +364,14 @@ void dsp_task(void *param) {
             // Vsak potrošnik prejme svojo kopijo dogodka.
             if (res.valid) {
                 enqueue_latest(display_queue, res, display_queue_drops);
-                enqueue_latest(network_queue, res, network_queue_drops);
+                const uint32_t now_ms = millis();
+                if (last_network_enqueue_ms == 0 ||
+                    now_ms - last_network_enqueue_ms >=
+                        NETWORK_UPLOAD_INTERVAL_MS) {
+                    if (enqueue_latest(network_queue, res, network_queue_drops)) {
+                        last_network_enqueue_ms = now_ms;
+                    }
+                }
             }
         } else {
             dsp_i2s_read_failures.fetch_add(1);

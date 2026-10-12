@@ -80,6 +80,11 @@ x-api-key: <device API key>
 Content-Type: application/json
 ```
 
+The firmware limits measurement publication to at most two requests per second
+(one request every 500 ms). The DSP and OLED continue operating at the active
+audio-block rate; only network enqueueing is rate-limited. If a queued request
+cannot be sent, the existing bounded retry policy applies.
+
 Current request body:
 
 ```json

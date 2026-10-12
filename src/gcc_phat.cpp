@@ -4,6 +4,39 @@
 #include <climits>
 
 static const char* TAG = "GCC_PHAT";
+static constexpr float GCC_PHAT_MIN_HZ = 300.0f;
+static constexpr float GCC_PHAT_MAX_HZ = 2200.0f;
+static constexpr float GCC_PHAT_RAMP_HZ = 100.0f;
+
+static float gcc_phat_band_weight(float frequency_hz) {
+    const float lower_ramp_start = GCC_PHAT_MIN_HZ - GCC_PHAT_RAMP_HZ;
+    const float upper_ramp_end = GCC_PHAT_MAX_HZ + GCC_PHAT_RAMP_HZ;
+
+    if (frequency_hz <= lower_ramp_start ||
+        frequency_hz >= upper_ramp_end) {
+        return 0.0f;
+    }
+    if (frequency_hz < GCC_PHAT_MIN_HZ) {
+        const float progress =
+            (frequency_hz - lower_ramp_start) / GCC_PHAT_RAMP_HZ;
+        return 0.5f * (1.0f - cosf(M_PI * progress));
+    }
+    if (frequency_hz <= GCC_PHAT_MAX_HZ) {
+        return 1.0f;
+    }
+
+    const float progress =
+        (upper_ramp_end - frequency_hz) / GCC_PHAT_RAMP_HZ;
+    return 0.5f * (1.0f - cosf(M_PI * progress));
+}
+
+static int wrap_correlation_index(int lag, int fft_size) {
+    lag %= fft_size;
+    if (lag < 0) {
+        lag += fft_size;
+    }
+    return lag;
+}
 
 GccPhat::GccPhat(float sample_rate, float mic_distance_m, float temp_c)
     : fs(sample_rate), d(mic_distance_m), correlation_threshold(0.35f),
@@ -116,12 +149,23 @@ DoaResult GccPhat::process(const int32_t* left_channel, const int32_t* right_cha
         return result;
     }
 
+    float left_mean = 0.0f;
+    float right_mean = 0.0f;
+    for (size_t i = 0; i < fft_size; i++) {
+        left_mean += static_cast<float>(left_channel[i]);
+        right_mean += static_cast<float>(right_channel[i]);
+    }
+    left_mean /= static_cast<float>(fft_size);
+    right_mean /= static_cast<float>(fft_size);
+
     float energy_sum = 0.0f;
 
-    // 1. Normalizacija 24/32-bit I2S podatkov na float [-1.0, 1.0] in oknenje
+    // 1. Odstranitev DC odmika, normalizacija in Hannovo oknenje
     for (size_t i = 0; i < fft_size; i++) {
-        float s1 = ((float)left_channel[i] / 2147483648.0f) * window[i];
-        float s2 = ((float)right_channel[i] / 2147483648.0f) * window[i];
+        float s1 = ((static_cast<float>(left_channel[i]) - left_mean) /
+                    2147483648.0f) * window[i];
+        float s2 = ((static_cast<float>(right_channel[i]) - right_mean) /
+                    2147483648.0f) * window[i];
 
         energy_sum += s1 * s1;
 
@@ -150,7 +194,19 @@ DoaResult GccPhat::process(const int32_t* left_channel, const int32_t* right_cha
     // 3. Navzkrižni spekter moči z GCC-PHAT normalizacijo
     // G12(f) = X1(f) * conj(X2(f))
     // Psi(f) = G12(f) / |G12(f)|
+    const float bin_hz = fs / static_cast<float>(fft_size);
+
     for (size_t i = 0; i < fft_size; i++) {
+        const size_t mirrored_bin = i <= fft_size / 2 ? i : fft_size - i;
+        const float frequency_hz =
+            static_cast<float>(mirrored_bin) * bin_hz;
+        const float band_weight = gcc_phat_band_weight(frequency_hz);
+        if (band_weight == 0.0f) {
+            ccorr[2 * i] = 0.0f;
+            ccorr[2 * i + 1] = 0.0f;
+            continue;
+        }
+
         float re1 = fft_x1[2 * i];
         float im1 = fft_x1[2 * i + 1];
         float re2 = fft_x2[2 * i];
@@ -163,8 +219,8 @@ DoaResult GccPhat::process(const int32_t* left_channel, const int32_t* right_cha
         float magnitude = sqrtf(cross_re * cross_re + cross_im * cross_im);
 
         if (magnitude > 1e-8f) {
-            ccorr[2 * i]     = cross_re / magnitude;
-            ccorr[2 * i + 1] = cross_im / magnitude;
+            ccorr[2 * i]     = (cross_re / magnitude) * band_weight;
+            ccorr[2 * i + 1] = (cross_im / magnitude) * band_weight;
         } else {
             ccorr[2 * i]     = 0.0f;
             ccorr[2 * i + 1] = 0.0f;
@@ -206,10 +262,9 @@ DoaResult GccPhat::process(const int32_t* left_channel, const int32_t* right_cha
     }
 
     // 6. Podvzorčna parabolična interpolacija (za višjo natančnost od 1 vzorca)
-    int idx_m1 = (best_idx - 1 < 0) ? (static_cast<int>(fft_size) + best_idx - 1) : (best_idx - 1);
-    int idx_p1 = (best_idx + 1 >= static_cast<int>(fft_size))
-        ? 0
-        : (best_idx + 1);
+    const int fft_size_int = static_cast<int>(fft_size);
+    const int idx_m1 = wrap_correlation_index(best_idx - 1, fft_size_int);
+    const int idx_p1 = wrap_correlation_index(best_idx + 1, fft_size_int);
 
     float alpha = ccorr[2 * idx_m1] / static_cast<float>(fft_size);
     float beta  = best_peak;
