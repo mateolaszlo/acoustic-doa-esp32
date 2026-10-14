@@ -32,11 +32,17 @@ sizes are 512, 1024, and 2048 samples. Each block is processed as follows:
    - Correlation confidence.
    - Raw level in dBFS.
 
-The sound speed is calculated from the BME280 temperature using:
+The sound speed is calculated dynamically from BME280 temperature, relative humidity, and barometric pressure using moist air thermodynamics:
 
-```text
-c = 331.3 * sqrt(1 + temperature_C / 273.15)
-```
+1. Saturation vapor pressure (Magnus-Tetens):
+   $$p_{sat} = 610.78 \cdot \exp\left(\frac{17.27 \cdot T_C}{T_C + 237.3}\right) \text{ [Pa]}$$
+2. Vapor partial pressure and mole fraction:
+   $$p_v = \frac{RH}{100} \cdot p_{sat}, \quad x_w = \frac{p_v}{P}$$
+3. Moist air effective molar mass and heat capacity ratio:
+   $$M = 0.0289654 \cdot (1 - 0.3780 \cdot x_w) \text{ [kg/mol]}, \quad \gamma = 1.4003 - 0.07 \cdot x_w$$
+4. Speed of sound:
+   $$c = \sqrt{\frac{\gamma \cdot R \cdot T_K}{M}}$$
+   where $R = 8.31446 \text{ J/(mol}\cdot\text{K)}$ and $T_K = T_C + 273.15 \text{ K}$. Default fallbacks are $20.0^\circ\text{C}$, $50.0\%$, and $101325.0\text{ Pa}$ ($c \approx 343.9\text{ m/s}$).
 
 ## `DoaResult`
 

@@ -38,8 +38,10 @@
 Adafruit_BME280 bme; // I2C
 
 // Deljene spremenljivke med jedroma (Thread-safe)
-std::atomic<float> current_sound_speed(343.2f);
+std::atomic<float> current_sound_speed(343.9f);
 std::atomic<float> current_temperature(20.0f);
+std::atomic<float> current_humidity(50.0f);
+std::atomic<float> current_pressure(101325.0f);
 
 // Funkcije iz i2s_sampler.cpp
 bool init_i2s_microphones(uint32_t sample_rate);
@@ -519,7 +521,9 @@ void dsp_task(void *param) {
     }
 }
 
-static bool apply_dsp_calibration(float temperature_c) {
+static bool apply_dsp_calibration(float temperature_c,
+                                  float humidity_pct = 50.0f,
+                                  float pressure_pa = 101325.0f) {
     if (xSemaphoreTake(config_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
         Serial.println("Could not lock device configuration");
         return false;
@@ -550,6 +554,8 @@ static bool apply_dsp_calibration(float temperature_c) {
     doa.updateCalibration(
         microphone_distance_m,
         temperature_c,
+        humidity_pct,
+        pressure_pa,
         correlation_threshold,
         sound_level_threshold_db_spl - configured_offset);
     xSemaphoreGive(doa_mutex);
@@ -711,7 +717,9 @@ static bool fetch_remote_calibration() {
     device_config.window_size = window_size;
     xSemaphoreGive(config_mutex);
 
-    if (!apply_dsp_calibration(current_temperature.load())) {
+    if (!apply_dsp_calibration(current_temperature.load(),
+                               current_humidity.load(),
+                               current_pressure.load())) {
         xSemaphoreTake(config_mutex, portMAX_DELAY);
         device_config = previous;
         xSemaphoreGive(config_mutex);
@@ -942,8 +950,20 @@ void init_sensors_and_display() {
         // Če ni na 0x76, poskusi še privzeti 0x77
         bme_initialized = bme.begin(0x77, &Wire);
         if (!bme_initialized) {
-            Serial.println("BME280 senzor ni bil najden! Uporabljam privzeto c=343 m/s");
+            Serial.println("BME280 senzor ni bil najden! Uporabljam privzeto c=343.9 m/s");
             log_i2c_devices();
+        }
+    }
+
+    if (bme_initialized) {
+        float t = bme.readTemperature();
+        float rh = bme.readHumidity();
+        float p = bme.readPressure();
+        if (std::isfinite(t) && std::isfinite(rh) && std::isfinite(p)) {
+            current_temperature.store(t);
+            current_humidity.store(rh);
+            current_pressure.store(p);
+            current_sound_speed.store(GccPhat::calculateSoundSpeed(t, rh, p));
         }
     }
 
@@ -964,16 +984,20 @@ void update_environmental_compensation() {
             return;
         }
 
-        float t = bme.readTemperature();
-        if (!isnan(t)) {
-            // Formula za hitrost zvoka v zraku
-            float c = 331.3f * sqrtf(1.0f + (t / 273.15f));
+        float t = bme.readTemperature();      // °C
+        float rh = bme.readHumidity();        // %
+        float p = bme.readPressure();         // Pa
 
+        if (std::isfinite(t) && std::isfinite(rh) && std::isfinite(p)) {
             current_temperature.store(t);
+            current_humidity.store(rh);
+            current_pressure.store(p);
+
+            float c = GccPhat::calculateSoundSpeed(t, rh, p);
             current_sound_speed.store(c);
 
             // Dinamično posodobimo hitrost zvoka v DSP razredu
-            apply_dsp_calibration(t);
+            apply_dsp_calibration(t, rh, p);
         }
     }
 }
@@ -1073,7 +1097,9 @@ void setup() {
             device_config.wifi_ssid.c_str(), device_config.wifi_password.c_str());
     }
 
-    if (!apply_dsp_calibration(current_temperature.load())) {
+    if (!apply_dsp_calibration(current_temperature.load(),
+                               current_humidity.load(),
+                               current_pressure.load())) {
         Serial.println("Initial DSP calibration is invalid");
         while (true) {
             delay(1000);

@@ -15,8 +15,10 @@ struct DoaResult {
 
 class GccPhat {
 public:
-    GccPhat(float sample_rate, float mic_distance_m, float temp_c);
-    GccPhat(float sample_rate, float mic_distance_m, float temp_c, size_t window_size);
+    GccPhat(float sample_rate, float mic_distance_m, float temp_c = 20.0f,
+            float humidity_pct = 50.0f, float pressure_pa = 101325.0f);
+    GccPhat(float sample_rate, float mic_distance_m, float temp_c, size_t window_size,
+            float humidity_pct = 50.0f, float pressure_pa = 101325.0f);
     ~GccPhat();
 
     // Initializes the default 1024-sample window (or the size supplied to the
@@ -27,7 +29,12 @@ public:
     // Atomically switches the sample rate and FFT size after successful setup.
     bool configure(float sample_rate, size_t window_size);
     DoaResult process(const int32_t* left_channel, const int32_t* right_channel);
+    void updateCalibration(float distance_m, float temp_c, float humidity_pct,
+                           float pressure_pa, float corr_thresh, float db_thresh);
     void updateCalibration(float distance_m, float temp_c, float corr_thresh, float db_thresh);
+    static float calculateSoundSpeed(float temp_c, float humidity_pct = 50.0f,
+                                     float pressure_pa = 101325.0f);
+    float getSoundSpeed() const { return c_sound; }
 
 private:
     float fs;
@@ -43,6 +50,5 @@ private:
     float* fft_x2;
     float* ccorr;
     
-    float calculateSoundSpeed(float temp_c);
     void releaseBuffers();
 };

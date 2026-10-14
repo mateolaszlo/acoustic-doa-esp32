@@ -5,3 +5,6 @@ managed_components/
 .vscode/launch.json
 .vscode/ipch/
 .vscode/settings.json
+AGENTS.md
+skills-lock.json
+.agents/

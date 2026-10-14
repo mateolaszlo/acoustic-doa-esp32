@@ -38,18 +38,20 @@ static int wrap_correlation_index(int lag, int fft_size) {
     return lag;
 }
 
-GccPhat::GccPhat(float sample_rate, float mic_distance_m, float temp_c)
+GccPhat::GccPhat(float sample_rate, float mic_distance_m, float temp_c,
+                 float humidity_pct, float pressure_pa)
     : fs(sample_rate), d(mic_distance_m), correlation_threshold(0.35f),
       db_threshold(-45.0f), fft_size(0), window(nullptr), fft_x1(nullptr),
       fft_x2(nullptr), ccorr(nullptr) {
-    c_sound = calculateSoundSpeed(temp_c);
+    c_sound = calculateSoundSpeed(temp_c, humidity_pct, pressure_pa);
 }
 
-GccPhat::GccPhat(float sample_rate, float mic_distance_m, float temp_c, size_t window_size)
+GccPhat::GccPhat(float sample_rate, float mic_distance_m, float temp_c,
+                 size_t window_size, float humidity_pct, float pressure_pa)
     : fs(sample_rate), d(mic_distance_m), correlation_threshold(0.35f),
       db_threshold(-45.0f), fft_size(0), window(nullptr), fft_x1(nullptr),
       fft_x2(nullptr), ccorr(nullptr) {
-    c_sound = calculateSoundSpeed(temp_c);
+    c_sound = calculateSoundSpeed(temp_c, humidity_pct, pressure_pa);
     fft_size = window_size;
 }
 
@@ -57,15 +59,50 @@ GccPhat::~GccPhat() {
     releaseBuffers();
 }
 
-float GccPhat::calculateSoundSpeed(float temp_c) {
-    return 331.3f * sqrtf(1.0f + (temp_c / 273.15f));
+float GccPhat::calculateSoundSpeed(float temp_c, float humidity_pct, float pressure_pa) {
+    // Zaščita pred neveljavnimi odčitki senzorja
+    if (!std::isfinite(temp_c) || temp_c < -40.0f || temp_c > 85.0f) {
+        temp_c = 20.0f;
+    }
+    if (!std::isfinite(humidity_pct) || humidity_pct < 0.0f || humidity_pct > 100.0f) {
+        humidity_pct = 50.0f;
+    }
+    if (!std::isfinite(pressure_pa) || pressure_pa < 30000.0f || pressure_pa > 120000.0f) {
+        pressure_pa = 101325.0f;
+    }
+
+    // 1. Nasičeni parni tlak vode (Magnus-Tetens v Pa)
+    float p_sat = 610.78f * expf((17.27f * temp_c) / (temp_c + 237.3f));
+
+    // 2. Parcialni tlak vodne pare in molski ulomek x_w
+    float p_vapor = (humidity_pct / 100.0f) * p_sat;
+    float x_w = p_vapor / pressure_pa;
+    if (x_w < 0.0f) {
+        x_w = 0.0f;
+    } else if (x_w > 0.2f) {
+        x_w = 0.2f;
+    }
+
+    // 3. Termodinamske konstante vlažnega zraka
+    constexpr float R_gas = 8.31446f; // J/(mol*K)
+    float molar_mass = 0.0289654f * (1.0f - 0.3780f * x_w); // kg/mol
+    float gamma = 1.4003f - 0.07f * x_w;
+    float temp_k = temp_c + 273.15f;
+
+    // 4. Hitrost zvoka c = sqrt(gamma * R * T / M)
+    return sqrtf((gamma * R_gas * temp_k) / molar_mass);
+}
+
+void GccPhat::updateCalibration(float distance_m, float temp_c, float humidity_pct,
+                               float pressure_pa, float corr_thresh, float db_thresh) {
+    this->d = distance_m;
+    this->c_sound = calculateSoundSpeed(temp_c, humidity_pct, pressure_pa);
+    this->correlation_threshold = corr_thresh;
+    this->db_threshold = db_thresh;
 }
 
 void GccPhat::updateCalibration(float distance_m, float temp_c, float corr_thresh, float db_thresh) {
-    this->d = distance_m;
-    this->c_sound = calculateSoundSpeed(temp_c);
-    this->correlation_threshold = corr_thresh;
-    this->db_threshold = db_thresh;
+    updateCalibration(distance_m, temp_c, 50.0f, 101325.0f, corr_thresh, db_thresh);
 }
 
 bool GccPhat::init() {
