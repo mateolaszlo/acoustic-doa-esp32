@@ -15,9 +15,17 @@ The project includes a custom PlatformIO board definition at [boards/esp32-s3-de
 | I2S bit clock (BCLK/SCK) | GPIO 4 | `I2S_BCLK_PIN` |
 | I2S word select (WS/LRCLK) | GPIO 5 | `I2S_WS_PIN` |
 | I2S microphone data | GPIO 6 | `I2S_DIN_PIN` |
-| I2C SDA | GPIO 8 | `I2C_SDA_PIN` |
-| I2C SCL | GPIO 9 | `I2C_SCL_PIN` |
+| I2C SDA (BME280) | GPIO 8 | `I2C_SDA_PIN` |
+| I2C SCL (BME280) | GPIO 9 | `I2C_SCL_PIN` |
+| SPI TFT CS | GPIO 10 | `TFT_CS_PIN` |
+| SPI TFT MOSI / SDA | GPIO 11 | `TFT_MOSI_PIN` |
+| SPI TFT SCLK / SCK | GPIO 12 | `TFT_SCLK_PIN` |
+| SPI TFT DC / A0 | GPIO 13 | `TFT_DC_PIN` |
+| SPI TFT RST / RESET | GPIO 14 | `TFT_RST_PIN` |
 | Setup button | GPIO 0 | `SETUP_BUTTON_PIN` |
+
+> [!CAUTION]
+> **OPI PSRAM Pin Restrictions:** On the ESP32-S3-DevKitC-1-N16R8, GPIO 33, 34, 35, 36, and 37 are internally dedicated to the 8-bit Octal SPI PSRAM. Never connect display or sensor signals to these pins, as doing so causes instant memory corruption or kernel panics.
 
 GPIO numbers and peripheral setup are defined in [main.cpp](../src/main.cpp) and [i2s_sampler.cpp](../src/i2s_sampler.cpp).
 
@@ -44,24 +52,36 @@ The I2S driver is configured as master receive, 32-bit samples, stereo left/righ
 
 Confirm the microphone module voltage and slot-selection wiring from its datasheet before connecting it. Do not connect a microphone that drives a separate data line directly to the same ESP32 data input without an appropriate bus design.
 
-## OLED and BME280 I2C wiring
+## SPI TFT Display Wiring (1.8" 128x160 KMR-1.8 / ST7735)
 
-The OLED and BME280 share the same I2C bus:
+The display uses native ESP32-S3 FSPI (SPI2) pins for hardware-accelerated rendering up to 40 MHz:
 
-| I2C signal | ESP32-S3 | OLED | BME280 |
-|---|---:|---|---|
-| SDA | GPIO 8 | SDA | SDA |
-| SCL | GPIO 9 | SCL | SCL |
-| Ground | GND | GND | GND |
-| Power | 3.3 V as required | VCC | VIN/VDD |
+| KMR-1.8 Pin | ESP32-S3 | Function | Notes |
+|---|---|---|---|
+| **CS** | GPIO 10 | Chip Select | Native FSPI CS0 |
+| **SDA / MOSI** | GPIO 11 | Master Out Slave In | Native FSPI D |
+| **SCK / SCLK** | GPIO 12 | Clock | Native FSPI CLK |
+| **A0 / DC** | GPIO 13 | Data / Command | Native FSPI Q pin repurposed for DC |
+| **RESET / RST** | GPIO 14 | Reset | Active-low hardware reset |
+| **LED** | 3.3 V | Backlight | Connect to 3.3V (or via current-limiting resistor) |
+| **GND** | GND | Ground | Common system ground |
+| **VCC** | 5 V (or 3.3 V) | Power input | Connect to 5V (VIN) if jumper J1 is open, or 3.3V if J1 is bridged |
 
-The bus is initialized at 400 kHz.
+> [!TIP]
+> **KMR-1.8 Jumper J1:** The KMR-1.8 board includes an onboard 3.3V LDO regulator. If feeding 3.3V to VCC without closing jumper `J1`, the voltage drop across the regulator may cause a faint screen or initialization failure. Connect VCC to the 5V rail (VIN) of the DevKit, or bridge `J1` with solder to power directly from 3.3V.
 
-The OLED is expected at address `0x3C`.
+## BME280 I2C Wiring
 
-The BME280 is probed first at `0x76`, then at `0x77`.
+The Bosch BME280 environmental sensor communicates over I2C:
 
-Both I2C devices must have compatible voltage levels. Pull-up resistors may already be present on breakout boards; avoid adding excessive parallel pull-ups.
+| I2C signal | ESP32-S3 | BME280 |
+|---|---:|---|
+| SDA | GPIO 8 | SDA |
+| SCL | GPIO 9 | SCL |
+| Ground | GND | GND |
+| Power | 3.3 V | VIN/VDD |
+
+The bus is initialized at 400 kHz Fast I2C. The BME280 is probed first at `0x76`, then at `0x77`.
 
 ## Setup button
 

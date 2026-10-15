@@ -162,5 +162,10 @@ timeouts and retries while still detecting a stuck task; deadline counters separ
 processing that is too slow even when the task continues to run.
 
 ## Display
-
-The OLED shows a semicircular radar with the latest valid angle. The lower line shows angle, local temperature, and calculated sound speed. The display is updated when a valid event arrives rather than at a fixed independent refresh rate.
+ 
+The 128x160 color SPI TFT (ST7735 / KMR-1.8) shows a semicircular radar with the latest valid sound angle. Rendering is double-buffered in RAM via a 40 KB `GFXcanvas16` framebuffer to eliminate screen flicker, then transferred over 40 MHz SPI via `drawRGBBitmap`.
+ 
+- The upper panel displays the semicircular angle grid with angle labels (-90°, 0°, +90°).
+- The dynamic radar needle is color-coded by calibrated sound pressure level ($> 75\text{ dB SPL}$ red, $> 60\text{ dB SPL}$ yellow, otherwise green).
+- The lower telemetry panel displays detected angle, calibrated volume in dB SPL, BME280 temperature, calculated moist air sound speed, and live API connectivity status (`API ONLINE` / `API OFFLINE`).
+- The display is updated when a valid event arrives from `display_queue` or when backend reachability state changes.

@@ -6,7 +6,7 @@
 - ESP32-S3-DevKitC-1-N16R8 (16 MB flash, 8 MB OPI PSRAM).
 - USB data cable.
 - Two compatible I2S microphones.
-- SSD1306 I2C OLED.
+- 1.8" SPI TFT display (ST7735 / KMR-1.8 128x160).
 - BME280 I2C sensor.
 - A backend reachable from the ESP32 over the configured network.
 
@@ -18,7 +18,7 @@ The project is configured in [platformio.ini](../platformio.ini):
 - Platform: Espressif 32
 - Framework: Arduino
 - Serial monitor speed: 115200
-- Libraries: ArduinoJson, Adafruit SSD1306, Adafruit GFX, Adafruit BME280
+- Libraries: ArduinoJson, Adafruit GFX, Adafruit ST7735 and ST7789 Library, Adafruit BME280
 
 Build from the project root:
 

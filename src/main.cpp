@@ -7,7 +7,8 @@
 #include <Preferences.h>
 #include <ArduinoJson.h>
 #include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
+#include <SPI.h>
+#include <Adafruit_ST7735.h>
 #include <Adafruit_BME280.h>
 #include <esp_task_wdt.h>
 #include <atomic>
@@ -17,9 +18,17 @@
 
 #include "gcc_phat.h"
 
-// I2C Pini za ESP32-S3
+// I2C Pini za ESP32-S3 (BME280)
 #define I2C_SDA_PIN 8
 #define I2C_SCL_PIN 9
+
+// SPI Pini za KMR-1.8 TFT (ST7735)
+#define TFT_CS_PIN 10
+#define TFT_MOSI_PIN 11
+#define TFT_SCLK_PIN 12
+#define TFT_DC_PIN 13
+#define TFT_RST_PIN 14
+#define TFT_INVERT_COLORS false
 #define SETUP_BUTTON_PIN 0
 #define SETUP_BOOT_DELAY_MS 1500
 #define SETUP_AP_NAME "Acoustic-Locator-Setup"
@@ -84,7 +93,9 @@ struct NetworkMeasurement {
 static GccPhat doa(44100, 0.08f, 20.0f); // 44.1 kHz, 8 cm, 20 °C
 static QueueHandle_t display_queue;
 static QueueHandle_t network_queue;
-static Adafruit_SSD1306 display(128, 64, &Wire, -1);
+static SPIClass tft_spi(FSPI);
+static Adafruit_ST7735 display(&tft_spi, TFT_CS_PIN, TFT_DC_PIN, TFT_RST_PIN);
+static GFXcanvas16 canvas(128, 160);
 static SemaphoreHandle_t doa_mutex;
 static SemaphoreHandle_t config_mutex;
 static SemaphoreHandle_t i2s_mutex;
@@ -885,64 +896,89 @@ void network_task(void *param) {
     }
 }
 
-void draw_radar_ui(Adafruit_SSD1306 &display, float angle_deg, float temp_c,
-                   float c_sound, float db, bool api_available) {
-    display.clearDisplay();
+void draw_radar_ui(float angle_deg, float temp_c, float c_sound,
+                   float db_spl, bool api_available) {
+    canvas.fillScreen(ST77XX_BLACK);
 
-    // 1. Izris polkrožnega radarja (središče spodaj na x=64, y=52, polmer r=42)
+    // 1. Izris polkrožnega radarja (središče na x=64, y=75, polmer r=52)
     const int cx = 64;
-    const int cy = 52;
-    const int r = 40;
+    const int cy = 75;
+    const int r = 52;
 
-    // Lok od -90° do +90°
-    display.drawCircle(cx, cy, r, SSD1306_WHITE);
-    // Prekrijemo spodnjo polovico kroga, da ostane le zgornji polkrog
-    display.fillRect(0, cy + 1, 128, 64 - cy, SSD1306_BLACK);
-    display.drawLine(cx - r, cy, cx + r, cy, SSD1306_WHITE); // Osnovna linija
+    // Barvna mreža radarja (temno zelena: 0x03E0)
+    canvas.drawCircle(cx, cy, r, 0x03E0);
+    canvas.drawCircle(cx, cy, r / 2, 0x03E0);
+    // Prekrijemo spodnjo polovico kroga
+    canvas.fillRect(0, cy + 1, 128, r + 2, ST77XX_BLACK);
+    canvas.drawLine(cx - r, cy, cx + r, cy, 0x03E0);
 
-    // Oznake -90, 0, +90
-    display.setTextSize(1);
-    display.setTextColor(SSD1306_WHITE);
-    display.setCursor(cx - r - 20, cy - 8); display.print("-90");
-    display.setCursor(cx - 6, cy - r - 9);  display.print("0");
-    display.setCursor(cx + r + 3, cy - 8);  display.print("+90");
+    // Oznake kotov
+    canvas.setTextSize(1);
+    canvas.setTextColor(ST77XX_WHITE);
+    canvas.setCursor(4, cy - 10);
+    canvas.print("-90");
+    canvas.setCursor(cx - 6, cy - r - 10);
+    canvas.print("0");
+    canvas.setCursor(104, cy - 10);
+    canvas.print("+90");
 
-    // 2. Izris igle (smer vira zvoka)
-    // Kot pretvorimo v radiane (0° je naravnost navzgor = -90° v standardnem koordinatnem sistemu)
+    // 2. Izris igle (barva glede na glasnost: rdeča > 75 dB SPL, rumena > 60 dB SPL, sicer zelena)
+    uint16_t needle_color = (db_spl > 75.0f) ? ST77XX_RED : ((db_spl > 60.0f) ? ST77XX_YELLOW : ST77XX_GREEN);
     float rad = (angle_deg - 90.0f) * (M_PI / 180.0f);
-    int target_x = cx + (int)(r * cosf(rad));
-    int target_y = cy + (int)(r * sinf(rad));
+    int target_x = cx + static_cast<int>(r * cosf(rad));
+    int target_y = cy + static_cast<int>(r * sinf(rad));
 
-    display.drawLine(cx, cy, target_x, target_y, SSD1306_WHITE);
-    display.fillCircle(target_x, target_y, 2, SSD1306_WHITE); // Pika na vrhu igle
+    canvas.drawLine(cx, cy, target_x, target_y, needle_color);
+    canvas.fillCircle(target_x, target_y, 3, needle_color);
 
-    // 3. Spodnja vrstica s telemetrijo (BME280 + Akustika)
-    display.setCursor(0, 56);
+    // 3. Spodnja nadzorna plošča s telemetrijo (y = 84 do 159)
+    canvas.drawFastHLine(0, 84, 128, 0x7BEF); // Siva ločilna črta
+
+    canvas.setTextSize(2);
+    canvas.setTextColor(ST77XX_CYAN);
+    canvas.setCursor(16, 92);
+    canvas.printf("%+5.1f deg", angle_deg);
+
+    canvas.setTextSize(1);
+    canvas.setTextColor(ST77XX_WHITE);
+    canvas.setCursor(8, 116);
+    canvas.printf("Glasnost: %.1f dB", db_spl);
+
+    canvas.setCursor(8, 130);
+    canvas.printf("Okolje:   %.1fC (%.0fm/s)", temp_c, c_sound);
+
+    canvas.setCursor(8, 146);
     if (api_available) {
-        display.printf("%+.1f deg | %.1fC | %.0fm/s", angle_deg, temp_c, c_sound);
+        canvas.setTextColor(ST77XX_GREEN);
+        canvas.print("Status:   API ONLINE");
     } else {
-        display.print("API OFFLINE");
+        canvas.setTextColor(ST77XX_RED);
+        canvas.print("Status:   API OFFLINE");
     }
 
-    display.display();
+    // Pošlji celotno sliko na zaslon v enem kosu prek SPI
+    display.drawRGBBitmap(0, 0, canvas.getBuffer(), 128, 160);
 }
 
 void init_sensors_and_display() {
-    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN, 400000); // 400 kHz Fast I2C
+    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN, 400000); // 400 kHz Fast I2C za BME280
 
-    // 1. Zagon OLED
-    display_initialized = display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
-    if (!display_initialized) {
-        Serial.println("SSD1306 ni najden!");
+    // 1. Zagon SPI TFT zaslona KMR-1.8 (ST7735)
+    tft_spi.begin(TFT_SCLK_PIN, -1, TFT_MOSI_PIN, -1);
+    display.initR(INITR_BLACKTAB); // Če so barve obrnjene ali odrezane, INITR_GREENTAB / INITR_18BLACKTAB
+    display.setSPISpeed(40000000); // 40 MHz SPI
+    display.setRotation(0);        // Pokončni način 128x160
+    if (TFT_INVERT_COLORS) {
+        display.invertDisplay(true);
     }
-    if (display_initialized) {
-        display.clearDisplay();
-        display.setTextSize(1);
-        display.setTextColor(SSD1306_WHITE);
-        display.setCursor(0, 10);
-        display.println("Inicializacija...");
-        display.display();
-    }
+    display_initialized = true;
+
+    canvas.fillScreen(ST77XX_BLACK);
+    canvas.setTextSize(1);
+    canvas.setTextColor(ST77XX_WHITE);
+    canvas.setCursor(10, 30);
+    canvas.println("Inicializacija...");
+    display.drawRGBBitmap(0, 0, canvas.getBuffer(), 128, 160);
 
     // 2. Zagon BME280
     bme_initialized = bme.begin(0x76, &Wire);
@@ -968,8 +1004,8 @@ void init_sensors_and_display() {
     }
 
     if (display_initialized) {
-        draw_radar_ui(display, 0.0f, current_temperature.load(),
-                      current_sound_speed.load(), -100.0f,
+        draw_radar_ui(0.0f, current_temperature.load(),
+                      current_sound_speed.load(), 0.0f,
                       server_available.load());
     }
 }
@@ -1014,15 +1050,16 @@ void sensor_display_task(void *param) {
             last_event = event;
             float temp = current_temperature.load();
             float speed = current_sound_speed.load();
+            const float calibrated_db = event.rms_db + db_spl_offset.load();
 
             Serial.printf("Zaznan kot: %.1f deg, R: %.2f, dB: %.1f\n",
                           event.angle_deg, event.confidence,
-                          event.rms_db + db_spl_offset.load());
+                          calibrated_db);
 
             if (display_initialized) {
                 last_server_available = server_available.load();
-                draw_radar_ui(display, event.angle_deg, temp, speed,
-                              event.rms_db, last_server_available);
+                draw_radar_ui(event.angle_deg, temp, speed,
+                              calibrated_db, last_server_available);
             }
         }
 
@@ -1030,9 +1067,10 @@ void sensor_display_task(void *param) {
         if (display_initialized &&
             current_server_available != last_server_available) {
             last_server_available = current_server_available;
-            draw_radar_ui(display, last_event.angle_deg,
+            const float calibrated_db = last_event.rms_db + db_spl_offset.load();
+            draw_radar_ui(last_event.angle_deg,
                           current_temperature.load(),
-                          current_sound_speed.load(), last_event.rms_db,
+                          current_sound_speed.load(), calibrated_db,
                           last_server_available);
         }
     }

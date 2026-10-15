@@ -41,12 +41,16 @@ Check:
 
 The device retries Wi-Fi connection in the network task and logs HTTP failures, but it does not show a full Wi-Fi diagnostic page.
 
-## OLED is blank
+## SPI TFT Display (KMR-1.8 / ST7735) Issues
 
-- Confirm SDA is GPIO 8 and SCL is GPIO 9.
-- Confirm the OLED is powered and grounded.
-- Confirm the address is `0x3C`.
-- Check serial output for `SSD1306 ni najden!`.
+### Display is completely blank / white
+- Confirm SPI wiring: CS=GPIO 10, MOSI/SDA=GPIO 11, SCLK/SCK=GPIO 12, DC/A0=GPIO 13, RST=GPIO 14.
+- Confirm LED pin is connected to 3.3V (backlight power).
+- **Power supply & Jumper J1**: If powering VCC with 3.3V, check the `J1` zero-ohm jumper on the back of the KMR-1.8 board. Unbridged J1 drops voltage through the onboard LDO; bridge J1 with solder for 3.3V input, or power VCC from the 5V rail (VIN).
+
+### Inverted colors (e.g., white background instead of black)
+- Different ST7735 revisions use different color inversion standards. In `src/main.cpp`, change `#define TFT_INVERT_COLORS false` to `true`.
+- If a 1–2 pixel border or static noise is visible at screen edges, change `display.initR(INITR_BLACKTAB)` in `init_sensors_and_display()` to `INITR_GREENTAB` or `INITR_18BLACKTAB`.
 
 ## BME280 is not detected
 
