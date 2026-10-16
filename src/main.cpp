@@ -183,9 +183,11 @@ static String setup_page() {
     page += "<title>Acoustic Locator Setup</title></head><body>";
     page += "<h1>Acoustic Locator Setup</h1><form method='POST' action='/save'>";
     page += "Wi-Fi SSID<br><input name='wifi_ssid' value='" + device_config.wifi_ssid + "'><br>";
-    page += "Wi-Fi password<br><input type='password' name='wifi_password'><br>";
+    const String pass_hint = device_config.wifi_password.length() > 0 ? " (leave blank to retain stored)" : "";
+    page += "Wi-Fi password" + pass_hint + "<br><input type='password' name='wifi_password'><br>";
     page += "API URL<br><input name='api_url' value='" + device_config.api_url + "'><br>";
-    page += "API key<br><input name='api_key' value='" + device_config.api_key + "'><br>";
+    const String api_key_hint = device_config.api_key.length() > 0 ? " (leave blank to retain stored)" : "";
+    page += "API key" + api_key_hint + "<br><input type='password' name='api_key'><br>";
     page += "Device ID<br><input type='number' name='device_id' value='" +
             String(device_config.device_id) + "'><br>";
     page += "Microphone distance (m)<br><input name='mic_distance' value='" +
@@ -203,7 +205,6 @@ static void handle_setup_root() {
 static void handle_setup_save() {
     if (!setup_server.hasArg("wifi_ssid") ||
         !setup_server.hasArg("api_url") ||
-        !setup_server.hasArg("api_key") ||
         !setup_server.hasArg("device_id") ||
         !setup_server.hasArg("mic_distance") ||
         !setup_server.hasArg("spl_offset")) {
@@ -212,12 +213,15 @@ static void handle_setup_save() {
     }
 
     String wifi_password = setup_server.arg("wifi_password");
+    String api_key = setup_server.arg("api_key");
     device_config.wifi_ssid = setup_server.arg("wifi_ssid");
     if (wifi_password.length() > 0) {
         device_config.wifi_password = wifi_password;
     }
+    if (api_key.length() > 0) {
+        device_config.api_key = api_key;
+    }
     device_config.api_url = setup_server.arg("api_url");
-    device_config.api_key = setup_server.arg("api_key");
     device_config.device_id = setup_server.arg("device_id").toInt();
     device_config.microphone_distance_m = setup_server.arg("mic_distance").toFloat();
     device_config.db_spl_offset = setup_server.arg("spl_offset").toFloat();

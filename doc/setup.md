@@ -66,7 +66,7 @@ The setup form contains:
 - Wi-Fi SSID.
 - Wi-Fi password. Leave blank to retain the stored password.
 - API URL.
-- API key.
+- API key. Input type password; leave blank to retain the stored key.
 - Backend device ID.
 - Microphone distance in meters.
 - dB SPL offset.
