@@ -30,7 +30,7 @@
 #define TFT_RST_PIN 14
 #define TFT_INVERT_COLORS false
 #define SETUP_BUTTON_PIN 0
-#define SETUP_BOOT_DELAY_MS 1500
+#define SETUP_BOOT_DELAY_MS 3000
 #define SETUP_AP_NAME "Acoustic-Locator-Setup"
 #define SETUP_AP_PASSWORD "configure123"
 #define CONFIG_REFRESH_INTERVAL_MS 60000UL
@@ -264,8 +264,87 @@ static void log_i2c_devices() {
     }
 }
 
+static void show_boot_prompt(uint32_t remaining_ms, uint32_t total_ms) {
+    if (!display_initialized) return;
+    canvas.fillScreen(ST77XX_BLACK);
+
+    // Naslov
+    canvas.setTextSize(1);
+    canvas.setTextColor(ST77XX_CYAN);
+    canvas.setCursor(16, 18);
+    canvas.println("ACOUSTIC LOCATOR");
+    canvas.drawFastHLine(10, 30, 108, 0x7BEF);
+
+    // Poziv za setup
+    canvas.setTextColor(ST77XX_WHITE);
+    canvas.setCursor(14, 46);
+    canvas.println("Press BOOT button");
+    canvas.setCursor(14, 58);
+    canvas.println("to enter Setup");
+
+    // Vrstica napredka
+    const int bar_x = 14;
+    const int bar_y = 82;
+    const int bar_w = 100;
+    const int bar_h = 8;
+    canvas.drawRect(bar_x, bar_y, bar_w, bar_h, ST77XX_WHITE);
+    int fill_w = (remaining_ms * (bar_w - 2)) / total_ms;
+    if (fill_w > 0) {
+        canvas.fillRect(bar_x + 1, bar_y + 1, fill_w, bar_h - 2, ST77XX_CYAN);
+    }
+
+    // Besedilo odštevanja
+    canvas.setTextColor(0x7BEF);
+    canvas.setCursor(14, 104);
+    int sec = (remaining_ms + 999) / 1000;
+    canvas.printf("Starting in %d s...", sec);
+
+    display.drawRGBBitmap(0, 0, canvas.getBuffer(), 128, 160);
+}
+
+static void show_setup_portal_screen() {
+    if (!display_initialized) return;
+    canvas.fillScreen(ST77XX_BLACK);
+
+    canvas.setTextSize(1);
+    canvas.setTextColor(ST77XX_YELLOW);
+    canvas.setCursor(16, 12);
+    canvas.println("=== SETUP MODE ===");
+    canvas.drawFastHLine(10, 24, 108, 0x7BEF);
+
+    canvas.setTextColor(ST77XX_WHITE);
+    canvas.setCursor(8, 34);
+    canvas.println("Connect to Wi-Fi AP:");
+    canvas.setTextColor(ST77XX_CYAN);
+    canvas.setCursor(8, 46);
+    canvas.println(SETUP_AP_NAME);
+
+    canvas.setTextColor(ST77XX_WHITE);
+    canvas.setCursor(8, 64);
+    canvas.println("Password:");
+    canvas.setTextColor(ST77XX_CYAN);
+    canvas.setCursor(8, 76);
+    canvas.println(SETUP_AP_PASSWORD);
+
+    canvas.setTextColor(ST77XX_WHITE);
+    canvas.setCursor(8, 94);
+    canvas.println("Open in browser:");
+    canvas.setTextColor(ST77XX_GREEN);
+    canvas.setCursor(8, 106);
+    canvas.println("http://192.168.4.1");
+
+    canvas.setTextColor(0x7BEF);
+    canvas.setCursor(8, 130);
+    canvas.println("Save & reboot");
+    canvas.setCursor(8, 142);
+    canvas.println("when finished.");
+
+    display.drawRGBBitmap(0, 0, canvas.getBuffer(), 128, 160);
+}
+
 static void enter_setup_mode() {
     setup_mode = true;
+    show_setup_portal_screen();
     WiFi.mode(WIFI_AP);
     if (!WiFi.softAP(SETUP_AP_NAME, SETUP_AP_PASSWORD)) {
         Serial.println("Setup access point could not be started");
@@ -295,8 +374,22 @@ static void enter_setup_mode() {
 
 static void check_setup_button() {
     pinMode(SETUP_BUTTON_PIN, INPUT_PULLUP);
-    delay(SETUP_BOOT_DELAY_MS);
-    if (digitalRead(SETUP_BUTTON_PIN) == LOW) {
+    const uint32_t total_ms = SETUP_BOOT_DELAY_MS;
+    const uint32_t start_ms = millis();
+    bool button_pressed = false;
+
+    while (millis() - start_ms < total_ms) {
+        if (digitalRead(SETUP_BUTTON_PIN) == LOW) {
+            button_pressed = true;
+            break;
+        }
+        uint32_t elapsed = millis() - start_ms;
+        uint32_t remaining = (elapsed < total_ms) ? (total_ms - elapsed) : 0;
+        show_boot_prompt(remaining, total_ms);
+        delay(40);
+    }
+
+    if (button_pressed) {
         enter_setup_mode();
     }
 }
@@ -1019,14 +1112,6 @@ void init_sensors_and_display() {
             current_sound_speed.store(GccPhat::calculateSoundSpeed(t, rh, p));
         }
     }
-
-    if (display_initialized) {
-        draw_radar_ui(0.0f, current_temperature.load(), 
-                      current_humidity.load(),
-                      current_pressure.load(),
-                      current_sound_speed.load(), 0.0f,
-                      server_available.load());
-    }
 }
 
 // Periodično branje BME280
@@ -1106,14 +1191,25 @@ void setup() {
                   ESP.getPsramSize(),
                   ESP.getFreePsram());
     load_device_config();
+
+    // 1. Zagon zaslona in BME280 senzorja
+    init_sensors_and_display();
+
+    // 2. Preveri gumb za nastavitve (prikaze poziv in odstevalnik na zaslonu)
     check_setup_button();
     if (!device_configured) {
         Serial.println(
             "Device is not configured. Boot normally, then press and hold GPIO 0 during startup.");
     }
 
-    // 1. OLED in BME280 zagon (Arduino)
-    init_sensors_and_display();
+    // 3. Po izhodu iz boot okna narisi zacetni radar UI pred zagonom nalog
+    if (display_initialized) {
+        draw_radar_ui(0.0f, current_temperature.load(), 
+                      current_humidity.load(),
+                      current_pressure.load(),
+                      current_sound_speed.load(), 0.0f,
+                      server_available.load());
+    }
 
     // Ustvari FreeRTOS objekte za prenos rezultatov in zaščito DSP konfiguracije
     display_queue = xQueueCreate(10, sizeof(DoaResult));

@@ -50,14 +50,11 @@ GPIO 0 is also an ESP32-S3 boot strap pin. Do **not** hold GPIO 0 low while pres
 
 With the current firmware:
 
-1. Boot or reset the board normally with GPIO 0 released.
-2. During the first approximately 1.5 seconds of application startup, press and hold GPIO 0 low.
-3. The firmware starts the setup AP.
-4. Connect to:
-   - SSID: `Acoustic-Locator-Setup`
-   - Password: `configure123`
-5. The DNS server redirects requests to the ESP32 setup page.
-6. If automatic captive-portal detection does not open the page, visit `http://192.168.4.1`.
+1. Boot or reset the board normally with GPIO 0 (BOOT button) released.
+2. The TFT display turns on immediately and shows a 3-second countdown with the message: **"Press BOOT button to enter Setup"**.
+3. Press and hold the BOOT button (GPIO 0) during this window.
+4. The display switches to **SETUP MODE**, showing the Wi-Fi AP name (`Acoustic-Locator-Setup`), password (`configure123`), and portal URL (`http://192.168.4.1`).
+5. Connect your phone or computer to the AP and visit `http://192.168.4.1`.
 7. Enter the required values and submit the form.
 8. The firmware writes values to NVS and restarts.
 
