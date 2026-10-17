@@ -376,6 +376,7 @@ static void check_setup_button() {
     pinMode(SETUP_BUTTON_PIN, INPUT_PULLUP);
     const uint32_t total_ms = SETUP_BOOT_DELAY_MS;
     const uint32_t start_ms = millis();
+    uint32_t last_draw_ms = 0;
     bool button_pressed = false;
 
     while (millis() - start_ms < total_ms) {
@@ -383,10 +384,15 @@ static void check_setup_button() {
             button_pressed = true;
             break;
         }
-        uint32_t elapsed = millis() - start_ms;
-        uint32_t remaining = (elapsed < total_ms) ? (total_ms - elapsed) : 0;
-        show_boot_prompt(remaining, total_ms);
-        delay(40);
+
+        const uint32_t now = millis();
+        if (last_draw_ms == 0 || now - last_draw_ms >= 100) {
+            last_draw_ms = now;
+            uint32_t elapsed = now - start_ms;
+            uint32_t remaining = (elapsed < total_ms) ? (total_ms - elapsed) : 0;
+            show_boot_prompt(remaining, total_ms);
+        }
+        delay(10);
     }
 
     if (button_pressed) {
@@ -1076,19 +1082,12 @@ void init_sensors_and_display() {
     // 1. Zagon SPI TFT zaslona KMR-1.8 (ST7735)
     tft_spi.begin(TFT_SCLK_PIN, -1, TFT_MOSI_PIN, -1);
     display.initR(INITR_BLACKTAB); // Če so barve obrnjene ali odrezane, INITR_GREENTAB / INITR_18BLACKTAB
-    display.setSPISpeed(40000000); // 40 MHz SPI
+    display.setSPISpeed(27000000); // 27 MHz SPI (optimalno za ST7735)
     display.setRotation(0);        // Pokončni način 128x160
     if (TFT_INVERT_COLORS) {
         display.invertDisplay(true);
     }
     display_initialized = true;
-
-    canvas.fillScreen(ST77XX_BLACK);
-    canvas.setTextSize(1);
-    canvas.setTextColor(ST77XX_WHITE);
-    canvas.setCursor(10, 30);
-    canvas.println("Inicializacija...");
-    display.drawRGBBitmap(0, 0, canvas.getBuffer(), 128, 160);
 
     // 2. Zagon BME280
     bme_initialized = bme.begin(0x76, &Wire);

@@ -163,7 +163,7 @@ processing that is too slow even when the task continues to run.
 
 ## Display
  
-The 128x160 color SPI TFT (ST7735 / KMR-1.8) shows a semicircular radar with the latest valid sound angle. Rendering is double-buffered in RAM via a 40 KB `GFXcanvas16` framebuffer to eliminate screen flicker, then transferred over 40 MHz SPI via `drawRGBBitmap`.
+The 128x160 color SPI TFT (ST7735 / KMR-1.8) shows a semicircular radar with the latest valid sound angle. Rendering is double-buffered in RAM via a 40 KB `GFXcanvas16` framebuffer to eliminate screen flicker, then transferred over 27 MHz SPI via `drawRGBBitmap`.
  
 - The upper panel displays the semicircular angle grid with angle labels (-90°, 0°, +90°).
 - The dynamic radar needle is color-coded by calibrated sound pressure level ($> 75\text{ dB SPL}$ red, $> 60\text{ dB SPL}$ yellow, otherwise green).

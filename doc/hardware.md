@@ -54,7 +54,7 @@ Confirm the microphone module voltage and slot-selection wiring from its datashe
 
 ## SPI TFT Display Wiring (1.8" 128x160 KMR-1.8 / ST7735)
 
-The display uses native ESP32-S3 FSPI (SPI2) pins for hardware-accelerated rendering up to 40 MHz:
+The display uses native ESP32-S3 FSPI (SPI2) pins for hardware-accelerated rendering at 27 MHz:
 
 | KMR-1.8 Pin | ESP32-S3 | Function | Notes |
 |---|---|---|---|
