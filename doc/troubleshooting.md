@@ -110,7 +110,7 @@ Ambient temperature is intentionally not required in the response because the lo
 The client retries a batch three times in RAM. If all attempts fail, the
 serial log reports that the batch was dropped. During an outage, the bounded
 network queue discards its oldest measurements when full and retains newer
-ones. Failed measurements are not persisted across reboot. The OLED shows
+ones. Failed measurements are not persisted across reboot. The display shows
 `API OFFLINE` while delivery is unavailable.
 
 The two event queues have finite capacity. The display keeps the newest result

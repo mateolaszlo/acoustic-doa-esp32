@@ -17,8 +17,8 @@ The firmware:
 - Captures two synchronized I2S microphone channels.
 - Estimates time difference of arrival with GCC-PHAT.
 - Converts the delay into an angle from -90 to +90 degrees.
-- Uses a local BME280 temperature reading for speed-of-sound compensation.
-- Displays the latest event on an SSD1306 OLED.
+- Uses local BME280 temperature, relative humidity, and barometric pressure readings for thermodynamic moist-air speed-of-sound compensation.
+- Displays a real-time radar UI, sound-reactive color needle, and live telemetry on a 1.8" SPI TFT (ST7735 / KMR-1.8 128x160).
 - Sends accepted events to a REST API over Wi-Fi.
 - Stores device credentials and calibration settings in ESP32 NVS flash.
 - Provides a button-triggered setup access point with a DNS-based captive portal.
@@ -46,7 +46,7 @@ The backend, database, and web dashboard are separate systems. See [REST API int
   firmware use API-server UTC time even when public NTP is unreachable.
 - If neither Internet/NTP nor API-server time is available, measurements
   continue using monotonic uptime timestamps marked in the binary batch header.
-- The OLED continues receiving valid results at DSP rate. When the server is
-  unavailable, the network queue keeps newer measurements and the OLED shows
+- The display continues receiving valid results at DSP rate. When the server is
+  unavailable, the network queue keeps newer measurements and the display shows
   `API OFFLINE`.
-- GPIO 0 is used for setup detection, but it is also an ESP32-S3 boot strap pin. Holding it low during reset can enter the ROM download bootloader. The setup procedure therefore requires a normal application boot followed by pressing GPIO 0 during the startup detection window.
+- GPIO 0 is used for setup detection, but it is also an ESP32-S3 boot strap pin. Holding it low during reset can enter the ROM download bootloader. The setup procedure therefore requires a normal application boot followed by pressing GPIO 0 during the 3-second on-screen startup countdown window.

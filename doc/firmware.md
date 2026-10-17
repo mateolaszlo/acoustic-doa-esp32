@@ -4,7 +4,7 @@
 
 | File | Responsibility |
 |---|---|
-| `src/main.cpp` | Setup portal, NVS configuration, Wi-Fi/API, OLED/BME280, FreeRTOS tasks |
+| `src/main.cpp` | Setup portal, NVS configuration, Wi-Fi/API, TFT/BME280, FreeRTOS tasks |
 | `src/i2s_sampler.cpp` | I2S driver installation and stereo DMA reads |
 | `src/gcc_phat.h` | `DoaResult`, `GccPhat`, and FFT-size declarations |
 | `src/gcc_phat.cpp` | Windowing, FFT, GCC-PHAT, peak search, interpolation, and angle calculation |
@@ -68,7 +68,7 @@ The internal `rms_db` value is not inherently dB SPL. The network and display pa
 - Never performs Wi-Fi, HTTP, or network batching work.
 - Measures processing duration against the current audio-block deadline.
 - Resets the task watchdog and periodically reports timing, I2S, queue, and stack statistics.
-- Does not perform Wi-Fi, HTTP, OLED, or BME280 operations; it emits only
+- Does not perform Wi-Fi, HTTP, display, or BME280 operations; it emits only
   rate-limited diagnostic summaries to Serial.
 - Priority: 5.
 - Stack: 8192 bytes.
@@ -79,7 +79,7 @@ The internal `rms_db` value is not inherently dB SPL. The network and display pa
 - Updates the speed-of-sound calibration.
 - Receives results from `display_queue`.
 - Prints event information to Serial.
-- Draws the OLED radar.
+- Draws the full-color radar UI on the SPI TFT.
 - Priority: 2.
 - Stack: 4096 bytes.
 
@@ -120,7 +120,7 @@ Queue sends are non-blocking. If the bounded network queue is full, the oldest
 queued measurement is discarded and the newest result is retained. The display
 queue uses the same latest-result policy. Drop counters are included in the
 periodic DSP diagnostic summary. The DSP task never waits for the display or
-network consumer. The OLED shows `API OFFLINE` while server delivery is
+network consumer. The display shows `API OFFLINE` while server delivery is
 unavailable, but continues displaying the latest acoustic result.
 
 ## Configuration

@@ -98,7 +98,7 @@ The configured API base URL is still used with `/meritve` appended. The API key
 identifies the device; the binary body does not contain a device ID. The
 firmware batches up to eight measurements and flushes a partial batch when its
 oldest measurement is 200 ms old. Requests are spaced by at least 200 ms, for a
-maximum target of five requests per second. The DSP and OLED continue operating
+maximum target of five requests per second. The DSP and display continue operating
 at the active audio-block rate independently of network I/O.
 
 ## Binary request body

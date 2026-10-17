@@ -55,8 +55,8 @@ With the current firmware:
 3. Press and hold the BOOT button (GPIO 0) during this window.
 4. The display switches to **SETUP MODE**, showing the Wi-Fi AP name (`Acoustic-Locator-Setup`), password (`configure123`), and portal URL (`http://192.168.4.1`).
 5. Connect your phone or computer to the AP and visit `http://192.168.4.1`.
-7. Enter the required values and submit the form.
-8. The firmware writes values to NVS and restarts.
+6. Enter the required values and submit the form.
+7. The firmware writes values to NVS and restarts.
 
 The setup form contains:
 
