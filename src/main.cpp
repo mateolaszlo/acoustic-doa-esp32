@@ -900,13 +900,13 @@ void network_task(void *param) {
     }
 }
 
-void draw_radar_ui(float angle_deg, float temp_c, float c_sound,
+void draw_radar_ui(float angle_deg, float temp_c, float hum, float pres, float c_sound,
                    float db_spl, bool api_available) {
     canvas.fillScreen(ST77XX_BLACK);
 
     // 1. Izris polkrožnega radarja (središče na x=64, y=75, polmer r=52)
     const int cx = 64;
-    const int cy = 75;
+    const int cy = 68;
     const int r = 52;
 
     // Barvna mreža radarja (temno zelena: 0x03E0)
@@ -935,29 +935,42 @@ void draw_radar_ui(float angle_deg, float temp_c, float c_sound,
     canvas.drawLine(cx, cy, target_x, target_y, needle_color);
     canvas.fillCircle(target_x, target_y, 3, needle_color);
 
-    // 3. Spodnja nadzorna plošča s telemetrijo (y = 84 do 159)
-    canvas.drawFastHLine(0, 84, 128, 0x7BEF); // Siva ločilna črta
+    // 3. Spodnja nadzorna plošča s telemetrijo (y = 75 do 159)
+    canvas.drawFastHLine(0, 75, 128, 0x7BEF); // Siva ločilna črta
 
     canvas.setTextSize(2);
     canvas.setTextColor(ST77XX_CYAN);
-    canvas.setCursor(16, 92);
+    canvas.setCursor(14, 83);
     canvas.printf("%+5.1f deg", angle_deg);
 
     canvas.setTextSize(1);
+    canvas.setTextColor(ST77XX_YELLOW);
+    canvas.setCursor(13, 108);
+    canvas.printf("%.1fdB   %.2fm/s", db_spl, c_sound);
+
     canvas.setTextColor(ST77XX_WHITE);
-    canvas.setCursor(8, 116);
-    canvas.printf("Glasnost: %.1f dB", db_spl);
+    canvas.setCursor(6, 123);
+    canvas.printf("T: %.1fC   RH: %.0f%%", temp_c, hum);
 
-    canvas.setCursor(8, 130);
-    canvas.printf("Okolje:   %.1fC (%.0fm/s)", temp_c, c_sound);
+    canvas.setCursor(6, 137);
+    canvas.printf("P: %.1f hPa", pres / 100.0f);
 
-    canvas.setCursor(8, 146);
+    int status_y = 151; // Središče krožca (višina vrstice)
+
     if (api_available) {
+        // Poln zelen krožec (polmer 3 px)
+        canvas.fillCircle(8, status_y, 3, ST77XX_GREEN);
+        
         canvas.setTextColor(ST77XX_GREEN);
-        canvas.print("Status:   API ONLINE");
+        canvas.setCursor(16, 148);
+        canvas.print("API ONLINE");
     } else {
+        // Prazen rdeč krožec (obroba)
+        canvas.drawCircle(8, status_y, 3, ST77XX_RED);
+        
         canvas.setTextColor(ST77XX_RED);
-        canvas.print("Status:   API OFFLINE");
+        canvas.setCursor(16, 148);
+        canvas.print("API OFFLINE");
     }
 
     // Pošlji celotno sliko na zaslon v enem kosu prek SPI
@@ -1008,7 +1021,9 @@ void init_sensors_and_display() {
     }
 
     if (display_initialized) {
-        draw_radar_ui(0.0f, current_temperature.load(),
+        draw_radar_ui(0.0f, current_temperature.load(), 
+                      current_humidity.load(),
+                      current_pressure.load(),
                       current_sound_speed.load(), 0.0f,
                       server_available.load());
     }
@@ -1054,6 +1069,8 @@ void sensor_display_task(void *param) {
             last_event = event;
             float temp = current_temperature.load();
             float speed = current_sound_speed.load();
+            float humidity = current_humidity.load();
+            float pressure = current_pressure.load();
             const float calibrated_db = event.rms_db + db_spl_offset.load();
 
             Serial.printf("Zaznan kot: %.1f deg, R: %.2f, dB: %.1f\n",
@@ -1062,7 +1079,7 @@ void sensor_display_task(void *param) {
 
             if (display_initialized) {
                 last_server_available = server_available.load();
-                draw_radar_ui(event.angle_deg, temp, speed,
+                draw_radar_ui(event.angle_deg, temp, humidity, pressure, speed,
                               calibrated_db, last_server_available);
             }
         }
@@ -1073,9 +1090,9 @@ void sensor_display_task(void *param) {
             last_server_available = current_server_available;
             const float calibrated_db = last_event.rms_db + db_spl_offset.load();
             draw_radar_ui(last_event.angle_deg,
-                          current_temperature.load(),
-                          current_sound_speed.load(), calibrated_db,
-                          last_server_available);
+                          current_temperature.load(), current_humidity.load(),
+                          current_pressure.load(), current_sound_speed.load(),
+                          calibrated_db, last_server_available);
         }
     }
 }
