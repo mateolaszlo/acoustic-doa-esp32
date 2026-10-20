@@ -7,6 +7,7 @@
 | `src/main.cpp` | Setup portal, NVS configuration, Wi-Fi/API, TFT/BME280, FreeRTOS tasks |
 | `src/i2s_sampler.cpp` | I2S driver installation and stereo DMA reads |
 | `src/display_filter.h` | Radar visual angle smoothing filter (EMA with outlier rejection) |
+| `src/post_checker.h` | Power-On Self-Test (POST) statistical heuristics for I2S microphones |
 | `src/gcc_phat.h` | `DoaResult`, `GccPhat`, and FFT-size declarations |
 | `src/gcc_phat.cpp` | Windowing, FFT, GCC-PHAT, peak search, interpolation, and angle calculation |
 | `platformio.ini` | Board, framework, monitor, and library dependencies |
@@ -72,6 +73,21 @@ The internal result contains:
 | `valid` | Whether the correlation threshold was exceeded |
 
 The internal `rms_db` value is not inherently dB SPL. The network and display paths add the configured dB SPL offset when presenting or transmitting it.
+
+## Power-On Self-Test (POST)
+
+During startup (`SETUP_BOOT_DELAY_MS = 3000`), the firmware executes an automated hardware verification before starting real-time tasks:
+
+1. **Octal PSRAM**: Verifies that 8 MB OPI PSRAM is detected and available.
+2. **BME280 Environmental Sensor**: Probes I2C `0x76`/`0x77` and verifies plausible temperature and pressure readings.
+3. **I2S Microphones (Statistical Heuristics)**: Captures a 1024-sample block and verifies:
+   - **Flatline Detection**: Rejects channels where $\text{min} == \text{max}$ or $\text{RMS} \le -95\text{ dBFS}$ (disconnected, unpowered, or floating line).
+   - **Rail Saturation**: Rejects channels with $\text{RMS} \ge -3\text{ dBFS}$ (DC short to rail).
+   - **Stereo Collision**: Counts pairwise identical samples across the 1024-sample block to ensure both microphones are not driving the same channel or shorted together.
+4. **Dual Reporting**:
+   - Outputs a comprehensive ASCII diagnostic table to Serial at 115200 baud.
+   - Renders a color-coded checklist (`[OK]` in green, `[FAIL]` in red) on the ST7735 TFT alongside the countdown progress bar.
+   - Holding GPIO 0 during this screen still enters Setup Mode as usual.
 
 ## Dual-core task layout
 

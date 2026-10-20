@@ -18,6 +18,7 @@
 
 #include "gcc_phat.h"
 #include "display_filter.h"
+#include "post_checker.h"
 
 // I2C Pini za ESP32-S3 (BME280)
 #define I2C_SDA_PIN 8
@@ -305,29 +306,178 @@ static void log_i2c_devices() {
     }
 }
 
-static void show_boot_prompt(uint32_t remaining_ms, uint32_t total_ms) {
+struct BootSelfTestResult {
+    bool psram_ok = false;
+    size_t psram_bytes = 0;
+    bool bme_ok = false;
+    float bme_temp_c = 0.0f;
+    float bme_pres_hpa = 0.0f;
+    bool i2s_driver_ok = false;
+    MicrophoneHealthResult mic_health;
+    bool all_nominal = false;
+};
+
+static BootSelfTestResult run_boot_self_test(uint32_t sample_rate) {
+    BootSelfTestResult res;
+    res.psram_ok = psramFound();
+    res.psram_bytes = ESP.getPsramSize();
+
+    res.bme_ok = bme_initialized;
+    res.bme_temp_c = current_temperature.load();
+    res.bme_pres_hpa = current_pressure.load() / 100.0f;
+
+    res.i2s_driver_ok = init_i2s_microphones(sample_rate);
+    if (res.i2s_driver_ok) {
+        static int32_t l_discard[512];
+        static int32_t r_discard[512];
+        read_i2s_stereo(l_discard, r_discard, 512);
+
+        static int32_t l_test[1024];
+        static int32_t r_test[1024];
+        if (read_i2s_stereo(l_test, r_test, 1024)) {
+            res.mic_health = evaluate_microphone_health(l_test, r_test, 1024);
+        }
+        deinit_i2s_microphones();
+    }
+
+    res.all_nominal = res.psram_ok && res.mic_health.left_ok &&
+                      res.mic_health.right_ok && res.mic_health.stereo_distinct;
+
+    Serial.println("\n==================================================");
+    Serial.println("           ACOUSTIC LOCATOR BOOT SELF-TEST        ");
+    Serial.println("==================================================");
+    Serial.printf("[%s] Octal PSRAM : %s (%u KB)\n",
+                  res.psram_ok ? "PASS" : "FAIL",
+                  res.psram_ok ? "Found" : "Missing",
+                  static_cast<unsigned>(res.psram_bytes / 1024));
+
+    if (res.bme_ok) {
+        Serial.printf("[PASS] BME280 I2C  : OK (T: %.1fC, P: %.1f hPa)\n",
+                      res.bme_temp_c, res.bme_pres_hpa);
+    } else {
+        Serial.println("[WARN] BME280 I2C  : NOT FOUND (Using default c=343.9 m/s)");
+    }
+
+    Serial.printf("[%s] I2S Driver  : %s (%u Hz Stereo)\n",
+                  res.i2s_driver_ok ? "PASS" : "FAIL",
+                  res.i2s_driver_ok ? "Initialized" : "Failed",
+                  static_cast<unsigned>(sample_rate));
+
+    Serial.printf("[%s] Mic Left    : %s (RMS: %.1f dBFS, min=%ld, max=%ld)\n",
+                  res.mic_health.left_ok ? "PASS" : "FAIL",
+                  res.mic_health.left_ok ? "ACTIVE" : (res.mic_health.left_min == res.mic_health.left_max ? "FLATLINE" : "OUT OF BOUNDS"),
+                  res.mic_health.left_rms_db,
+                  static_cast<long>(res.mic_health.left_min),
+                  static_cast<long>(res.mic_health.left_max));
+
+    Serial.printf("[%s] Mic Right   : %s (RMS: %.1f dBFS, min=%ld, max=%ld)\n",
+                  res.mic_health.right_ok ? "PASS" : "FAIL",
+                  res.mic_health.right_ok ? "ACTIVE" : (res.mic_health.right_min == res.mic_health.right_max ? "FLATLINE" : "OUT OF BOUNDS"),
+                  res.mic_health.right_rms_db,
+                  static_cast<long>(res.mic_health.right_min),
+                  static_cast<long>(res.mic_health.right_max));
+
+    Serial.printf("[%s] Stereo L/R  : %s (%u/1024 identical)\n",
+                  res.mic_health.stereo_distinct ? "PASS" : "FAIL",
+                  res.mic_health.stereo_distinct ? "Independent channels verified" : "CHANNEL COLLISION",
+                  static_cast<unsigned>(res.mic_health.identical_samples));
+
+    Serial.println("==================================================");
+    Serial.printf("STATUS: %s\n", res.all_nominal ? "ALL SYSTEMS NOMINAL" : "HARDWARE DEGRADED - CHECK WIRING");
+    Serial.println("==================================================\n");
+
+    return res;
+}
+
+static void show_boot_prompt(uint32_t remaining_ms, uint32_t total_ms, const BootSelfTestResult &post) {
     if (!display_initialized) return;
     canvas.fillScreen(ST77XX_BLACK);
 
     // Naslov
     canvas.setTextSize(1);
     canvas.setTextColor(ST77XX_CYAN);
-    canvas.setCursor(16, 18);
+    canvas.setCursor(14, 6);
     canvas.println("ACOUSTIC LOCATOR");
-    canvas.drawFastHLine(10, 30, 108, 0x7BEF);
+    canvas.drawFastHLine(8, 16, 112, 0x7BEF);
+
+    // POST Checklist
+    // PSRAM
+    canvas.setTextColor(ST77XX_WHITE);
+    canvas.setCursor(8, 22);
+    canvas.print("PSRAM :");
+    canvas.setCursor(54, 22);
+    if (post.psram_ok) {
+        canvas.setTextColor(ST77XX_GREEN);
+        canvas.printf("[OK] %uMB", static_cast<unsigned>(post.psram_bytes / (1024 * 1024)));
+    } else {
+        canvas.setTextColor(ST77XX_RED);
+        canvas.print("[FAIL]");
+    }
+
+    // BME280
+    canvas.setTextColor(ST77XX_WHITE);
+    canvas.setCursor(8, 34);
+    canvas.print("BME280:");
+    canvas.setCursor(54, 34);
+    if (post.bme_ok) {
+        canvas.setTextColor(ST77XX_GREEN);
+        canvas.printf("[OK] %.0fC", post.bme_temp_c);
+    } else {
+        canvas.setTextColor(0x7BEF);
+        canvas.print("[--] Default");
+    }
+
+    // Mic Left
+    canvas.setTextColor(ST77XX_WHITE);
+    canvas.setCursor(8, 46);
+    canvas.print("MIC L :");
+    canvas.setCursor(54, 46);
+    if (post.mic_health.left_ok) {
+        canvas.setTextColor(ST77XX_GREEN);
+        canvas.printf("[OK] %.0fdB", post.mic_health.left_rms_db);
+    } else {
+        canvas.setTextColor(ST77XX_RED);
+        canvas.print("[FAIL] Flat");
+    }
+
+    // Mic Right
+    canvas.setTextColor(ST77XX_WHITE);
+    canvas.setCursor(8, 58);
+    canvas.print("MIC R :");
+    canvas.setCursor(54, 58);
+    if (post.mic_health.right_ok) {
+        canvas.setTextColor(ST77XX_GREEN);
+        canvas.printf("[OK] %.0fdB", post.mic_health.right_rms_db);
+    } else {
+        canvas.setTextColor(ST77XX_RED);
+        canvas.print("[FAIL] Flat");
+    }
+
+    // Stereo
+    canvas.setTextColor(ST77XX_WHITE);
+    canvas.setCursor(8, 70);
+    canvas.print("STEREO:");
+    canvas.setCursor(54, 70);
+    if (post.mic_health.stereo_distinct) {
+        canvas.setTextColor(ST77XX_GREEN);
+        canvas.print("[OK] Dual");
+    } else {
+        canvas.setTextColor(ST77XX_RED);
+        canvas.print("[FAIL] Collsn");
+    }
+
+    canvas.drawFastHLine(8, 82, 112, 0x7BEF);
 
     // Poziv za setup
-    canvas.setTextColor(ST77XX_WHITE);
-    canvas.setCursor(14, 46);
-    canvas.println("Press BOOT button");
-    canvas.setCursor(14, 58);
-    canvas.println("to enter Setup");
+    canvas.setTextColor(ST77XX_YELLOW);
+    canvas.setCursor(8, 90);
+    canvas.println("Hold BOOT for Setup");
 
     // Vrstica napredka
     const int bar_x = 14;
-    const int bar_y = 82;
+    const int bar_y = 104;
     const int bar_w = 100;
-    const int bar_h = 8;
+    const int bar_h = 7;
     canvas.drawRect(bar_x, bar_y, bar_w, bar_h, ST77XX_WHITE);
     int fill_w = (remaining_ms * (bar_w - 2)) / total_ms;
     if (fill_w > 0) {
@@ -336,9 +486,19 @@ static void show_boot_prompt(uint32_t remaining_ms, uint32_t total_ms) {
 
     // Besedilo odštevanja
     canvas.setTextColor(0x7BEF);
-    canvas.setCursor(14, 104);
+    canvas.setCursor(14, 118);
     int sec = (remaining_ms + 999) / 1000;
     canvas.printf("Starting in %d s...", sec);
+
+    // Status celote
+    canvas.setCursor(8, 138);
+    if (post.all_nominal) {
+        canvas.setTextColor(ST77XX_GREEN);
+        canvas.print("STATUS: ALL NOMINAL");
+    } else {
+        canvas.setTextColor(ST77XX_RED);
+        canvas.print("STATUS: DEGRADED");
+    }
 
     display.drawRGBBitmap(0, 0, canvas.getBuffer(), 128, 160);
 }
@@ -413,7 +573,7 @@ static void enter_setup_mode() {
     }
 }
 
-static void check_setup_button() {
+static void check_setup_button(const BootSelfTestResult &post_result) {
     pinMode(SETUP_BUTTON_PIN, INPUT_PULLUP);
     const uint32_t total_ms = SETUP_BOOT_DELAY_MS;
     const uint32_t start_ms = millis();
@@ -431,7 +591,7 @@ static void check_setup_button() {
             last_draw_ms = now;
             uint32_t elapsed = now - start_ms;
             uint32_t remaining = (elapsed < total_ms) ? (total_ms - elapsed) : 0;
-            show_boot_prompt(remaining, total_ms);
+            show_boot_prompt(remaining, total_ms, post_result);
         }
         delay(10);
     }
@@ -1287,8 +1447,11 @@ void setup() {
     // 1. Zagon zaslona in BME280 senzorja
     init_sensors_and_display();
 
-    // 2. Preveri gumb za nastavitve (prikaze poziv in odstevalnik na zaslonu)
-    check_setup_button();
+    // 2. Zagonski preizkus strojne opreme (POST)
+    BootSelfTestResult post_res = run_boot_self_test(device_config.sample_rate);
+
+    // 3. Preveri gumb za nastavitve (prikaze POST rezultate in odstevalnik na zaslonu)
+    check_setup_button(post_res);
     if (!device_configured) {
         Serial.println(
             "Device is not configured. Boot normally, then press and hold GPIO 0 during startup.");

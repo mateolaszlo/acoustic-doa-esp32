@@ -20,6 +20,7 @@ extern "C" {
 
 #include "../src/gcc_phat.h"
 #include "../src/display_filter.h"
+#include "../src/post_checker.h"
 
 // Test 1: GccPhat adaptive noise floor tracking
 void test_gcc_phat_adaptive_noise_floor() {
@@ -213,9 +214,71 @@ void test_display_smoothing_filter() {
     printf("  [PASS] test_display_smoothing_filter passed.\n");
 }
 
+// Test 3: POST Microphone Statistical Heuristics
+void test_post_checker() {
+    printf("[TEST] Running test_post_checker...\n");
+
+    const size_t n = 1024;
+    std::vector<int32_t> l(n, 0);
+    std::vector<int32_t> r(n, 0);
+
+    // Scenario 1: Both microphones disconnected / flatline at zero
+    MicrophoneHealthResult res_flat = evaluate_microphone_health(l.data(), r.data(), n);
+    assert(!res_flat.left_ok);
+    assert(!res_flat.right_ok);
+    assert(!res_flat.stereo_distinct);
+    assert(res_flat.left_min == 0 && res_flat.left_max == 0);
+
+    // Scenario 2: Right mic flatlined at stuck constant value (floating line)
+    for (size_t i = 0; i < n; ++i) {
+        l[i] = static_cast<int32_t>(sinf(i * 0.1f) * 2147483.0f); // ~ -60 dBFS
+        r[i] = 42; // flat
+    }
+    MicrophoneHealthResult res_right_flat = evaluate_microphone_health(l.data(), r.data(), n);
+    assert(res_right_flat.left_ok);
+    assert(!res_right_flat.right_ok);
+    assert(res_right_flat.stereo_distinct);
+
+    // Scenario 3: Channel collision (L/R lines shorted or both tied to same channel)
+    for (size_t i = 0; i < n; ++i) {
+        l[i] = static_cast<int32_t>(sinf(i * 0.1f) * 2147483.0f);
+        r[i] = l[i]; // identical to left!
+    }
+    MicrophoneHealthResult res_collision = evaluate_microphone_health(l.data(), r.data(), n);
+    assert(res_collision.left_ok);
+    assert(res_collision.right_ok);
+    assert(!res_collision.stereo_distinct); // Collision detected!
+    assert(res_collision.identical_samples == n);
+
+    // Scenario 4: Rail short / clipping (RMS > -3 dBFS)
+    for (size_t i = 0; i < n; ++i) {
+        l[i] = 2147480000; // Almost +1.0 full scale
+        r[i] = static_cast<int32_t>(cosf(i * 0.1f) * 2147483.0f);
+    }
+    MicrophoneHealthResult res_rail = evaluate_microphone_health(l.data(), r.data(), n);
+    assert(!res_rail.left_ok); // Rail short rejected!
+    assert(res_rail.right_ok);
+
+    // Scenario 5: Nominal independent stereo microphones with ambient room noise
+    for (size_t i = 0; i < n; ++i) {
+        const int i_int = static_cast<int>(i);
+        l[i] = static_cast<int32_t>((sinf(i_int * 0.1f) + ((i_int % 7) - 3) * 0.05f) * 2147483.0f);
+        r[i] = static_cast<int32_t>((cosf(i_int * 0.12f) + ((i_int % 11) - 5) * 0.05f) * 2147483.0f);
+    }
+    MicrophoneHealthResult res_nominal = evaluate_microphone_health(l.data(), r.data(), n);
+    assert(res_nominal.left_ok);
+    assert(res_nominal.right_ok);
+    assert(res_nominal.stereo_distinct);
+    assert(res_nominal.left_rms_db > -70.0f && res_nominal.left_rms_db < -50.0f);
+    assert(res_nominal.right_rms_db > -70.0f && res_nominal.right_rms_db < -50.0f);
+
+    printf("  [PASS] test_post_checker passed.\n");
+}
+
 int main() {
     test_gcc_phat_adaptive_noise_floor();
     test_display_smoothing_filter();
+    test_post_checker();
     printf("\nAll unit tests passed successfully!\n");
     return 0;
 }
