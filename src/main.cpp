@@ -120,6 +120,16 @@ static std::atomic<uint32_t> network_queue_drops(0);
 static std::atomic<uint32_t> dsp_blocks_processed(0);
 static std::atomic<uint32_t> dsp_max_processing_us(0);
 
+// Debug atomic telemetry for audio signals
+static std::atomic<int32_t> debug_l_min(0);
+static std::atomic<int32_t> debug_l_max(0);
+static std::atomic<int32_t> debug_r_min(0);
+static std::atomic<int32_t> debug_r_max(0);
+static std::atomic<float> debug_l_db(-100.0f);
+static std::atomic<float> debug_r_db(-100.0f);
+static std::atomic<float> debug_confidence(0.0f);
+static std::atomic<bool> debug_valid(false);
+
 static bool is_supported_audio_config(uint32_t sample_rate, uint32_t window_size) {
     return (sample_rate == 44100 || sample_rate == 48000) &&
            (window_size == 512 || window_size == 1024 || window_size == 2048);
@@ -602,6 +612,28 @@ void dsp_task(void *param) {
             xSemaphoreGive(i2s_mutex);
         }
         if (read_ok) {
+            int32_t l_min = left_buf[0], l_max = left_buf[0];
+            int32_t r_min = right_buf[0], r_max = right_buf[0];
+            float l_sum = 0.0f, r_sum = 0.0f;
+            for (size_t i = 0; i < window_size; ++i) {
+                if (left_buf[i] < l_min) l_min = left_buf[i];
+                if (left_buf[i] > l_max) l_max = left_buf[i];
+                if (right_buf[i] < r_min) r_min = right_buf[i];
+                if (right_buf[i] > r_max) r_max = right_buf[i];
+                const float l_norm = static_cast<float>(left_buf[i]) / 2147483648.0f;
+                const float r_norm = static_cast<float>(right_buf[i]) / 2147483648.0f;
+                l_sum += l_norm * l_norm;
+                r_sum += r_norm * r_norm;
+            }
+            const float l_rms = sqrtf(l_sum / static_cast<float>(window_size));
+            const float r_rms = sqrtf(r_sum / static_cast<float>(window_size));
+            debug_l_min.store(l_min);
+            debug_l_max.store(l_max);
+            debug_r_min.store(r_min);
+            debug_r_max.store(r_max);
+            debug_l_db.store(l_rms > 1e-5f ? 20.0f * log10f(l_rms) : -100.0f);
+            debug_r_db.store(r_rms > 1e-5f ? 20.0f * log10f(r_rms) : -100.0f);
+
             const uint32_t process_start = micros();
             if (xSemaphoreTake(doa_mutex, portMAX_DELAY) != pdTRUE) {
                 esp_task_wdt_reset();
@@ -609,6 +641,8 @@ void dsp_task(void *param) {
             }
             DoaResult res = doa.process(left_buf, right_buf);
             xSemaphoreGive(doa_mutex);
+            debug_confidence.store(res.confidence);
+            debug_valid.store(res.valid);
             const uint32_t processing_us = micros() - process_start;
             const uint32_t block_budget_us =
                 audio_block_duration_us(sample_rate, window_size);
@@ -1145,9 +1179,30 @@ void sensor_display_task(void *param) {
     DoaResult event;
     DoaResult last_event = {0.0f, 0.0f, 0.0f, -100.0f, false};
     bool last_server_available = server_available.load();
+    uint32_t last_debug_ms = 0;
 
     while (true) {
         update_environmental_compensation();
+
+        const uint32_t now_ms = millis();
+        if (now_ms - last_debug_ms >= 500) {
+            last_debug_ms = now_ms;
+            float eff_threshold = 0.0f;
+            if (xSemaphoreTake(config_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+                eff_threshold = device_config.sound_level_threshold_db_spl - device_config.db_spl_offset;
+                xSemaphoreGive(config_mutex);
+            }
+            Serial.printf("DEBUG: L[min=%ld, max=%ld, dB=%.1f] R[min=%ld, max=%ld, dB=%.1f] | R_peak=%.2f, valid=%d, eff_thresh=%.1f dBFS\n",
+                          static_cast<long>(debug_l_min.load()),
+                          static_cast<long>(debug_l_max.load()),
+                          debug_l_db.load(),
+                          static_cast<long>(debug_r_min.load()),
+                          static_cast<long>(debug_r_max.load()),
+                          debug_r_db.load(),
+                          debug_confidence.load(),
+                          debug_valid.load() ? 1 : 0,
+                          eff_threshold);
+        }
 
         if (xQueueReceive(display_queue, &event, pdMS_TO_TICKS(100))) {
             last_event = event;
