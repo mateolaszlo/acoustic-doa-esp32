@@ -79,6 +79,17 @@ The firmware ignores incomplete I2S reads and processes only complete blocks.
 The default is 1024 samples, while 512, 1024, and 2048 sample blocks are
 supported at 44100 or 48000 Hz.
 
+## Radar needle is biased toward one side (e.g. +7° offset)
+
+If forward sounds point to a non-zero angle (e.g. `+7.0°`) and the needle reaches `+90°` much more easily than `-90°`:
+
+- **Cause**: Dual digital I2S microphones transmit in alternating WS slots (Left on WS low, Right on WS high). Combined with individual MEMS decimation filter group delays and breadboard depth tolerances, this introduces a static inter-channel timing skew (e.g. ~1 sample $\approx 22.7\ \mu\text{s} \equiv 5.5^\circ\text{ to }7^\circ$ at 82 mm).
+- **Solution**:
+  1. Measure the exact acoustic port hole-to-hole distance (default is `0.082 m` / 82 mm).
+  2. Hold the BOOT button on startup to open the Captive Portal (`192.168.4.1`).
+  3. Enter the observed forward angle into `Zero angle offset (deg)` (e.g. `7.0`).
+  4. Save and reboot. The firmware subtracts the offset in the time domain before $\arcsin$, restoring balanced, symmetric $[-90^\circ, +90^\circ]$ tracking.
+
 ## API returns 401 or 403
 
 - Confirm the API key in NVS.

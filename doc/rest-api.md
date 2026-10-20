@@ -50,12 +50,13 @@ The expected response contains:
 ```json
 {
   "naprava_id": 1,
-  "razdalja_mikrofonov_m": 0.08,
+  "razdalja_mikrofonov_m": 0.082,
   "vzorcevalna_frekvenca": 44100,
   "okno_velikost": 1024,
   "prag_korelacije": 0.40,
   "prag_glasnosti_db": 55.0,
   "db_spl_offset": 96.5,
+  "kot_odmik": 0.0,
   "prilagodljivi_prag": true,
   "snr_rob_db": 8.0,
   "server_time_unix_ms": 1791830000123
@@ -64,6 +65,7 @@ The expected response contains:
 
 `temperatura_okolice_c` is not required by the current firmware. The local BME280 is the source of temperature for sound-speed compensation.
 
+`kot_odmik` (or `angle_offset_deg`, float in degrees, between -45.0 and +45.0) is optional. Specifies the zero-angle calibration trim in degrees to compensate for I2S channel clocking/sampling skew or hardware mounting offsets.
 `db_spl_offset` is optional in the current parser. If absent, the previously stored offset is retained.
 `prilagodljivi_prag` (or `adaptive_threshold_enabled`, boolean) is optional. When true, enables adaptive noise floor tracking; when false, fixed thresholding via `prag_glasnosti_db` is enforced. If absent, the previous setting is retained.
 `snr_rob_db` (or `snr_margin_db`, float in dB) is optional. Specifies the minimum SNR margin above the estimated ambient noise floor required to trigger DOA calculation. If absent, the previous margin is retained.

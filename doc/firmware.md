@@ -31,8 +31,10 @@ sizes are 512, 1024, and 2048 samples. Each block is processed as follows:
 8. Search only physically possible lags for the configured microphone distance.
 9. Refine the peak with parabolic interpolation.
 10. Calculate:
-   - Delay in microseconds.
-   - Angle using `asin(c * delay / distance)`.
+   - Delay in microseconds $\Delta t$.
+   - Channel delay compensation: if `angle_offset_deg` ($\theta_{\text{offset}}$) is non-zero, subtract the static hardware/I2S timing skew:
+     $$\Delta t_{\text{offset}} = \frac{d \cdot \sin(\theta_{\text{offset}})}{c}, \quad \Delta t_{\text{cal}} = \Delta t - \Delta t_{\text{offset}}$$
+   - Arrival angle using $\arcsin\left(\frac{c \cdot \Delta t_{\text{cal}}}{d}\right)$ clamped to $[-90^\circ, +90^\circ]$.
    - Correlation confidence.
    - Raw level in dBFS.
 
@@ -165,10 +167,12 @@ Configuration is loaded from ESP32 NVS namespace `acoustic`. It contains:
 - Wi-Fi SSID and password.
 - API base URL and API key.
 - Backend-assigned device ID.
-- Microphone distance.
+- Microphone distance (default 0.082 m).
 - Correlation threshold.
 - dB SPL threshold.
 - dB SPL offset.
+- Zero angle offset (`ang_offset`, -45.0 to +45.0 deg).
+- Adaptive noise floor tracking state and SNR margin.
 - Sample rate and FFT window size.
 
 The sample rate and window size are validated against a whitelist:

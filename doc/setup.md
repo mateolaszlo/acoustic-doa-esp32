@@ -65,9 +65,10 @@ The setup form contains:
 - API URL.
 - API key. Input type password; leave blank to retain the stored key.
 - Backend device ID.
-- Microphone distance in meters.
+- Microphone distance in meters (default 0.082 m / 82 mm).
 - dB SPL offset.
 - Fixed sound level threshold (dB SPL).
+- Zero angle offset in degrees (-45.0 to +45.0 deg, default 0.0 deg). Compensates for hardware/sampling channel delay skew and mounting depth differences.
 - Enable adaptive noise floor threshold (checkbox). When enabled, sound triggers when rising above the ambient noise floor by the configured SNR margin instead of relying solely on a fixed threshold.
 - SNR margin (dB). Configurable SNR margin above ambient noise floor (default 8.0 dB).
 
