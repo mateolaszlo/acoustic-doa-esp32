@@ -17,6 +17,7 @@
 #include <sys/time.h>
 
 #include "gcc_phat.h"
+#include "display_filter.h"
 
 // I2C Pini za ESP32-S3 (BME280)
 #define I2C_SDA_PIN 8
@@ -82,6 +83,8 @@ struct DeviceConfig {
     float db_spl_offset = 0.0f;
     uint32_t sample_rate = 44100;
     uint32_t window_size = N_SAMPLES;
+    bool adaptive_threshold_enabled = true;
+    float snr_margin_db = 8.0f;
 };
 
 struct NetworkMeasurement {
@@ -107,6 +110,7 @@ static std::atomic<int64_t> ntp_utc_offset_ms(0);
 static std::atomic<bool> ntp_time_valid(false);
 static std::atomic<int64_t> server_utc_offset_ms(0);
 static std::atomic<bool> server_time_valid(false);
+static std::atomic<float> current_noise_floor_db(-100.0f);
 static bool display_initialized = false;
 static bool bme_initialized = false;
 static bool setup_mode = false;
@@ -119,16 +123,6 @@ static std::atomic<uint32_t> display_queue_drops(0);
 static std::atomic<uint32_t> network_queue_drops(0);
 static std::atomic<uint32_t> dsp_blocks_processed(0);
 static std::atomic<uint32_t> dsp_max_processing_us(0);
-
-// Debug atomic telemetry for audio signals
-static std::atomic<int32_t> debug_l_min(0);
-static std::atomic<int32_t> debug_l_max(0);
-static std::atomic<int32_t> debug_r_min(0);
-static std::atomic<int32_t> debug_r_max(0);
-static std::atomic<float> debug_l_db(-100.0f);
-static std::atomic<float> debug_r_db(-100.0f);
-static std::atomic<float> debug_confidence(0.0f);
-static std::atomic<bool> debug_valid(false);
 
 static bool is_supported_audio_config(uint32_t sample_rate, uint32_t window_size) {
     return (sample_rate == 44100 || sample_rate == 48000) &&
@@ -165,6 +159,15 @@ static void load_device_config() {
     device_config.db_spl_offset = get_preference_float("spl_offset", 0.0f);
     device_config.sample_rate = preferences.getUInt("sample_rate", 44100);
     device_config.window_size = preferences.getUInt("window_size", N_SAMPLES);
+    device_config.adaptive_threshold_enabled =
+        preferences.isKey("adapt_thresh") ? preferences.getBool("adapt_thresh") : true;
+    device_config.snr_margin_db =
+        get_preference_float("snr_margin", 8.0f);
+    if (!std::isfinite(device_config.snr_margin_db) ||
+        device_config.snr_margin_db < 0.0f ||
+        device_config.snr_margin_db > 60.0f) {
+        device_config.snr_margin_db = 8.0f;
+    }
     db_spl_offset.store(device_config.db_spl_offset);
     device_configured = device_config.wifi_ssid.length() > 0 &&
                         device_config.api_url.length() > 0 &&
@@ -184,11 +187,13 @@ static void save_device_config() {
     preferences.putFloat("spl_offset", device_config.db_spl_offset);
     preferences.putUInt("sample_rate", device_config.sample_rate);
     preferences.putUInt("window_size", device_config.window_size);
+    preferences.putBool("adapt_thresh", device_config.adaptive_threshold_enabled);
+    preferences.putFloat("snr_margin", device_config.snr_margin_db);
 }
 
 static String setup_page() {
     String page;
-    page.reserve(1800);
+    page.reserve(2400);
     page += "<!doctype html><html><head><meta name='viewport' content='width=device-width'>";
     page += "<title>Acoustic Locator Setup</title></head><body>";
     page += "<h1>Acoustic Locator Setup</h1><form method='POST' action='/save'>";
@@ -203,7 +208,14 @@ static String setup_page() {
     page += "Microphone distance (m)<br><input name='mic_distance' value='" +
             String(device_config.microphone_distance_m, 4) + "'><br>";
     page += "dB SPL offset<br><input name='spl_offset' value='" +
-            String(device_config.db_spl_offset, 2) + "'><br><br>";
+            String(device_config.db_spl_offset, 2) + "'><br>";
+    page += "Fixed threshold (dB SPL)<br><input name='spl_threshold' value='" +
+            String(device_config.sound_level_threshold_db_spl, 1) + "'><br>";
+    page += "<label><input type='checkbox' name='adapt_thresh' value='1'" +
+            String(device_config.adaptive_threshold_enabled ? " checked" : "") +
+            "> Enable adaptive noise floor threshold</label><br>";
+    page += "SNR margin (dB)<br><input name='snr_margin' value='" +
+            String(device_config.snr_margin_db, 1) + "'><br><br>";
     page += "<button type='submit'>Save and restart</button></form></body></html>";
     return page;
 }
@@ -235,6 +247,23 @@ static void handle_setup_save() {
     device_config.device_id = setup_server.arg("device_id").toInt();
     device_config.microphone_distance_m = setup_server.arg("mic_distance").toFloat();
     device_config.db_spl_offset = setup_server.arg("spl_offset").toFloat();
+
+    device_config.adaptive_threshold_enabled = setup_server.hasArg("adapt_thresh");
+    if (setup_server.hasArg("snr_margin")) {
+        float snr = setup_server.arg("snr_margin").toFloat();
+        if (std::isfinite(snr) && snr >= 0.0f && snr <= 60.0f) {
+            device_config.snr_margin_db = snr;
+        } else {
+            setup_server.send(400, "text/plain", "Invalid SNR margin (must be 0-60 dB)");
+            return;
+        }
+    }
+    if (setup_server.hasArg("spl_threshold")) {
+        float spl = setup_server.arg("spl_threshold").toFloat();
+        if (std::isfinite(spl) && spl >= -200.0f && spl <= 200.0f) {
+            device_config.sound_level_threshold_db_spl = spl;
+        }
+    }
 
     if (device_config.wifi_ssid.length() == 0 ||
         device_config.api_url.length() == 0 ||
@@ -612,37 +641,16 @@ void dsp_task(void *param) {
             xSemaphoreGive(i2s_mutex);
         }
         if (read_ok) {
-            int32_t l_min = left_buf[0], l_max = left_buf[0];
-            int32_t r_min = right_buf[0], r_max = right_buf[0];
-            float l_sum = 0.0f, r_sum = 0.0f;
-            for (size_t i = 0; i < window_size; ++i) {
-                if (left_buf[i] < l_min) l_min = left_buf[i];
-                if (left_buf[i] > l_max) l_max = left_buf[i];
-                if (right_buf[i] < r_min) r_min = right_buf[i];
-                if (right_buf[i] > r_max) r_max = right_buf[i];
-                const float l_norm = static_cast<float>(left_buf[i]) / 2147483648.0f;
-                const float r_norm = static_cast<float>(right_buf[i]) / 2147483648.0f;
-                l_sum += l_norm * l_norm;
-                r_sum += r_norm * r_norm;
-            }
-            const float l_rms = sqrtf(l_sum / static_cast<float>(window_size));
-            const float r_rms = sqrtf(r_sum / static_cast<float>(window_size));
-            debug_l_min.store(l_min);
-            debug_l_max.store(l_max);
-            debug_r_min.store(r_min);
-            debug_r_max.store(r_max);
-            debug_l_db.store(l_rms > 1e-5f ? 20.0f * log10f(l_rms) : -100.0f);
-            debug_r_db.store(r_rms > 1e-5f ? 20.0f * log10f(r_rms) : -100.0f);
-
             const uint32_t process_start = micros();
             if (xSemaphoreTake(doa_mutex, portMAX_DELAY) != pdTRUE) {
                 esp_task_wdt_reset();
                 continue;
             }
             DoaResult res = doa.process(left_buf, right_buf);
+            const float noise_floor = doa.getNoiseFloorDb();
             xSemaphoreGive(doa_mutex);
-            debug_confidence.store(res.confidence);
-            debug_valid.store(res.valid);
+            current_noise_floor_db.store(noise_floor);
+
             const uint32_t processing_us = micros() - process_start;
             const uint32_t block_budget_us =
                 audio_block_duration_us(sample_rate, window_size);
@@ -684,12 +692,15 @@ static bool apply_dsp_calibration(float temperature_c,
     const float configured_offset = device_config.db_spl_offset;
     const uint32_t sample_rate = device_config.sample_rate;
     const uint32_t window_size = device_config.window_size;
+    const bool adaptive_enabled = device_config.adaptive_threshold_enabled;
+    const float snr_margin = device_config.snr_margin_db;
     xSemaphoreGive(config_mutex);
 
     if (microphone_distance_m <= 0.0f ||
         correlation_threshold <= 0.0f ||
         sound_level_threshold_db_spl <= -200.0f ||
-        !is_supported_audio_config(sample_rate, window_size)) {
+        !is_supported_audio_config(sample_rate, window_size) ||
+        !std::isfinite(snr_margin) || snr_margin < 0.0f || snr_margin > 60.0f) {
         Serial.println("Invalid or unsupported remote calibration");
         return false;
     }
@@ -705,7 +716,9 @@ static bool apply_dsp_calibration(float temperature_c,
         humidity_pct,
         pressure_pa,
         correlation_threshold,
-        sound_level_threshold_db_spl - configured_offset);
+        sound_level_threshold_db_spl - configured_offset,
+        adaptive_enabled,
+        snr_margin);
     xSemaphoreGive(doa_mutex);
     db_spl_offset.store(configured_offset);
     return true;
@@ -829,21 +842,40 @@ static bool fetch_remote_calibration() {
     uint32_t window_size = doc["okno_velikost"] | 0U;
     float offset = doc["db_spl_offset"] | db_spl_offset.load();
 
-    if (distance <= 0.0f || correlation <= 0.0f ||
-        spl_threshold <= -200.0f ||
-        !is_supported_audio_config(sample_rate, window_size) ||
-        !isfinite(distance) || !isfinite(correlation) ||
-        !isfinite(spl_threshold) || !isfinite(offset)) {
-        Serial.println("Calibration response contains invalid or unsupported values");
-        return false;
-    }
-
     if (xSemaphoreTake(config_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
         Serial.println("Could not lock device configuration");
         return false;
     }
     DeviceConfig previous = device_config;
     xSemaphoreGive(config_mutex);
+
+    bool adaptive_enabled = previous.adaptive_threshold_enabled;
+    if (!doc["prilagodljivi_prag"].isNull()) {
+        adaptive_enabled = doc["prilagodljivi_prag"].as<bool>();
+    } else if (!doc["adaptive_threshold"].isNull()) {
+        adaptive_enabled = doc["adaptive_threshold"].as<bool>();
+    } else if (!doc["adaptive_threshold_enabled"].isNull()) {
+        adaptive_enabled = doc["adaptive_threshold_enabled"].as<bool>();
+    }
+
+    float snr_margin = previous.snr_margin_db;
+    if (!doc["snr_rob_db"].isNull()) {
+        snr_margin = doc["snr_rob_db"].as<float>();
+    } else if (!doc["snr_margin_db"].isNull()) {
+        snr_margin = doc["snr_margin_db"].as<float>();
+    } else if (!doc["snr_margin"].isNull()) {
+        snr_margin = doc["snr_margin"].as<float>();
+    }
+
+    if (distance <= 0.0f || correlation <= 0.0f ||
+        spl_threshold <= -200.0f ||
+        !is_supported_audio_config(sample_rate, window_size) ||
+        !isfinite(distance) || !isfinite(correlation) ||
+        !isfinite(spl_threshold) || !isfinite(offset) ||
+        !isfinite(snr_margin) || snr_margin < 0.0f || snr_margin > 60.0f) {
+        Serial.println("Calibration response contains invalid or unsupported values");
+        return false;
+    }
 
     const bool audio_config_changed =
         sample_rate != previous.sample_rate || window_size != previous.window_size;
@@ -863,6 +895,8 @@ static bool fetch_remote_calibration() {
     device_config.db_spl_offset = offset;
     device_config.sample_rate = sample_rate;
     device_config.window_size = window_size;
+    device_config.adaptive_threshold_enabled = adaptive_enabled;
+    device_config.snr_margin_db = snr_margin;
     xSemaphoreGive(config_mutex);
 
     if (!apply_dsp_calibration(current_temperature.load(),
@@ -1179,33 +1213,16 @@ void sensor_display_task(void *param) {
     DoaResult event;
     DoaResult last_event = {0.0f, 0.0f, 0.0f, -100.0f, false};
     bool last_server_available = server_available.load();
-    uint32_t last_debug_ms = 0;
+    DisplaySmoothingFilter display_filter;
 
     while (true) {
         update_environmental_compensation();
 
-        const uint32_t now_ms = millis();
-        if (now_ms - last_debug_ms >= 500) {
-            last_debug_ms = now_ms;
-            float eff_threshold = 0.0f;
-            if (xSemaphoreTake(config_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-                eff_threshold = device_config.sound_level_threshold_db_spl - device_config.db_spl_offset;
-                xSemaphoreGive(config_mutex);
-            }
-            Serial.printf("DEBUG: L[min=%ld, max=%ld, dB=%.1f] R[min=%ld, max=%ld, dB=%.1f] | R_peak=%.2f, valid=%d, eff_thresh=%.1f dBFS\n",
-                          static_cast<long>(debug_l_min.load()),
-                          static_cast<long>(debug_l_max.load()),
-                          debug_l_db.load(),
-                          static_cast<long>(debug_r_min.load()),
-                          static_cast<long>(debug_r_max.load()),
-                          debug_r_db.load(),
-                          debug_confidence.load(),
-                          debug_valid.load() ? 1 : 0,
-                          eff_threshold);
-        }
-
         if (xQueueReceive(display_queue, &event, pdMS_TO_TICKS(100))) {
             last_event = event;
+            const uint32_t now_ms = millis();
+            const float display_angle = display_filter.update(event.angle_deg, now_ms);
+
             float temp = current_temperature.load();
             float speed = current_sound_speed.load();
             float humidity = current_humidity.load();
@@ -1218,7 +1235,7 @@ void sensor_display_task(void *param) {
 
             if (display_initialized) {
                 last_server_available = server_available.load();
-                draw_radar_ui(event.angle_deg, temp, humidity, pressure, speed,
+                draw_radar_ui(display_angle, temp, humidity, pressure, speed,
                               calibrated_db, last_server_available);
             }
         }
@@ -1228,11 +1245,12 @@ void sensor_display_task(void *param) {
             current_server_available != last_server_available) {
             last_server_available = current_server_available;
             const float calibrated_db = last_event.rms_db + db_spl_offset.load();
-            draw_radar_ui(last_event.angle_deg,
+            draw_radar_ui(display_filter.isInitialized() ? display_filter.getSmoothedAngle() : last_event.angle_deg,
                           current_temperature.load(), current_humidity.load(),
                           current_pressure.load(), current_sound_speed.load(),
                           calibrated_db, last_server_available);
         }
+        esp_task_wdt_reset();
     }
 }
 
