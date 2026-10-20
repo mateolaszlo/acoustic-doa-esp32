@@ -30,11 +30,21 @@ public:
     bool configure(float sample_rate, size_t window_size);
     DoaResult process(const int32_t* left_channel, const int32_t* right_channel);
     void updateCalibration(float distance_m, float temp_c, float humidity_pct,
-                           float pressure_pa, float corr_thresh, float db_thresh);
-    void updateCalibration(float distance_m, float temp_c, float corr_thresh, float db_thresh);
+                           float pressure_pa, float corr_thresh, float db_thresh,
+                           bool adaptive_thresh = false, float snr_margin = 8.0f);
+    void updateCalibration(float distance_m, float temp_c, float corr_thresh, float db_thresh,
+                           bool adaptive_thresh = false, float snr_margin = 8.0f);
     static float calculateSoundSpeed(float temp_c, float humidity_pct = 50.0f,
                                      float pressure_pa = 101325.0f);
     float getSoundSpeed() const { return c_sound; }
+
+    void setAdaptiveThreshold(bool enabled, float snr_margin = 8.0f);
+    bool isAdaptiveThresholdEnabled() const { return adaptive_threshold_enabled; }
+    float getSnrMarginDb() const { return snr_margin_db; }
+    float getNoiseFloorDb() const { return noise_floor_db; }
+    float getEffectiveThresholdDb() const;
+    void resetNoiseFloor(float initial_db = -100.0f);
+    bool isNoiseFloorInitialized() const { return noise_floor_initialized; }
 
 private:
     float fs;
@@ -43,6 +53,11 @@ private:
     float correlation_threshold;
     float db_threshold;
     size_t fft_size;
+
+    bool adaptive_threshold_enabled;
+    float snr_margin_db;
+    float noise_floor_db;
+    bool noise_floor_initialized;
 
     // Medpomnilniki za FFT (kompleksna števila: [Re, Im, Re, Im...])
     float* window;

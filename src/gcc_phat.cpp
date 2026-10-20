@@ -41,16 +41,18 @@ static int wrap_correlation_index(int lag, int fft_size) {
 GccPhat::GccPhat(float sample_rate, float mic_distance_m, float temp_c,
                  float humidity_pct, float pressure_pa)
     : fs(sample_rate), d(mic_distance_m), correlation_threshold(0.35f),
-      db_threshold(-45.0f), fft_size(0), window(nullptr), fft_x1(nullptr),
-      fft_x2(nullptr), ccorr(nullptr) {
+      db_threshold(-45.0f), fft_size(0), adaptive_threshold_enabled(false),
+      snr_margin_db(8.0f), noise_floor_db(-100.0f), noise_floor_initialized(false),
+      window(nullptr), fft_x1(nullptr), fft_x2(nullptr), ccorr(nullptr) {
     c_sound = calculateSoundSpeed(temp_c, humidity_pct, pressure_pa);
 }
 
 GccPhat::GccPhat(float sample_rate, float mic_distance_m, float temp_c,
                  size_t window_size, float humidity_pct, float pressure_pa)
     : fs(sample_rate), d(mic_distance_m), correlation_threshold(0.35f),
-      db_threshold(-45.0f), fft_size(0), window(nullptr), fft_x1(nullptr),
-      fft_x2(nullptr), ccorr(nullptr) {
+      db_threshold(-45.0f), fft_size(0), adaptive_threshold_enabled(false),
+      snr_margin_db(8.0f), noise_floor_db(-100.0f), noise_floor_initialized(false),
+      window(nullptr), fft_x1(nullptr), fft_x2(nullptr), ccorr(nullptr) {
     c_sound = calculateSoundSpeed(temp_c, humidity_pct, pressure_pa);
     fft_size = window_size;
 }
@@ -94,15 +96,41 @@ float GccPhat::calculateSoundSpeed(float temp_c, float humidity_pct, float press
 }
 
 void GccPhat::updateCalibration(float distance_m, float temp_c, float humidity_pct,
-                               float pressure_pa, float corr_thresh, float db_thresh) {
+                               float pressure_pa, float corr_thresh, float db_thresh,
+                               bool adaptive_thresh, float snr_margin) {
     this->d = distance_m;
     this->c_sound = calculateSoundSpeed(temp_c, humidity_pct, pressure_pa);
     this->correlation_threshold = corr_thresh;
     this->db_threshold = db_thresh;
+    this->adaptive_threshold_enabled = adaptive_thresh;
+    if (std::isfinite(snr_margin) && snr_margin >= 0.0f) {
+        this->snr_margin_db = snr_margin;
+    }
 }
 
-void GccPhat::updateCalibration(float distance_m, float temp_c, float corr_thresh, float db_thresh) {
-    updateCalibration(distance_m, temp_c, 50.0f, 101325.0f, corr_thresh, db_thresh);
+void GccPhat::updateCalibration(float distance_m, float temp_c, float corr_thresh, float db_thresh,
+                               bool adaptive_thresh, float snr_margin) {
+    updateCalibration(distance_m, temp_c, 50.0f, 101325.0f, corr_thresh, db_thresh,
+                      adaptive_thresh, snr_margin);
+}
+
+void GccPhat::setAdaptiveThreshold(bool enabled, float snr_margin) {
+    this->adaptive_threshold_enabled = enabled;
+    if (std::isfinite(snr_margin) && snr_margin >= 0.0f) {
+        this->snr_margin_db = snr_margin;
+    }
+}
+
+float GccPhat::getEffectiveThresholdDb() const {
+    if (adaptive_threshold_enabled && noise_floor_initialized) {
+        return noise_floor_db + snr_margin_db;
+    }
+    return db_threshold;
+}
+
+void GccPhat::resetNoiseFloor(float initial_db) {
+    noise_floor_db = initial_db;
+    noise_floor_initialized = (initial_db >= -95.0f);
 }
 
 bool GccPhat::init() {
@@ -176,6 +204,7 @@ bool GccPhat::configure(float sample_rate, size_t window_size) {
 
     // Priprava Hannovega okna
     dsps_wind_hann_f32(window, static_cast<int>(fft_size));
+    resetNoiseFloor(-100.0f);
     return true;
 }
 
@@ -217,8 +246,42 @@ DoaResult GccPhat::process(const int32_t* left_channel, const int32_t* right_cha
     float rms = sqrtf(energy_sum / static_cast<float>(fft_size));
     result.rms_db = (rms > 1e-5f) ? 20.0f * log10f(rms) : -100.0f;
 
+    // 1b. Določitev praga zaznave (prilagodljivi šum okolice ali fiksni prag)
+    float effective_thresh = db_threshold;
+    if (adaptive_threshold_enabled) {
+        if (!noise_floor_initialized) {
+            if (result.rms_db > -95.0f) {
+                noise_floor_db = result.rms_db;
+                noise_floor_initialized = true;
+            }
+        } else {
+            const float trigger_threshold = noise_floor_db + snr_margin_db;
+
+            if (result.rms_db < noise_floor_db) {
+                // Hiter padec ocene šuma ob utišanju ozadja (~1-2 s)
+                noise_floor_db += 0.02f * (result.rms_db - noise_floor_db);
+            } else if (result.rms_db < trigger_threshold) {
+                // Počasno sledenje dvigu šuma okolice pod pragom proženja
+                noise_floor_db += 0.005f * (result.rms_db - noise_floor_db);
+            } else {
+                // Zvočni dogodek / govor: zelo počasno prilagajanje, da trajen zvok
+                // ne zviša takoj praga in ne zaduši detekcije
+                noise_floor_db += 0.0005f * (result.rms_db - noise_floor_db);
+            }
+        }
+
+        if (noise_floor_initialized) {
+            if (noise_floor_db < -95.0f) {
+                noise_floor_db = -95.0f;
+            } else if (noise_floor_db > -5.0f) {
+                noise_floor_db = -5.0f;
+            }
+            effective_thresh = noise_floor_db + snr_margin_db;
+        }
+    }
+
     // Če je signal pretišji, preskočimo zahtevno računanje
-    if (result.rms_db < db_threshold) {
+    if (result.rms_db < effective_thresh) {
         return result;
     }
 
