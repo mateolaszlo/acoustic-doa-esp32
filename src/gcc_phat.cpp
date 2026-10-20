@@ -232,12 +232,14 @@ DoaResult GccPhat::process(const int32_t* left_channel, const int32_t* right_cha
     // G12(f) = X1(f) * conj(X2(f))
     // Psi(f) = G12(f) / |G12(f)|
     const float bin_hz = fs / static_cast<float>(fft_size);
+    float weight_sum = 0.0f;
 
     for (size_t i = 0; i < fft_size; i++) {
         const size_t mirrored_bin = i <= fft_size / 2 ? i : fft_size - i;
         const float frequency_hz =
             static_cast<float>(mirrored_bin) * bin_hz;
         const float band_weight = gcc_phat_band_weight(frequency_hz);
+        weight_sum += band_weight;
         if (band_weight == 0.0f) {
             ccorr[2 * i] = 0.0f;
             ccorr[2 * i + 1] = 0.0f;
@@ -281,10 +283,12 @@ DoaResult GccPhat::process(const int32_t* left_channel, const int32_t* right_cha
     
     int best_idx = 0;
     float best_peak = -1.0f;
+    const float norm_factor =
+        (weight_sum > 1e-6f) ? weight_sum : static_cast<float>(fft_size);
 
     for (int lag = -max_lag; lag <= max_lag; lag++) {
         int idx = (lag < 0) ? (static_cast<int>(fft_size) + lag) : lag;
-        float val = ccorr[2 * idx] / static_cast<float>(fft_size); // Realni del po IFFT
+        float val = ccorr[2 * idx] / norm_factor; // Realni del po IFFT normaliziran na [0, 1]
 
         if (val > best_peak) {
             best_peak = val;
@@ -292,7 +296,7 @@ DoaResult GccPhat::process(const int32_t* left_channel, const int32_t* right_cha
         }
     }
 
-    result.confidence = best_peak;
+    result.confidence = (best_peak > 1.0f) ? 1.0f : (best_peak < 0.0f ? 0.0f : best_peak);
 
     if (best_peak < correlation_threshold) {
         return result; // Ni dovolj jasnega vrha (odmev ali šum)
@@ -303,9 +307,9 @@ DoaResult GccPhat::process(const int32_t* left_channel, const int32_t* right_cha
     const int idx_m1 = wrap_correlation_index(best_idx - 1, fft_size_int);
     const int idx_p1 = wrap_correlation_index(best_idx + 1, fft_size_int);
 
-    float alpha = ccorr[2 * idx_m1] / static_cast<float>(fft_size);
+    float alpha = ccorr[2 * idx_m1] / norm_factor;
     float beta  = best_peak;
-    float gamma = ccorr[2 * idx_p1] / static_cast<float>(fft_size);
+    float gamma = ccorr[2 * idx_p1] / norm_factor;
 
     float p = 0.0f;
     float denom = (alpha - 2.0f * beta + gamma);
