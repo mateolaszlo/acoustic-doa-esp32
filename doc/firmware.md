@@ -6,8 +6,10 @@
 |---|---|
 | `src/main.cpp` | Setup portal, NVS configuration, Wi-Fi/API, TFT/BME280, FreeRTOS tasks |
 | `src/i2s_sampler.cpp` | I2S driver installation and stereo DMA reads |
-| `src/display_filter.h` | Radar visual angle smoothing filter (EMA with outlier rejection) |
-| `src/post_checker.h` | Power-On Self-Test (POST) statistical heuristics for I2S microphones |
+| `src/display_filter.h` | Radar visual angle smoothing filter (`DisplaySmoothingFilter`) declarations |
+| `src/display_filter.cpp` | EMA smoothing, outlier rejection, and radar needle angle calculation |
+| `src/post_checker.h` | Power-On Self-Test (POST) microphone health declarations and `MicrophoneHealthResult` |
+| `src/post_checker.cpp` | Statistical heuristic evaluation of stereo digital microphones (`evaluate_microphone_health`) |
 | `src/gcc_phat.h` | `DoaResult`, `GccPhat`, and FFT-size declarations |
 | `src/gcc_phat.cpp` | Windowing, FFT, GCC-PHAT, peak search, interpolation, and angle calculation |
 | `platformio.ini` | Board, framework, monitor, and library dependencies |
