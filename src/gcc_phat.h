@@ -15,7 +15,7 @@ struct DoaResult {
 
 class GccPhat {
 public:
-    GccPhat(float sample_rate, float mic_distance_m, float temp_c = 20.0f,
+    GccPhat(float sample_rate, float mic_distance_m = 0.082f, float temp_c = 20.0f,
             float humidity_pct = 50.0f, float pressure_pa = 101325.0f);
     GccPhat(float sample_rate, float mic_distance_m, float temp_c, size_t window_size,
             float humidity_pct = 50.0f, float pressure_pa = 101325.0f);
@@ -31,12 +31,17 @@ public:
     DoaResult process(const int32_t* left_channel, const int32_t* right_channel);
     void updateCalibration(float distance_m, float temp_c, float humidity_pct,
                            float pressure_pa, float corr_thresh, float db_thresh,
-                           bool adaptive_thresh = false, float snr_margin = 8.0f);
+                           bool adaptive_thresh = false, float snr_margin = 8.0f,
+                           float angle_offset = 0.0f);
     void updateCalibration(float distance_m, float temp_c, float corr_thresh, float db_thresh,
-                           bool adaptive_thresh = false, float snr_margin = 8.0f);
+                           bool adaptive_thresh = false, float snr_margin = 8.0f,
+                           float angle_offset = 0.0f);
     static float calculateSoundSpeed(float temp_c, float humidity_pct = 50.0f,
                                      float pressure_pa = 101325.0f);
     float getSoundSpeed() const { return c_sound; }
+
+    void setAngleOffsetDeg(float offset_deg);
+    float getAngleOffsetDeg() const { return angle_offset_deg; }
 
     void setAdaptiveThreshold(bool enabled, float snr_margin = 8.0f);
     bool isAdaptiveThresholdEnabled() const { return adaptive_threshold_enabled; }
@@ -52,6 +57,7 @@ private:
     float c_sound;
     float correlation_threshold;
     float db_threshold;
+    float angle_offset_deg;
     size_t fft_size;
 
     bool adaptive_threshold_enabled;

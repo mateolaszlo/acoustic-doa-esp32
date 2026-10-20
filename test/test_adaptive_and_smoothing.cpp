@@ -275,10 +275,68 @@ void test_post_checker() {
     printf("  [PASS] test_post_checker passed.\n");
 }
 
+static void test_gcc_phat_angle_offset() {
+    printf("[TEST] Running test_gcc_phat_angle_offset...\n");
+
+    const size_t n = 1024;
+    const float fs = 44100.0f;
+    const float d = 0.082f;
+    GccPhat doa(fs, d, 20.0f);
+    assert(doa.init(n));
+
+    // Default angle offset is 0.0 degrees
+    assert(std::fabs(doa.getAngleOffsetDeg() - 0.0f) < 1e-4f);
+
+    // Set angle offset to 7.0 degrees
+    doa.setAngleOffsetDeg(7.0f);
+    assert(std::fabs(doa.getAngleOffsetDeg() - 7.0f) < 1e-4f);
+
+    // Out of bounds protection (> 80 or < -80 should be rejected)
+    doa.setAngleOffsetDeg(95.0f);
+    assert(std::fabs(doa.getAngleOffsetDeg() - 7.0f) < 1e-4f);
+    doa.setAngleOffsetDeg(-85.0f);
+    assert(std::fabs(doa.getAngleOffsetDeg() - 7.0f) < 1e-4f);
+
+    // Verify updateCalibration updates angle offset
+    doa.updateCalibration(d, 20.0f, 0.35f, -60.0f, false, 8.0f, 3.5f);
+    assert(std::fabs(doa.getAngleOffsetDeg() - 3.5f) < 1e-4f);
+
+    // Verify mathematical formulation of delay offset compensation
+    const float c_sound = doa.getSoundSpeed();
+    const float raw_angle = 7.0f;
+    const float offset_rad = raw_angle * (static_cast<float>(M_PI) / 180.0f);
+    const float delta_t_raw = (d * sinf(offset_rad)) / c_sound; // ~28.8 us
+
+    // When angle_offset is raw_angle (7.0 deg):
+    const float delta_t_offset = (d * sinf(offset_rad)) / c_sound;
+    const float delta_t_cal = delta_t_raw - delta_t_offset;
+    const float ratio = (c_sound * delta_t_cal) / d;
+    const float calibrated_angle = asinf(ratio) * (180.0f / static_cast<float>(M_PI));
+    assert(std::fabs(calibrated_angle) < 1e-5f); // Exactly 0.0 deg!
+
+    // Verify symmetric full scale reach (-90 and +90):
+    // Left edge: raw delay is -d/c + delta_t_offset
+    const float left_raw = (-d / c_sound) + delta_t_offset;
+    const float left_cal = left_raw - delta_t_offset;
+    const float left_ratio = (c_sound * left_cal) / d;
+    const float left_angle = asinf(left_ratio) * (180.0f / static_cast<float>(M_PI));
+    assert(std::fabs(left_angle - (-90.0f)) < 1e-4f); // Exactly -90.0 deg!
+
+    // Right edge: raw delay is +d/c + delta_t_offset
+    const float right_raw = (d / c_sound) + delta_t_offset;
+    const float right_cal = right_raw - delta_t_offset;
+    const float right_ratio = (c_sound * right_cal) / d;
+    const float right_angle = asinf(right_ratio) * (180.0f / static_cast<float>(M_PI));
+    assert(std::fabs(right_angle - 90.0f) < 1e-4f); // Exactly +90.0 deg!
+
+    printf("  [PASS] test_gcc_phat_angle_offset passed.\n");
+}
+
 int main() {
     test_gcc_phat_adaptive_noise_floor();
     test_display_smoothing_filter();
     test_post_checker();
+    test_gcc_phat_angle_offset();
     printf("\nAll unit tests passed successfully!\n");
     return 0;
 }

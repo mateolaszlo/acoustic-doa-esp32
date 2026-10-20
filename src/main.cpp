@@ -78,10 +78,11 @@ struct DeviceConfig {
     String api_url;
     String api_key;
     uint32_t device_id = 0;
-    float microphone_distance_m = 0.08f;
+    float microphone_distance_m = 0.082f;
     float correlation_threshold = 0.35f;
     float sound_level_threshold_db_spl = 55.0f;
     float db_spl_offset = 0.0f;
+    float angle_offset_deg = 0.0f;
     uint32_t sample_rate = 44100;
     uint32_t window_size = N_SAMPLES;
     bool adaptive_threshold_enabled = true;
@@ -94,7 +95,7 @@ struct NetworkMeasurement {
     uint16_t clock_flags;
 };
 
-static GccPhat doa(44100, 0.08f, 20.0f); // 44.1 kHz, 8 cm, 20 °C
+static GccPhat doa(44100, 0.082f, 20.0f); // 44.1 kHz, 8.2 cm, 20 °C
 static QueueHandle_t display_queue;
 static QueueHandle_t network_queue;
 static SPIClass tft_spi(FSPI);
@@ -153,12 +154,18 @@ static void load_device_config() {
     device_config.api_url = get_preference_string("api_url", DEFAULT_API_URL);
     device_config.api_key = get_preference_string("api_key", DEFAULT_API_KEY);
     device_config.device_id = preferences.getUInt("device_id", 0);
-    device_config.microphone_distance_m = get_preference_float("mic_distance", 0.08f);
+    device_config.microphone_distance_m = get_preference_float("mic_distance", 0.082f);
     device_config.correlation_threshold =
         get_preference_float("corr_threshold", 0.35f);
     device_config.sound_level_threshold_db_spl =
         get_preference_float("spl_threshold", 55.0f);
     device_config.db_spl_offset = get_preference_float("spl_offset", 0.0f);
+    device_config.angle_offset_deg = get_preference_float("ang_offset", 0.0f);
+    if (!std::isfinite(device_config.angle_offset_deg) ||
+        device_config.angle_offset_deg < -45.0f ||
+        device_config.angle_offset_deg > 45.0f) {
+        device_config.angle_offset_deg = 0.0f;
+    }
     device_config.sample_rate = preferences.getUInt("sample_rate", 44100);
     device_config.window_size = preferences.getUInt("window_size", N_SAMPLES);
     device_config.adaptive_threshold_enabled =
@@ -188,6 +195,7 @@ static void save_device_config() {
     preferences.putFloat("corr_threshold", device_config.correlation_threshold);
     preferences.putFloat("spl_threshold", device_config.sound_level_threshold_db_spl);
     preferences.putFloat("spl_offset", device_config.db_spl_offset);
+    preferences.putFloat("ang_offset", device_config.angle_offset_deg);
     preferences.putUInt("sample_rate", device_config.sample_rate);
     preferences.putUInt("window_size", device_config.window_size);
     preferences.putBool("adapt_thresh", device_config.adaptive_threshold_enabled);
@@ -214,6 +222,8 @@ static String setup_page() {
             String(device_config.db_spl_offset, 2) + "'><br>";
     page += "Fixed threshold (dB SPL)<br><input name='spl_threshold' value='" +
             String(device_config.sound_level_threshold_db_spl, 1) + "'><br>";
+    page += "Zero angle offset (deg)<br><input name='ang_offset' value='" +
+            String(device_config.angle_offset_deg, 1) + "'><br>";
     page += "<label><input type='checkbox' name='adapt_thresh' value='1'" +
             String(device_config.adaptive_threshold_enabled ? " checked" : "") +
             "> Enable adaptive noise floor threshold</label><br>";
@@ -265,6 +275,15 @@ static void handle_setup_save() {
         float spl = setup_server.arg("spl_threshold").toFloat();
         if (std::isfinite(spl) && spl >= -200.0f && spl <= 200.0f) {
             device_config.sound_level_threshold_db_spl = spl;
+        }
+    }
+    if (setup_server.hasArg("ang_offset")) {
+        float ang = setup_server.arg("ang_offset").toFloat();
+        if (std::isfinite(ang) && ang >= -45.0f && ang <= 45.0f) {
+            device_config.angle_offset_deg = ang;
+        } else {
+            setup_server.send(400, "text/plain", "Invalid angle offset (must be -45 to +45 deg)");
+            return;
         }
     }
 
@@ -855,6 +874,7 @@ static bool apply_dsp_calibration(float temperature_c,
     const float sound_level_threshold_db_spl =
         device_config.sound_level_threshold_db_spl;
     const float configured_offset = device_config.db_spl_offset;
+    const float angle_offset = device_config.angle_offset_deg;
     const uint32_t sample_rate = device_config.sample_rate;
     const uint32_t window_size = device_config.window_size;
     const bool adaptive_enabled = device_config.adaptive_threshold_enabled;
@@ -865,7 +885,8 @@ static bool apply_dsp_calibration(float temperature_c,
         correlation_threshold <= 0.0f ||
         sound_level_threshold_db_spl <= -200.0f ||
         !is_supported_audio_config(sample_rate, window_size) ||
-        !std::isfinite(snr_margin) || snr_margin < 0.0f || snr_margin > 60.0f) {
+        !std::isfinite(snr_margin) || snr_margin < 0.0f || snr_margin > 60.0f ||
+        !std::isfinite(angle_offset) || angle_offset < -80.0f || angle_offset > 80.0f) {
         Serial.println("Invalid or unsupported remote calibration");
         return false;
     }
@@ -883,7 +904,8 @@ static bool apply_dsp_calibration(float temperature_c,
         correlation_threshold,
         sound_level_threshold_db_spl - configured_offset,
         adaptive_enabled,
-        snr_margin);
+        snr_margin,
+        angle_offset);
     xSemaphoreGive(doa_mutex);
     db_spl_offset.store(configured_offset);
     adaptive_threshold_active.store(adaptive_enabled);
@@ -1033,12 +1055,22 @@ static bool fetch_remote_calibration() {
         snr_margin = doc["snr_margin"].as<float>();
     }
 
+    float angle_offset = previous.angle_offset_deg;
+    if (!doc["kot_odmik"].isNull()) {
+        angle_offset = doc["kot_odmik"].as<float>();
+    } else if (!doc["angle_offset_deg"].isNull()) {
+        angle_offset = doc["angle_offset_deg"].as<float>();
+    } else if (!doc["angle_offset"].isNull()) {
+        angle_offset = doc["angle_offset"].as<float>();
+    }
+
     if (distance <= 0.0f || correlation <= 0.0f ||
         spl_threshold <= -200.0f ||
         !is_supported_audio_config(sample_rate, window_size) ||
         !isfinite(distance) || !isfinite(correlation) ||
         !isfinite(spl_threshold) || !isfinite(offset) ||
-        !isfinite(snr_margin) || snr_margin < 0.0f || snr_margin > 60.0f) {
+        !isfinite(snr_margin) || snr_margin < 0.0f || snr_margin > 60.0f ||
+        !isfinite(angle_offset) || angle_offset < -45.0f || angle_offset > 45.0f) {
         Serial.println("Calibration response contains invalid or unsupported values");
         return false;
     }
@@ -1063,6 +1095,7 @@ static bool fetch_remote_calibration() {
     device_config.window_size = window_size;
     device_config.adaptive_threshold_enabled = adaptive_enabled;
     device_config.snr_margin_db = snr_margin;
+    device_config.angle_offset_deg = angle_offset;
     xSemaphoreGive(config_mutex);
 
     if (!apply_dsp_calibration(current_temperature.load(),

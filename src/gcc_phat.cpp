@@ -41,8 +41,9 @@ static int wrap_correlation_index(int lag, int fft_size) {
 GccPhat::GccPhat(float sample_rate, float mic_distance_m, float temp_c,
                  float humidity_pct, float pressure_pa)
     : fs(sample_rate), d(mic_distance_m), correlation_threshold(0.35f),
-      db_threshold(-45.0f), fft_size(0), adaptive_threshold_enabled(false),
-      snr_margin_db(8.0f), noise_floor_db(-100.0f), noise_floor_initialized(false),
+      db_threshold(-45.0f), angle_offset_deg(0.0f), fft_size(0),
+      adaptive_threshold_enabled(false), snr_margin_db(8.0f),
+      noise_floor_db(-100.0f), noise_floor_initialized(false),
       window(nullptr), fft_x1(nullptr), fft_x2(nullptr), ccorr(nullptr) {
     c_sound = calculateSoundSpeed(temp_c, humidity_pct, pressure_pa);
 }
@@ -50,8 +51,9 @@ GccPhat::GccPhat(float sample_rate, float mic_distance_m, float temp_c,
 GccPhat::GccPhat(float sample_rate, float mic_distance_m, float temp_c,
                  size_t window_size, float humidity_pct, float pressure_pa)
     : fs(sample_rate), d(mic_distance_m), correlation_threshold(0.35f),
-      db_threshold(-45.0f), fft_size(0), adaptive_threshold_enabled(false),
-      snr_margin_db(8.0f), noise_floor_db(-100.0f), noise_floor_initialized(false),
+      db_threshold(-45.0f), angle_offset_deg(0.0f), fft_size(0),
+      adaptive_threshold_enabled(false), snr_margin_db(8.0f),
+      noise_floor_db(-100.0f), noise_floor_initialized(false),
       window(nullptr), fft_x1(nullptr), fft_x2(nullptr), ccorr(nullptr) {
     c_sound = calculateSoundSpeed(temp_c, humidity_pct, pressure_pa);
     fft_size = window_size;
@@ -97,7 +99,7 @@ float GccPhat::calculateSoundSpeed(float temp_c, float humidity_pct, float press
 
 void GccPhat::updateCalibration(float distance_m, float temp_c, float humidity_pct,
                                float pressure_pa, float corr_thresh, float db_thresh,
-                               bool adaptive_thresh, float snr_margin) {
+                               bool adaptive_thresh, float snr_margin, float angle_offset) {
     this->d = distance_m;
     this->c_sound = calculateSoundSpeed(temp_c, humidity_pct, pressure_pa);
     this->correlation_threshold = corr_thresh;
@@ -106,12 +108,21 @@ void GccPhat::updateCalibration(float distance_m, float temp_c, float humidity_p
     if (std::isfinite(snr_margin) && snr_margin >= 0.0f) {
         this->snr_margin_db = snr_margin;
     }
+    if (std::isfinite(angle_offset) && angle_offset >= -80.0f && angle_offset <= 80.0f) {
+        this->angle_offset_deg = angle_offset;
+    }
 }
 
 void GccPhat::updateCalibration(float distance_m, float temp_c, float corr_thresh, float db_thresh,
-                               bool adaptive_thresh, float snr_margin) {
+                               bool adaptive_thresh, float snr_margin, float angle_offset) {
     updateCalibration(distance_m, temp_c, 50.0f, 101325.0f, corr_thresh, db_thresh,
-                      adaptive_thresh, snr_margin);
+                      adaptive_thresh, snr_margin, angle_offset);
+}
+
+void GccPhat::setAngleOffsetDeg(float offset_deg) {
+    if (std::isfinite(offset_deg) && offset_deg >= -80.0f && offset_deg <= 80.0f) {
+        this->angle_offset_deg = offset_deg;
+    }
 }
 
 void GccPhat::setAdaptiveThreshold(bool enabled, float snr_margin) {
@@ -382,6 +393,14 @@ DoaResult GccPhat::process(const int32_t* left_channel, const int32_t* right_cha
 
     float delta_samples = (float)best_idx + p;
     float delta_t = delta_samples / fs; // Zakasnitev v sekundah
+
+    // Kompenzacija statičnega časovnega zamika med kanaloma (I2S/hardware bias):
+    // delta_t_offset = (d * sin(angle_offset)) / c
+    if (angle_offset_deg != 0.0f && std::isfinite(angle_offset_deg)) {
+        const float offset_rad = angle_offset_deg * (static_cast<float>(M_PI) / 180.0f);
+        const float delta_t_offset = (d * sinf(offset_rad)) / c_sound;
+        delta_t -= delta_t_offset;
+    }
 
     // 7. Izračun vpadnega kota: theta = arcsin((c * delta_t) / d)
     float ratio = (c_sound * delta_t) / d;
