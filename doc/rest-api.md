@@ -56,6 +56,8 @@ The expected response contains:
   "prag_korelacije": 0.40,
   "prag_glasnosti_db": 55.0,
   "db_spl_offset": 96.5,
+  "prilagodljivi_prag": true,
+  "snr_rob_db": 8.0,
   "server_time_unix_ms": 1791830000123
 }
 ```
@@ -63,6 +65,8 @@ The expected response contains:
 `temperatura_okolice_c` is not required by the current firmware. The local BME280 is the source of temperature for sound-speed compensation.
 
 `db_spl_offset` is optional in the current parser. If absent, the previously stored offset is retained.
+`prilagodljivi_prag` (or `adaptive_threshold_enabled`, boolean) is optional. When true, enables adaptive noise floor tracking; when false, fixed thresholding via `prag_glasnosti_db` is enforced. If absent, the previous setting is retained.
+`snr_rob_db` (or `snr_margin_db`, float in dB) is optional. Specifies the minimum SNR margin above the estimated ambient noise floor required to trigger DOA calculation. If absent, the previous margin is retained.
 `server_time_unix_ms` is optional. When present, the firmware estimates the
 server-to-device UTC offset using the midpoint of the calibration request and
 uses it for measurement timestamps when NTP has not synchronized the system
@@ -78,6 +82,7 @@ The firmware validates:
 - Finite floating-point values.
 - A supported sample rate: 44100 or 48000 Hz.
 - A supported window size: 512, 1024, or 2048 samples.
+- Non-negative, finite SNR margin ($0.0 \le \text{snr\_margin} \le 60.0\text{ dB}$).
 
 Invalid responses are rejected and the previous local configuration remains active.
 Supported sample-rate/window changes reinitialize the audio and DSP path. If

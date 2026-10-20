@@ -6,6 +6,7 @@
 |---|---|
 | `src/main.cpp` | Setup portal, NVS configuration, Wi-Fi/API, TFT/BME280, FreeRTOS tasks |
 | `src/i2s_sampler.cpp` | I2S driver installation and stereo DMA reads |
+| `src/display_filter.h` | Radar visual angle smoothing filter (EMA with outlier rejection) |
 | `src/gcc_phat.h` | `DoaResult`, `GccPhat`, and FFT-size declarations |
 | `src/gcc_phat.cpp` | Windowing, FFT, GCC-PHAT, peak search, interpolation, and angle calculation |
 | `platformio.ini` | Board, framework, monitor, and library dependencies |
@@ -31,6 +32,20 @@ sizes are 512, 1024, and 2048 samples. Each block is processed as follows:
    - Angle using `asin(c * delay / distance)`.
    - Correlation confidence.
    - Raw level in dBFS.
+
+### Adaptive Noise Floor Tracking
+
+The pipeline supports an adaptive noise floor tracker implemented as an asymmetric leaky integrator estimating ambient acoustic noise:
+
+1. **Noise floor tracking**:
+   - When the signal level drops below the current noise floor estimate, it tracks downward rapidly ($\alpha_{\text{down}} = 0.02$, $\tau \approx 1\text{ s}$ at $\sim 43\text{ Hz}$).
+   - When the signal is between the noise floor and the trigger threshold ($\text{noise\_floor} + \text{snr\_margin}$), it tracks upward slowly ($\alpha_{\text{up}} = 0.005$, $\tau \approx 5\text{ s}$).
+   - When an active sound event occurs (signal exceeds trigger threshold), adaptation drops to a very slow rate ($\alpha_{\text{event}} = 0.0005$) to prevent sustained speech or alarms from pulling up the noise floor and extinguishing detection.
+   - The noise floor estimate is clamped to $[-95.0, -5.0]\text{ dBFS}$.
+2. **Threshold evaluation**:
+   - If adaptive thresholding is enabled, the effective threshold is $\text{noise\_floor} + \text{snr\_margin\_db}$.
+   - If disabled, the fixed threshold `db_threshold` (derived from `sound_level_threshold_db_spl - db_spl_offset`) is used.
+   - Signal blocks below the effective threshold bypass the compute-intensive FFT cross-correlation steps.
 
 The sound speed is calculated dynamically from BME280 temperature, relative humidity, and barometric pressure using moist air thermodynamics:
 
@@ -63,7 +78,7 @@ The internal `rms_db` value is not inherently dB SPL. The network and display pa
 ### Core 1: `DSP_Task`
 
 - Reads I2S DMA data.
-- Runs GCC-PHAT.
+- Runs GCC-PHAT and adaptive noise floor estimation.
 - Sends every valid result independently to the display and network queues.
 - Never performs Wi-Fi, HTTP, or network batching work.
 - Measures processing duration against the current audio-block deadline.
@@ -78,6 +93,8 @@ The internal `rms_db` value is not inherently dB SPL. The network and display pa
 - Reads the BME280 approximately every two seconds.
 - Updates the speed-of-sound calibration.
 - Receives results from `display_queue`.
+- Applies an angle smoothing filter (Exponential Moving Average with $\alpha = 0.25$ and outlier rejection threshold $\Delta\theta > 45^\circ$, confirming source relocation after 2 consecutive jumps, and resetting immediately after $>1.5\text{ s}$ of silence) specifically for rendering the visual radar needle on the SPI TFT without needle jitter.
+- Uploads and network measurements (`network_queue` and API batches) remain strictly raw and physics-consistent (no smoothing is applied to API measurements).
 - Prints event information to Serial.
 - Draws the full-color radar UI on the SPI TFT.
 - Priority: 2.
