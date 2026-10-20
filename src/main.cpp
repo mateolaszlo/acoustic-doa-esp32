@@ -111,6 +111,7 @@ static std::atomic<bool> ntp_time_valid(false);
 static std::atomic<int64_t> server_utc_offset_ms(0);
 static std::atomic<bool> server_time_valid(false);
 static std::atomic<float> current_noise_floor_db(-100.0f);
+static std::atomic<bool> adaptive_threshold_active(true);
 static bool display_initialized = false;
 static bool bme_initialized = false;
 static bool setup_mode = false;
@@ -169,6 +170,7 @@ static void load_device_config() {
         device_config.snr_margin_db = 8.0f;
     }
     db_spl_offset.store(device_config.db_spl_offset);
+    adaptive_threshold_active.store(device_config.adaptive_threshold_enabled);
     device_configured = device_config.wifi_ssid.length() > 0 &&
                         device_config.api_url.length() > 0 &&
                         device_config.api_key.length() > 0 &&
@@ -721,6 +723,7 @@ static bool apply_dsp_calibration(float temperature_c,
         snr_margin);
     xSemaphoreGive(doa_mutex);
     db_spl_offset.store(configured_offset);
+    adaptive_threshold_active.store(adaptive_enabled);
     return true;
 }
 
@@ -1068,13 +1071,28 @@ void network_task(void *param) {
 }
 
 void draw_radar_ui(float angle_deg, float temp_c, float hum, float pres, float c_sound,
-                   float db_spl, bool api_available) {
+                   float db_spl, bool api_available, bool adaptive_active = false) {
     canvas.fillScreen(ST77XX_BLACK);
 
     // 1. Izris polkrožnega radarja (središče na x=64, y=75, polmer r=52)
     const int cx = 64;
     const int cy = 68;
     const int r = 52;
+
+    // Značka načina delovanja (AUTO ali FIX) v zgornjem desnem kotu
+    if (adaptive_active) {
+        canvas.drawRoundRect(91, 3, 34, 11, 2, ST77XX_CYAN);
+        canvas.setTextSize(1);
+        canvas.setTextColor(ST77XX_CYAN);
+        canvas.setCursor(96, 5);
+        canvas.print("AUTO");
+    } else {
+        canvas.drawRoundRect(96, 3, 29, 11, 2, 0x4208);
+        canvas.setTextSize(1);
+        canvas.setTextColor(0x7BEF);
+        canvas.setCursor(102, 5);
+        canvas.print("FIX");
+    }
 
     // Barvna mreža radarja (temno zelena: 0x03E0)
     canvas.drawCircle(cx, cy, r, 0x03E0);
@@ -1236,7 +1254,8 @@ void sensor_display_task(void *param) {
             if (display_initialized) {
                 last_server_available = server_available.load();
                 draw_radar_ui(display_angle, temp, humidity, pressure, speed,
-                              calibrated_db, last_server_available);
+                              calibrated_db, last_server_available,
+                              adaptive_threshold_active.load());
             }
         }
 
@@ -1248,7 +1267,8 @@ void sensor_display_task(void *param) {
             draw_radar_ui(display_filter.isInitialized() ? display_filter.getSmoothedAngle() : last_event.angle_deg,
                           current_temperature.load(), current_humidity.load(),
                           current_pressure.load(), current_sound_speed.load(),
-                          calibrated_db, last_server_available);
+                          calibrated_db, last_server_available,
+                          adaptive_threshold_active.load());
         }
         esp_task_wdt_reset();
     }
@@ -1280,7 +1300,8 @@ void setup() {
                       current_humidity.load(),
                       current_pressure.load(),
                       current_sound_speed.load(), 0.0f,
-                      server_available.load());
+                      server_available.load(),
+                      adaptive_threshold_active.load());
     }
 
     // Ustvari FreeRTOS objekte za prenos rezultatov in zaščito DSP konfiguracije

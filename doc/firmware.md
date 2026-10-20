@@ -96,7 +96,7 @@ The internal `rms_db` value is not inherently dB SPL. The network and display pa
 - Applies an angle smoothing filter (Exponential Moving Average with $\alpha = 0.25$ and outlier rejection threshold $\Delta\theta > 45^\circ$, confirming source relocation after 2 consecutive jumps, and resetting immediately after $>1.5\text{ s}$ of silence) specifically for rendering the visual radar needle on the SPI TFT without needle jitter.
 - Uploads and network measurements (`network_queue` and API batches) remain strictly raw and physics-consistent (no smoothing is applied to API measurements).
 - Prints event information to Serial.
-- Draws the full-color radar UI on the SPI TFT.
+- Draws the full-color radar UI on the SPI TFT, including an `[AUTO]` pill badge (in cyan) in the top-right corner when adaptive noise floor tracking is enabled (or `[FIX]` in dark gray when disabled).
 - Priority: 2.
 - Stack: 4096 bytes.
 
