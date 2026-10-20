@@ -54,8 +54,17 @@ inline MicrophoneHealthResult evaluate_microphone_health(const int32_t* left,
     result.right_min = right[0];
     result.right_max = right[0];
 
-    float l_sum = 0.0f;
-    float r_sum = 0.0f;
+    float l_mean = 0.0f;
+    float r_mean = 0.0f;
+    for (size_t i = 0; i < count; ++i) {
+        l_mean += static_cast<float>(left[i]);
+        r_mean += static_cast<float>(right[i]);
+    }
+    l_mean /= static_cast<float>(count);
+    r_mean /= static_cast<float>(count);
+
+    float l_ac_sum = 0.0f;
+    float r_ac_sum = 0.0f;
 
     for (size_t i = 0; i < count; ++i) {
         if (left[i] < result.left_min) result.left_min = left[i];
@@ -67,14 +76,14 @@ inline MicrophoneHealthResult evaluate_microphone_health(const int32_t* left,
             result.identical_samples++;
         }
 
-        const float l_norm = static_cast<float>(left[i]) / 2147483648.0f;
-        const float r_norm = static_cast<float>(right[i]) / 2147483648.0f;
-        l_sum += l_norm * l_norm;
-        r_sum += r_norm * r_norm;
+        const float l_ac = (static_cast<float>(left[i]) - l_mean) / 2147483648.0f;
+        const float r_ac = (static_cast<float>(right[i]) - r_mean) / 2147483648.0f;
+        l_ac_sum += l_ac * l_ac;
+        r_ac_sum += r_ac * r_ac;
     }
 
-    const float l_rms = std::sqrt(l_sum / static_cast<float>(count));
-    const float r_rms = std::sqrt(r_sum / static_cast<float>(count));
+    const float l_rms = std::sqrt(l_ac_sum / static_cast<float>(count));
+    const float r_rms = std::sqrt(r_ac_sum / static_cast<float>(count));
 
     result.left_rms_db = (l_rms > 1e-5f) ? 20.0f * std::log10(l_rms) : -100.0f;
     result.right_rms_db = (r_rms > 1e-5f) ? 20.0f * std::log10(r_rms) : -100.0f;
