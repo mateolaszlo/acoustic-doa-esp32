@@ -119,8 +119,8 @@ void test_gcc_phat_adaptive_noise_floor() {
 
     // 2. Noise creeps up slowly below trigger threshold: should track up at alpha = 0.005
     float pre_up = doa.getNoiseFloorDb();
-    // feed signal above pre_up but below trigger threshold (pre_up + 7.5 dB)
-    int32_t creep_sample = static_cast<int32_t>(2147483648.0 * powf(10.0f, (pre_up + 8.0f) / 20.0f));
+    // feed signal above pre_up (+4.0 dB) but below trigger threshold (pre_up + 7.5 dB)
+    int32_t creep_sample = static_cast<int32_t>(2147483648.0 * powf(10.0f, (pre_up + 4.0f) / 20.0f));
     for (int i = 0; i < 512; i++) {
         left[i] = (i % 2 == 0) ? creep_sample : -creep_sample;
         right[i] = left[i];
@@ -136,6 +136,37 @@ void test_gcc_phat_adaptive_noise_floor() {
     // 3. Negative snr margin rejection
     doa.setAdaptiveThreshold(true, -5.0f);
     assert(doa.getSnrMarginDb() == 7.5f); // Unchanged
+
+    // 4. Stereo RMS symmetry (Left-only vs Right-only must produce identical RMS)
+    for (int i = 0; i < 512; i++) {
+        left[i] = (i % 2 == 0) ? loud_sample : -loud_sample;
+        right[i] = 0;
+    }
+    DoaResult r_left_only = doa.process(left.data(), right.data());
+    for (int i = 0; i < 512; i++) {
+        left[i] = 0;
+        right[i] = (i % 2 == 0) ? loud_sample : -loud_sample;
+    }
+    DoaResult r_right_only = doa.process(left.data(), right.data());
+    assert(fabsf(r_left_only.rms_db - r_right_only.rms_db) < 1e-4f);
+
+    // 5. Cold-boot loud event on block 0: noise floor seed must be capped at db_threshold
+    doa.resetNoiseFloor(-100.0f);
+    assert(!doa.isNoiseFloorInitialized());
+    doa.updateCalibration(0.08f, 22.0f, 0.40f, -45.0f, true, 8.0f);
+    int32_t cold_loud = static_cast<int32_t>(2147483648.0 * powf(10.0f, -25.0f / 20.0f));
+    for (int i = 0; i < 512; i++) {
+        left[i] = (i % 2 == 0) ? cold_loud : -cold_loud;
+        right[i] = left[i];
+    }
+    DoaResult r_cold_loud = doa.process(left.data(), right.data());
+    assert(doa.isNoiseFloorInitialized());
+    assert(fabsf(doa.getNoiseFloorDb() - (-45.0f)) < 1e-4f);
+    assert(r_cold_loud.rms_db > doa.getEffectiveThresholdDb());
+
+    // 6. Positive fixed db_threshold safety conversion (e.g. when db_spl_offset = 0.0f)
+    doa.updateCalibration(0.08f, 22.0f, 0.40f, 55.0f, false, 8.0f);
+    assert(fabsf(doa.getEffectiveThresholdDb() - (55.0f - DEFAULT_DB_SPL_OFFSET)) < 1e-4f);
 
     printf("  [PASS] test_gcc_phat_adaptive_noise_floor passed.\n");
 }
