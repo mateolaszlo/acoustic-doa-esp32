@@ -12,9 +12,10 @@ The project includes a custom PlatformIO board definition at [boards/esp32-s3-de
 
 | Function | ESP32-S3 GPIO | Firmware definition |
 |---|---:|---|
-| I2S bit clock (BCLK/SCK) | GPIO 4 | `I2S_BCLK_PIN` |
-| I2S word select (WS/LRCLK) | GPIO 5 | `I2S_WS_PIN` |
-| I2S microphone data | GPIO 6 | `I2S_DIN_PIN` |
+| I2S bit clock (BCLK/SCK, shared Bus 0 & Bus 1) | GPIO 4 | `I2S_BCLK_PIN` |
+| I2S word select (WS/LRCLK, shared Bus 0 & Bus 1) | GPIO 5 | `I2S_WS_PIN` |
+| I2S Bus 0 microphone data (Mic 0 & Mic 1) | GPIO 6 | `I2S_DIN0_PIN` (`I2S_DIN_PIN`) |
+| I2S Bus 1 microphone data (Mic 2 & Mic 3) | GPIO 7 | `I2S_DIN1_PIN` |
 | I2C SDA (BME280) | GPIO 8 | `I2C_SDA_PIN` |
 | I2C SCL (BME280) | GPIO 9 | `I2C_SCL_PIN` |
 | SPI TFT CS | GPIO 10 | `TFT_CS_PIN` |
@@ -27,30 +28,39 @@ The project includes a custom PlatformIO board definition at [boards/esp32-s3-de
 > [!CAUTION]
 > **OPI PSRAM Pin Restrictions:** On the ESP32-S3-DevKitC-1-N16R8, GPIO 33, 34, 35, 36, and 37 are internally dedicated to the 8-bit Octal SPI PSRAM. Never connect display or sensor signals to these pins, as doing so causes instant memory corruption or kernel panics.
 
-GPIO numbers and peripheral setup are defined in [main.cpp](../src/main.cpp) and [i2s_sampler.cpp](../src/i2s_sampler.cpp).
+GPIO numbers and peripheral setup are defined in [app_config.h](../src/app_config.h), [main.cpp](../src/main.cpp), and [i2s_sampler.cpp](../src/i2s_sampler.cpp).
 
-## Two-microphone I2S wiring
+## Four-microphone 2D square array I2S wiring
 
-The firmware expects two synchronized digital microphones connected to one shared I2S bus:
+The firmware uses four synchronized digital I2S microphones (e.g., INMP441) arranged in a horizontal 2D planar square of side length $d = 82\text{ mm}$ (`DEFAULT_MIC_DISTANCE_M = 0.082f`) to resolve full $360^\circ$ azimuth ($\phi \in [-180^\circ, +180^\circ]$, where $0^\circ = \text{Front/North/+Y}$, $+90^\circ = \text{Right/East/+X}$, $\pm 180^\circ = \text{Back/South/-Y}$, and $-90^\circ = \text{Left/West/-X}$):
 
-- Both microphones share BCLK.
-- Both microphones share WS/LRCLK.
-- Both microphones share the data input line into GPIO 6.
-- One microphone must transmit in the left slot.
-- The other microphone must transmit in the right slot.
+- **Shared Clock Bus**: All four microphones share `BCLK` (`GPIO 4`) and `WS/LRCLK` (`GPIO 5`).
+- **Dual ESP32-S3 I2S Controllers via GPIO Matrix**:
+  - `I2S0` (`I2S_MASTER_PORT_NUM = 0`) operates as Master RX, driving `BCLK` on `GPIO 4` and `WS` on `GPIO 5` while sampling stereo Pair A (`Mic 0` and `Mic 1`) on `GPIO 6` (`I2S_DIN0_PIN`).
+  - `I2S1` (`I2S_SLAVE_PORT_NUM = 1`) operates as Slave RX, sampling stereo Pair B (`Mic 2` and `Mic 3`) on `GPIO 7` (`I2S_DIN1_PIN`).
+  - `GPIO 4` and `GPIO 5` are configured in `GPIO_MODE_INPUT_OUTPUT` and routed internally through the ESP32-S3 GPIO Matrix (`I2S1I_BCK_IN_IDX` and `I2S1I_WS_IN_IDX`) so `I2S1` locks onto `I2S0`'s bit clock and frame sync without external loopback jumpers.
+  - To guarantee zero inter-bus sample slip, `I2S1` (Slave) is armed via `i2s_start(I2S_NUM_1)` before `I2S0` (Master) starts outputting clocks via `i2s_start(I2S_NUM_0)`.
 
-| I2S signal | ESP32-S3 | Microphone 1 | Microphone 2 |
-|---|---:|---|---|
-| BCLK | GPIO 4 | BCLK/SCK | BCLK/SCK |
-| WS/LRCLK | GPIO 5 | WS/LRCLK | WS/LRCLK |
-| DATA | GPIO 6 | SD/data bus | SD/data bus |
-| Channel select | N/A | Left | Right |
-| Ground | GND | GND | GND |
-| Power | 3.3 V as required by the module | VDD | VDD |
+| Microphone | Array Corner | Coordinates $(x, y)$ | I2S Peripheral | Data Pin | L/R Slot (`L/R` Pin) |
+|---|---|---|---|---:|---|
+| **Mic 0 (`ch0`)** | Right-Back (RB) | $(+d/2, -d/2)$ | `I2S0` (Master RX) | GPIO 6 (`I2S_DIN0_PIN`) | Left (`GND`) |
+| **Mic 1 (`ch1`)** | Right-Front (RF) | $(+d/2, +d/2)$ | `I2S0` (Master RX) | GPIO 6 (`I2S_DIN0_PIN`) | Right (`VDD`) |
+| **Mic 2 (`ch2`)** | Left-Front (LF) | $(-d/2, +d/2)$ | `I2S1` (Slave RX) | GPIO 7 (`I2S_DIN1_PIN`) | Left (`GND`) |
+| **Mic 3 (`ch3`)** | Left-Back (LB) | $(-d/2, -d/2)$ | `I2S1` (Slave RX) | GPIO 7 (`I2S_DIN1_PIN`) | Right (`VDD`) |
 
-The I2S driver is configured as master receive, 32-bit samples, stereo left/right format, four DMA buffers, and DMA buffer length 512.
+| I2S signal | ESP32-S3 | Mic 0 (RB) | Mic 1 (RF) | Mic 2 (LF) | Mic 3 (LB) |
+|---|---:|---|---|---|---|
+| BCLK | GPIO 4 | BCLK/SCK | BCLK/SCK | BCLK/SCK | BCLK/SCK |
+| WS/LRCLK | GPIO 5 | WS/LRCLK | WS/LRCLK | WS/LRCLK | WS/LRCLK |
+| DATA Bus 0 | GPIO 6 | SD/data | SD/data | — | — |
+| DATA Bus 1 | GPIO 7 | — | — | SD/data | SD/data |
+| Channel select (`L/R`) | N/A | Left (`GND`) | Right (`VDD`) | Left (`GND`) | Right (`VDD`) |
+| Ground | GND | GND | GND | GND | GND |
+| Power | 3.3 V | VDD | VDD | VDD | VDD |
 
-Confirm the microphone module voltage and slot-selection wiring from its datasheet before connecting it. Do not connect a microphone that drives a separate data line directly to the same ESP32 data input without an appropriate bus design.
+Both I2S drivers are configured for 32-bit samples, stereo left/right standard I2S format, four DMA buffers, and DMA buffer length 512, followed by a synchronous 6-block warmup discard (`POST_WARMUP_BLOCKS = 6`).
+
+Confirm the microphone module voltage and slot-selection wiring from its datasheet before connecting it. Do not short `GPIO 6` and `GPIO 7` together; the Power-On Self-Test (POST) explicitly checks for both intra-bus L/R collision and cross-bus data-line shorts.
 
 ## SPI TFT Display Wiring (1.8" 128x160 KMR-1.8 / ST7735)
 
@@ -91,8 +101,8 @@ GPIO 0 is also a boot-strapping pin on ESP32-S3 boards. Holding it low while pre
 
 ## Power and layout
 
-- Use a stable 3.3 V supply suitable for the ESP32 and both microphones.
+- Use a stable 3.3 V supply suitable for the ESP32 and all four microphones.
 - Keep microphone ground and ESP32 ground common.
-- Keep the two microphone capsules mechanically fixed relative to one another.
-- Measure the microphone-center spacing accurately; the distance is used directly in the DOA equation.
+- Keep the four microphone capsules mechanically fixed in a planar square of side length $d = 82\text{ mm}$ (`DEFAULT_MIC_DISTANCE_M = 0.082f`).
+- Measure the edge spacing $d$ accurately; the baseline geometry is used directly in the 6-pair 2D WLS DOA solver.
 - Keep I2S wires short and routed away from noisy switching or display wiring where practical.

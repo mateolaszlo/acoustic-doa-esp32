@@ -168,7 +168,9 @@ void GccPhat::updateCalibration(float distance_m, float temp_c, float humidity_p
     if (std::isfinite(snr_margin) && snr_margin >= 0.0f) {
         this->snr_margin_db = snr_margin;
     }
-    if (std::isfinite(angle_offset) && angle_offset >= -80.0f && angle_offset <= 80.0f) {
+    if (std::isfinite(angle_offset) &&
+        angle_offset >= ANGLE_OFFSET_MIN_DEG &&
+        angle_offset <= ANGLE_OFFSET_MAX_DEG) {
         this->angle_offset_deg = angle_offset;
     }
 }
@@ -180,7 +182,9 @@ void GccPhat::updateCalibration(float distance_m, float temp_c, float corr_thres
 }
 
 void GccPhat::setAngleOffsetDeg(float offset_deg) {
-    if (std::isfinite(offset_deg) && offset_deg >= -80.0f && offset_deg <= 80.0f) {
+    if (std::isfinite(offset_deg) &&
+        offset_deg >= ANGLE_OFFSET_MIN_DEG &&
+        offset_deg <= ANGLE_OFFSET_MAX_DEG) {
         this->angle_offset_deg = offset_deg;
     }
 }

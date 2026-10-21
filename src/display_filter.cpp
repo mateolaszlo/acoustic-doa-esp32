@@ -20,47 +20,68 @@ DisplaySmoothingFilter::DisplaySmoothingFilter(float alpha,
       consecutive_outliers(0),
       has_smoothed_angle(false) {}
 
+float DisplaySmoothingFilter::wrapAngle180(float deg) {
+    if (!std::isfinite(deg)) {
+        return 0.0f;
+    }
+    float wrapped = fmodf(deg + 180.0f, 360.0f);
+    if (wrapped < 0.0f) {
+        wrapped += 360.0f;
+    }
+    wrapped -= 180.0f;
+    if (wrapped == -180.0f && deg > 0.0f) {
+        return 180.0f;
+    }
+    return wrapped;
+}
+
+float DisplaySmoothingFilter::shortestAngularDiff(float target, float current) {
+    if (!std::isfinite(target) || !std::isfinite(current)) {
+        return 0.0f;
+    }
+    return wrapAngle180(target - current);
+}
+
 float DisplaySmoothingFilter::update(float raw_angle, uint32_t now_ms) {
+    if (!std::isfinite(raw_angle)) {
+        return smoothed_angle_deg;
+    }
+    const float wrapped_raw = wrapAngle180(raw_angle);
+
     // Reset smoothing after silence (> 1500 ms) or on first reading
     if (!has_smoothed_angle || (now_ms - last_event_time_ms > reset_silence_ms)) {
-        smoothed_angle_deg = raw_angle;
-        candidate_outlier_angle_deg = raw_angle;
+        smoothed_angle_deg = wrapped_raw;
+        candidate_outlier_angle_deg = wrapped_raw;
         has_smoothed_angle = true;
         consecutive_outliers = 0;
     } else {
-        const float diff = raw_angle - smoothed_angle_deg;
+        const float diff = shortestAngularDiff(wrapped_raw, smoothed_angle_deg);
         if (std::fabs(diff) > outlier_threshold_deg) {
-            // Check if this outlier agrees with the previous candidate outlier
+            // Check if this outlier agrees with the previous candidate outlier on S^1
+            const float candidate_diff =
+                shortestAngularDiff(wrapped_raw, candidate_outlier_angle_deg);
             if (consecutive_outliers > 0 &&
-                std::fabs(raw_angle - candidate_outlier_angle_deg) <= outlier_threshold_deg) {
+                std::fabs(candidate_diff) <= outlier_threshold_deg) {
                 consecutive_outliers++;
                 if (consecutive_outliers >= outlier_confirm_count) {
                     // Confirmed sound source relocation
-                    smoothed_angle_deg = raw_angle;
-                    candidate_outlier_angle_deg = raw_angle;
+                    smoothed_angle_deg = wrapped_raw;
+                    candidate_outlier_angle_deg = wrapped_raw;
                     consecutive_outliers = 0;
                 }
             } else {
                 // First outlier, or outlier inconsistent with previous candidate
-                candidate_outlier_angle_deg = raw_angle;
+                candidate_outlier_angle_deg = wrapped_raw;
                 consecutive_outliers = 1;
             }
             // Isolated or conflicting outlier is suppressed for visual display needle
         } else {
             consecutive_outliers = 0;
-            smoothed_angle_deg += ema_alpha * diff;
+            smoothed_angle_deg = wrapAngle180(smoothed_angle_deg + ema_alpha * diff);
         }
     }
 
     last_event_time_ms = now_ms;
-
-    // Clamp to physical radar bounds [-90, +90]
-    if (smoothed_angle_deg < -90.0f) {
-        smoothed_angle_deg = -90.0f;
-    } else if (smoothed_angle_deg > 90.0f) {
-        smoothed_angle_deg = 90.0f;
-    }
-
     return smoothed_angle_deg;
 }
 

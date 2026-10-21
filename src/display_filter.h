@@ -4,12 +4,13 @@
 #include <cstdint>
 
 /**
- * @brief Angle smoothing filter for visual radar display needle on the ST7735 TFT.
+ * @brief Circular S^1 angle smoothing filter for the 360-degree radar needle on the ST7735 TFT.
  *
- * Implements an Exponential Moving Average (EMA) with outlier rejection.
- * Isolated angle jumps (> 45 deg) are suppressed to avoid needle jitter from
+ * Implements a circular Exponential Moving Average (EMA) on [-180, +180] deg with
+ * shortest-arc outlier rejection across the +/-180 deg boundary.
+ * Isolated angle jumps (> 45 deg on S^1) are suppressed to avoid needle jitter from
  * multipath reflections. A sustained relocation requires 2 consecutive consistent
- * readings before the display snaps to the new source angle.
+ * readings (within 45 deg of each other on S^1) before the display snaps to the new source angle.
  * Silence (> 1500 ms) resets the filter so the needle snaps immediately to the first
  * new acoustic event without EMA lag.
  */
@@ -24,6 +25,9 @@ public:
                            float outlier_thresh_deg = DEFAULT_OUTLIER_THRESHOLD_DEG,
                            uint8_t outlier_confirm_count = DEFAULT_OUTLIER_CONFIRM_COUNT,
                            uint32_t reset_silence_ms = DEFAULT_RESET_SILENCE_MS);
+
+    static float wrapAngle180(float deg);
+    static float shortestAngularDiff(float target, float current);
 
     float update(float raw_angle, uint32_t now_ms);
 
@@ -45,5 +49,13 @@ private:
     uint8_t consecutive_outliers;
     bool has_smoothed_angle;
 };
+
+inline float wrapAngle180(float deg) {
+    return DisplaySmoothingFilter::wrapAngle180(deg);
+}
+
+inline float shortestAngularDiff(float target, float current) {
+    return DisplaySmoothingFilter::shortestAngularDiff(target, current);
+}
 
 #endif // DISPLAY_FILTER_H

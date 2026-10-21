@@ -20,6 +20,7 @@
 #include "gcc_phat.h"
 #include "display_filter.h"
 #include "post_checker.h"
+#include "i2s_sampler.h"
 
 // Globalne periferne enote
 Adafruit_BME280 bme; // I2C
@@ -29,11 +30,6 @@ std::atomic<float> current_sound_speed(DEFAULT_SOUND_SPEED_MPS);
 std::atomic<float> current_temperature(DEFAULT_TEMPERATURE_C);
 std::atomic<float> current_humidity(DEFAULT_HUMIDITY_PCT);
 std::atomic<float> current_pressure(DEFAULT_PRESSURE_PA);
-
-// Funkcije iz i2s_sampler.cpp
-bool init_i2s_microphones(uint32_t sample_rate);
-void deinit_i2s_microphones();
-bool read_i2s_stereo(int32_t* left, int32_t* right, size_t count);
 
 // Nastavitve sistema
 static constexpr char DEFAULT_WIFI_SSID[] = "";
@@ -256,7 +252,7 @@ static void handle_setup_save() {
         if (std::isfinite(ang) && ang >= ANGLE_OFFSET_MIN_DEG && ang <= ANGLE_OFFSET_MAX_DEG) {
             device_config.angle_offset_deg = ang;
         } else {
-            setup_server.send(400, "text/plain", "Invalid angle offset (must be -45 to +45 deg)");
+            setup_server.send(400, "text/plain", "Invalid angle offset (must be -180 to +180 deg)");
             return;
         }
     }
@@ -306,7 +302,7 @@ struct BootSelfTestResult {
     float bme_temp_c = 0.0f;
     float bme_pres_hpa = 0.0f;
     bool i2s_driver_ok = false;
-    MicrophoneHealthResult mic_health;
+    MicrophoneHealthResult mic_health{};
     bool all_nominal = false;
 };
 
@@ -321,16 +317,18 @@ static BootSelfTestResult run_boot_self_test(uint32_t sample_rate) {
 
     res.i2s_driver_ok = init_i2s_microphones(sample_rate);
     if (res.i2s_driver_ok) {
-        static int32_t l_test[POST_SAMPLE_COUNT];
-        static int32_t r_test[POST_SAMPLE_COUNT];
-        if (read_i2s_stereo(l_test, r_test, POST_SAMPLE_COUNT)) {
-            res.mic_health = evaluate_microphone_health(l_test, r_test, POST_SAMPLE_COUNT);
+        static int32_t ch0_test[POST_SAMPLE_COUNT];
+        static int32_t ch1_test[POST_SAMPLE_COUNT];
+        static int32_t ch2_test[POST_SAMPLE_COUNT];
+        static int32_t ch3_test[POST_SAMPLE_COUNT];
+        if (read_i2s_quad(ch0_test, ch1_test, ch2_test, ch3_test, POST_SAMPLE_COUNT)) {
+            res.mic_health = evaluate_quad_microphone_health(
+                ch0_test, ch1_test, ch2_test, ch3_test, POST_SAMPLE_COUNT);
         }
         deinit_i2s_microphones();
     }
 
-    res.all_nominal = res.psram_ok && res.mic_health.left_ok &&
-                      res.mic_health.right_ok && res.mic_health.stereo_distinct;
+    res.all_nominal = res.psram_ok && res.i2s_driver_ok && res.mic_health.all_ok;
 
     Serial.println("\n==================================================");
     Serial.println("           ACOUSTIC LOCATOR BOOT SELF-TEST        ");
@@ -342,34 +340,46 @@ static BootSelfTestResult run_boot_self_test(uint32_t sample_rate) {
 
     if (res.bme_ok) {
         Serial.printf("[PASS] BME280 I2C  : OK (T: %.1fC, P: %.1f hPa)\n",
-                  res.bme_temp_c, res.bme_pres_hpa);
+                      res.bme_temp_c, res.bme_pres_hpa);
     } else {
         Serial.printf("[WARN] BME280 I2C  : NOT FOUND (Using default c=%.1f m/s)\n",
                       DEFAULT_SOUND_SPEED_MPS);
     }
 
-    Serial.printf("[%s] I2S Driver  : %s (%u Hz Stereo)\n",
+    Serial.printf("[%s] I2S Driver  : %s (%u Hz Dual-Bus Quad)\n",
                   res.i2s_driver_ok ? "PASS" : "FAIL",
-                  res.i2s_driver_ok ? "Initialized" : "Failed",
+                  res.i2s_driver_ok ? "Initialized (I2S0 Master + I2S1 Slave)" : "Failed",
                   static_cast<unsigned>(sample_rate));
 
-    Serial.printf("[%s] Mic Left    : %s (RMS: %.1f dBFS, min=%ld, max=%ld)\n",
-                  res.mic_health.left_ok ? "PASS" : "FAIL",
-                  res.mic_health.left_ok ? "ACTIVE" : (res.mic_health.left_min == res.mic_health.left_max ? "FLATLINE" : "OUT OF BOUNDS"),
-                  res.mic_health.left_rms_db,
-                  static_cast<long>(res.mic_health.left_min),
-                  static_cast<long>(res.mic_health.left_max));
+    static const char* const mic_labels[AUDIO_NUM_CHANNELS] = {
+        "M0 (RB/I2S0L)",
+        "M1 (RF/I2S0R)",
+        "M2 (LF/I2S1L)",
+        "M3 (LB/I2S1R)"
+    };
+    for (size_t c = 0; c < AUDIO_NUM_CHANNELS; ++c) {
+        const bool ok = res.mic_health.ch_ok[c];
+        const char* state = ok
+            ? "ACTIVE"
+            : (res.mic_health.ch_min[c] == res.mic_health.ch_max[c] ? "FLATLINE" : "OUT OF BOUNDS");
+        Serial.printf("[%s] %-13s: %s (RMS: %.1f dBFS, min=%ld, max=%ld)\n",
+                      ok ? "PASS" : "FAIL",
+                      mic_labels[c],
+                      state,
+                      res.mic_health.ch_rms_db[c],
+                      static_cast<long>(res.mic_health.ch_min[c]),
+                      static_cast<long>(res.mic_health.ch_max[c]));
+    }
 
-    Serial.printf("[%s] Mic Right   : %s (RMS: %.1f dBFS, min=%ld, max=%ld)\n",
-                  res.mic_health.right_ok ? "PASS" : "FAIL",
-                  res.mic_health.right_ok ? "ACTIVE" : (res.mic_health.right_min == res.mic_health.right_max ? "FLATLINE" : "OUT OF BOUNDS"),
-                  res.mic_health.right_rms_db,
-                  static_cast<long>(res.mic_health.right_min),
-                  static_cast<long>(res.mic_health.right_max));
-
-    Serial.printf("[%s] Stereo L/R  : %s (%u/%u identical)\n",
-                  res.mic_health.stereo_distinct ? "PASS" : "FAIL",
-                  res.mic_health.stereo_distinct ? "Independent channels verified" : "CHANNEL COLLISION",
+    const bool sync_ok = res.i2s_driver_ok &&
+                         res.mic_health.bus0_distinct &&
+                         res.mic_health.bus1_distinct &&
+                         res.mic_health.cross_bus_distinct;
+    Serial.printf("[%s] Bus Sync    : Bus0=%s, Bus1=%s, CrossBus=%s (max identical=%u/%u)\n",
+                  sync_ok ? "PASS" : "FAIL",
+                  res.mic_health.bus0_distinct ? "OK" : "COLLISION",
+                  res.mic_health.bus1_distinct ? "OK" : "COLLISION",
+                  res.mic_health.cross_bus_distinct ? "OK" : "SHORTED",
                   static_cast<unsigned>(res.mic_health.identical_samples),
                   static_cast<unsigned>(POST_SAMPLE_COUNT));
 
@@ -394,9 +404,9 @@ static void show_boot_prompt(uint32_t remaining_ms, uint32_t total_ms, const Boo
     // POST Checklist
     // PSRAM
     canvas.setTextColor(ST77XX_WHITE);
-    canvas.setCursor(8, 22);
+    canvas.setCursor(8, 21);
     canvas.print("PSRAM :");
-    canvas.setCursor(54, 22);
+    canvas.setCursor(54, 21);
     if (post.psram_ok) {
         canvas.setTextColor(ST77XX_GREEN);
         canvas.printf("[OK] %uMB", static_cast<unsigned>(post.psram_bytes / (1024 * 1024)));
@@ -407,9 +417,9 @@ static void show_boot_prompt(uint32_t remaining_ms, uint32_t total_ms, const Boo
 
     // BME280
     canvas.setTextColor(ST77XX_WHITE);
-    canvas.setCursor(8, 34);
+    canvas.setCursor(8, 32);
     canvas.print("BME280:");
-    canvas.setCursor(54, 34);
+    canvas.setCursor(54, 32);
     if (post.bme_ok) {
         canvas.setTextColor(ST77XX_GREEN);
         canvas.printf("[OK] %.0fC", post.bme_temp_c);
@@ -418,55 +428,64 @@ static void show_boot_prompt(uint32_t remaining_ms, uint32_t total_ms, const Boo
         canvas.print("[--] Default");
     }
 
-    // Mic Left
+    // M0 & M1 (Bus 0: GPIO 6)
     canvas.setTextColor(ST77XX_WHITE);
-    canvas.setCursor(8, 46);
-    canvas.print("MIC L :");
-    canvas.setCursor(54, 46);
-    if (post.mic_health.left_ok) {
+    canvas.setCursor(8, 43);
+    canvas.print("M0:");
+    canvas.setTextColor(post.mic_health.ch_ok[0] ? ST77XX_GREEN : ST77XX_RED);
+    canvas.print(post.mic_health.ch_ok[0] ? "[OK]" : "[ER]");
+
+    canvas.setTextColor(ST77XX_WHITE);
+    canvas.setCursor(68, 43);
+    canvas.print("M1:");
+    canvas.setTextColor(post.mic_health.ch_ok[1] ? ST77XX_GREEN : ST77XX_RED);
+    canvas.print(post.mic_health.ch_ok[1] ? "[OK]" : "[ER]");
+
+    // M2 & M3 (Bus 1: GPIO 7)
+    canvas.setTextColor(ST77XX_WHITE);
+    canvas.setCursor(8, 54);
+    canvas.print("M2:");
+    canvas.setTextColor(post.mic_health.ch_ok[2] ? ST77XX_GREEN : ST77XX_RED);
+    canvas.print(post.mic_health.ch_ok[2] ? "[OK]" : "[ER]");
+
+    canvas.setTextColor(ST77XX_WHITE);
+    canvas.setCursor(68, 54);
+    canvas.print("M3:");
+    canvas.setTextColor(post.mic_health.ch_ok[3] ? ST77XX_GREEN : ST77XX_RED);
+    canvas.print(post.mic_health.ch_ok[3] ? "[OK]" : "[ER]");
+
+    // Dual-I2S Bus Synchronization & Channel Independence
+    canvas.setTextColor(ST77XX_WHITE);
+    canvas.setCursor(8, 65);
+    canvas.print("SYNC  :");
+    canvas.setCursor(54, 65);
+    if (post.i2s_driver_ok &&
+        post.mic_health.bus0_distinct &&
+        post.mic_health.bus1_distinct &&
+        post.mic_health.cross_bus_distinct) {
         canvas.setTextColor(ST77XX_GREEN);
-        canvas.printf("[OK] %.0fdB", post.mic_health.left_rms_db);
+        canvas.print("[OK] Quad");
+    } else if (!post.i2s_driver_ok) {
+        canvas.setTextColor(ST77XX_RED);
+        canvas.print("[FAIL] I2S");
+    } else if (!post.mic_health.bus0_distinct || !post.mic_health.bus1_distinct) {
+        canvas.setTextColor(ST77XX_RED);
+        canvas.print("[FAIL] BusLR");
     } else {
         canvas.setTextColor(ST77XX_RED);
-        canvas.print("[FAIL] Flat");
+        canvas.print("[FAIL] XBus");
     }
 
-    // Mic Right
-    canvas.setTextColor(ST77XX_WHITE);
-    canvas.setCursor(8, 58);
-    canvas.print("MIC R :");
-    canvas.setCursor(54, 58);
-    if (post.mic_health.right_ok) {
-        canvas.setTextColor(ST77XX_GREEN);
-        canvas.printf("[OK] %.0fdB", post.mic_health.right_rms_db);
-    } else {
-        canvas.setTextColor(ST77XX_RED);
-        canvas.print("[FAIL] Flat");
-    }
-
-    // Stereo
-    canvas.setTextColor(ST77XX_WHITE);
-    canvas.setCursor(8, 70);
-    canvas.print("STEREO:");
-    canvas.setCursor(54, 70);
-    if (post.mic_health.stereo_distinct) {
-        canvas.setTextColor(ST77XX_GREEN);
-        canvas.print("[OK] Dual");
-    } else {
-        canvas.setTextColor(ST77XX_RED);
-        canvas.print("[FAIL] Collsn");
-    }
-
-    canvas.drawFastHLine(8, 82, 112, COLOR_MUTED_GRAY);
+    canvas.drawFastHLine(8, 78, 112, COLOR_MUTED_GRAY);
 
     // Poziv za setup
     canvas.setTextColor(ST77XX_YELLOW);
-    canvas.setCursor(8, 90);
+    canvas.setCursor(8, 86);
     canvas.println("Hold BOOT for Setup");
 
     // Vrstica napredka
     const int bar_x = 14;
-    const int bar_y = 104;
+    const int bar_y = 100;
     const int bar_w = 100;
     const int bar_h = 7;
     canvas.drawRect(bar_x, bar_y, bar_w, bar_h, ST77XX_WHITE);
@@ -477,12 +496,12 @@ static void show_boot_prompt(uint32_t remaining_ms, uint32_t total_ms, const Boo
 
     // Besedilo odštevanja
     canvas.setTextColor(COLOR_MUTED_GRAY);
-    canvas.setCursor(14, 118);
+    canvas.setCursor(14, 114);
     int sec = (remaining_ms + 999) / 1000;
     canvas.printf("Starting in %d s...", sec);
 
     // Status celote
-    canvas.setCursor(8, 138);
+    canvas.setCursor(8, 136);
     if (post.all_nominal) {
         canvas.setTextColor(ST77XX_GREEN);
         canvas.print("STATUS: ALL NOMINAL");
@@ -773,8 +792,10 @@ static void initialize_task_watchdog() {
 
 // --- NALOGA NA JEDRU 1: DSP OBDELAVA ---
 void dsp_task(void *param) {
-    static int32_t left_buf[AUDIO_MAX_WINDOW_SIZE];
-    static int32_t right_buf[AUDIO_MAX_WINDOW_SIZE];
+    static int32_t ch0_buf[AUDIO_MAX_WINDOW_SIZE];
+    static int32_t ch1_buf[AUDIO_MAX_WINDOW_SIZE];
+    static int32_t ch2_buf[AUDIO_MAX_WINDOW_SIZE];
+    static int32_t ch3_buf[AUDIO_MAX_WINDOW_SIZE];
     esp_task_wdt_add(nullptr);
 
     while (true) {
@@ -790,7 +811,7 @@ void dsp_task(void *param) {
 
         bool read_ok = false;
         if (xSemaphoreTake(i2s_mutex, portMAX_DELAY) == pdTRUE) {
-            read_ok = read_i2s_stereo(left_buf, right_buf, window_size);
+            read_ok = read_i2s_quad(ch0_buf, ch1_buf, ch2_buf, ch3_buf, window_size);
             xSemaphoreGive(i2s_mutex);
         }
         if (read_ok) {
@@ -799,7 +820,7 @@ void dsp_task(void *param) {
                 esp_task_wdt_reset();
                 continue;
             }
-            DoaResult res = doa.process(left_buf, right_buf);
+            DoaResult res = doa.process(ch0_buf, ch1_buf, ch2_buf, ch3_buf);
             const float noise_floor = doa.getNoiseFloorDb();
             xSemaphoreGive(doa_mutex);
             current_noise_floor_db.store(noise_floor);
@@ -1239,60 +1260,62 @@ void draw_radar_ui(float angle_deg, float temp_c, float hum, float pres, float c
                    float db_spl, bool api_available, bool adaptive_active = false) {
     canvas.fillScreen(ST77XX_BLACK);
 
-    // 1. Izris polkrožnega radarja
+    // 1. Izris 360-stopinjskega krožnega radarja (cx = 64, cy = 44, r = 34)
     const int cx = RADAR_CENTER_X;
     const int cy = RADAR_CENTER_Y;
     const int r = RADAR_RADIUS;
 
     // Značka načina delovanja (AUTO ali FIX) v zgornjem desnem kotu
     if (adaptive_active) {
-        canvas.drawRoundRect(91, 3, 34, 11, 2, ST77XX_CYAN);
+        canvas.drawRoundRect(91, 2, 34, 11, 2, ST77XX_CYAN);
         canvas.setTextSize(1);
         canvas.setTextColor(ST77XX_CYAN);
-        canvas.setCursor(96, 5);
+        canvas.setCursor(96, 4);
         canvas.print("AUTO");
     } else {
-        canvas.drawRoundRect(96, 3, 29, 11, 2, COLOR_BADGE_BORDER);
+        canvas.drawRoundRect(96, 2, 29, 11, 2, COLOR_BADGE_BORDER);
         canvas.setTextSize(1);
         canvas.setTextColor(COLOR_MUTED_GRAY);
-        canvas.setCursor(102, 5);
+        canvas.setCursor(102, 4);
         canvas.print("FIX");
     }
 
-    // Barvna mreža radarja (temno zelena)
+    // Koncentrična obroča in križne osi N/E/S/W (temno zelena mreža)
     canvas.drawCircle(cx, cy, r, COLOR_RADAR_GRID);
     canvas.drawCircle(cx, cy, r / 2, COLOR_RADAR_GRID);
-    // Prekrijemo spodnjo polovico kroga
-    canvas.fillRect(0, cy + 1, TFT_WIDTH, r + 2, ST77XX_BLACK);
     canvas.drawLine(cx - r, cy, cx + r, cy, COLOR_RADAR_GRID);
+    canvas.drawLine(cx, cy - r, cx, cy + r, COLOR_RADAR_GRID);
 
-    // Oznake kotov
+    // Kardinalne oznake azimuta (0, +90, 180, -90)
     canvas.setTextSize(1);
     canvas.setTextColor(ST77XX_WHITE);
-    canvas.setCursor(4, cy - 10);
-    canvas.print("-90");
-    canvas.setCursor(cx - 6, cy - r - 10);
+    canvas.setCursor(cx - 2, 1);
     canvas.print("0");
-    canvas.setCursor(104, cy - 10);
+    canvas.setCursor(cx + r + 4, cy - 3);
     canvas.print("+90");
+    canvas.setCursor(cx - r - 21, cy - 3);
+    canvas.print("-90");
+    canvas.setCursor(cx + 3, cy + r - 9);
+    canvas.print("180");
 
-    // 2. Izris igle (barva glede na glasnost)
+    // 2. Izris 360-stopinjske polarne igle (barva glede na glasnost)
     uint16_t needle_color = (db_spl > NEEDLE_HIGH_SPL_THRESHOLD) ? ST77XX_RED :
                             ((db_spl > NEEDLE_MED_SPL_THRESHOLD) ? ST77XX_YELLOW : ST77XX_GREEN);
-    float rad = (angle_deg - 90.0f) * (M_PI / 180.0f);
-    int target_x = cx + static_cast<int>(r * cosf(rad));
-    int target_y = cy + static_cast<int>(r * sinf(rad));
+    const float rad = (angle_deg - 90.0f) * (static_cast<float>(M_PI) / 180.0f);
+    const int target_x = cx + static_cast<int>(roundf(r * cosf(rad)));
+    const int target_y = cy + static_cast<int>(roundf(r * sinf(rad)));
 
+    canvas.fillCircle(cx, cy, 2, COLOR_MUTED_GRAY);
     canvas.drawLine(cx, cy, target_x, target_y, needle_color);
     canvas.fillCircle(target_x, target_y, 3, needle_color);
 
-    // 3. Spodnja nadzorna plošča s telemetrijo
-    canvas.drawFastHLine(0, 75, TFT_WIDTH, COLOR_MUTED_GRAY); // Siva ločilna črta
+    // 3. Spodnja nadzorna plošča s telemetrijo (y = 84..159)
+    canvas.drawFastHLine(0, 82, TFT_WIDTH, COLOR_MUTED_GRAY); // Siva ločilna črta
 
     canvas.setTextSize(2);
     canvas.setTextColor(ST77XX_CYAN);
-    canvas.setCursor(14, 83);
-    canvas.printf("%+5.1f deg", angle_deg);
+    canvas.setCursor(4, 84);
+    canvas.printf("%+6.1f deg", angle_deg);
 
     canvas.setTextSize(1);
     canvas.setTextColor(ST77XX_YELLOW);

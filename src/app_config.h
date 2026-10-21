@@ -70,10 +70,11 @@ constexpr float GCC_PHAT_EDGE_MAX_HZ = 2200.0f;
 constexpr float GCC_PHAT_DIAG_MAX_HZ = 1450.0f;
 constexpr float GCC_PHAT_MAX_HZ      = GCC_PHAT_EDGE_MAX_HZ;
 constexpr float GCC_PHAT_RAMP_HZ     = 100.0f;
+constexpr float DOA_LOOP_CLOSURE_TOLERANCE_SAMPLES = 1.5f;
 
 // Parameter Plausibility & Validation Bounds
-constexpr float ANGLE_OFFSET_MIN_DEG    = -45.0f;
-constexpr float ANGLE_OFFSET_MAX_DEG    = 45.0f;
+constexpr float ANGLE_OFFSET_MIN_DEG    = -180.0f;
+constexpr float ANGLE_OFFSET_MAX_DEG    = 180.0f;
 constexpr float SNR_MARGIN_MIN_DB       = 0.0f;
 constexpr float SNR_MARGIN_MAX_DB       = 60.0f;
 constexpr float SPL_THRESHOLD_MIN_DB    = -200.0f;
@@ -124,13 +125,13 @@ constexpr uint32_t DOA_MUTEX_BLOCK_TIMEOUT_MS     = 100;
 // 5. RADAR UI & DISPLAY COLOR PALETTE (RGB565)
 // ==============================================================================
 constexpr uint16_t COLOR_MUTED_GRAY     = 0x7BEF; // Divider lines and secondary text
-constexpr uint16_t COLOR_RADAR_GRID     = 0x03E0; // Radar semicircular arcs & axes
+constexpr uint16_t COLOR_RADAR_GRID     = 0x03E0; // Radar circular rings & crosshair axes
 constexpr uint16_t COLOR_BADGE_BORDER   = 0x4208; // FIX mode badge outline
 
-// Radar Geometry
+// Radar Geometry (360-degree circular scope)
 constexpr int RADAR_CENTER_X            = 64;
-constexpr int RADAR_CENTER_Y            = 68;
-constexpr int RADAR_RADIUS              = 52;
+constexpr int RADAR_CENTER_Y            = 44;
+constexpr int RADAR_RADIUS              = 34;
 
 // Needle Sound Pressure Level Color Thresholds
 constexpr float NEEDLE_HIGH_SPL_THRESHOLD = 75.0f; // Red (> 75 dB SPL)

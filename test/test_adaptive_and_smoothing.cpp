@@ -324,14 +324,14 @@ void test_display_smoothing_filter() {
     float a7 = filter.update(45.0f, 2350);
     assert(fabsf(a7 - 45.0f) < 1e-4f);
 
-    // 7. Clamp checks
-    filter.update(120.0f, 2360); // Above 90
+    // 7. Full-circle [-180, +180] range & wrapAngle180 checks
+    filter.update(120.0f, 2360); // Rear-right quadrant (+120 deg)
     filter.update(120.0f, 2370);
-    assert(filter.getSmoothedAngle() == 90.0f);
+    assert(fabsf(filter.getSmoothedAngle() - 120.0f) < 1e-4f);
 
-    filter.update(-120.0f, 2380); // Below -90
+    filter.update(-120.0f, 2380); // Rear-left quadrant (-120 deg, 120 deg away on S^1)
     filter.update(-120.0f, 2390);
-    assert(filter.getSmoothedAngle() == -90.0f);
+    assert(fabsf(filter.getSmoothedAngle() - (-120.0f)) < 1e-4f);
 
     printf("  [PASS] test_display_smoothing_filter passed.\n");
 }
@@ -561,14 +561,20 @@ static void test_gcc_phat_angle_offset() {
     // Default angle offset is 0.0 degrees
     assert(std::fabs(doa.getAngleOffsetDeg() - 0.0f) < 1e-4f);
 
-    // Set angle offset to 7.0 degrees
+    // Set angle offset within [-180, +180] deg (including > 80 deg for 360-degree array)
+    doa.setAngleOffsetDeg(135.0f);
+    assert(std::fabs(doa.getAngleOffsetDeg() - 135.0f) < 1e-4f);
+    doa.setAngleOffsetDeg(-180.0f);
+    assert(std::fabs(doa.getAngleOffsetDeg() - (-180.0f)) < 1e-4f);
     doa.setAngleOffsetDeg(7.0f);
     assert(std::fabs(doa.getAngleOffsetDeg() - 7.0f) < 1e-4f);
 
-    // Out of bounds protection (> 80 or < -80 should be rejected)
-    doa.setAngleOffsetDeg(95.0f);
+    // Out of bounds protection (> 180 or < -180 or NAN should be rejected)
+    doa.setAngleOffsetDeg(185.0f);
     assert(std::fabs(doa.getAngleOffsetDeg() - 7.0f) < 1e-4f);
-    doa.setAngleOffsetDeg(-85.0f);
+    doa.setAngleOffsetDeg(-185.0f);
+    assert(std::fabs(doa.getAngleOffsetDeg() - 7.0f) < 1e-4f);
+    doa.setAngleOffsetDeg(NAN);
     assert(std::fabs(doa.getAngleOffsetDeg() - 7.0f) < 1e-4f);
 
     // Verify updateCalibration updates angle offset
@@ -632,10 +638,16 @@ static void test_app_config_consistency() {
     assert(!is_supported_audio_config(44100, 256));
     assert(!is_supported_audio_config(44100, 4096));
 
-    // Validation boundaries sanity
-    assert(ANGLE_OFFSET_MIN_DEG < 0.0f && ANGLE_OFFSET_MAX_DEG > 0.0f);
+    // Validation boundaries sanity ([-180, +180] deg for 360-degree array)
+    assert(std::fabs(ANGLE_OFFSET_MIN_DEG - (-180.0f)) < 1e-4f);
+    assert(std::fabs(ANGLE_OFFSET_MAX_DEG - 180.0f) < 1e-4f);
     assert(SNR_MARGIN_MIN_DB >= 0.0f && SNR_MARGIN_MAX_DB > SNR_MARGIN_MIN_DB);
     assert(SPL_THRESHOLD_MIN_DB < SPL_THRESHOLD_MAX_DB);
+
+    // 360-degree circular radar UI geometry constants
+    assert(RADAR_CENTER_X == 64);
+    assert(RADAR_CENTER_Y == 44);
+    assert(RADAR_RADIUS == 34);
 
     // Verify default-constructed GccPhat inherits central app_config constants
     GccPhat doa_default;
@@ -646,6 +658,12 @@ static void test_app_config_consistency() {
     assert(std::fabs(GCC_PHAT_EDGE_MAX_HZ - 2200.0f) < 1e-4f);
     assert(std::fabs(GCC_PHAT_DIAG_MAX_HZ - 1450.0f) < 1e-4f);
     assert(std::fabs(GCC_PHAT_RAMP_HZ - 100.0f) < 1e-4f);
+
+    // Verify updateCalibration accepts full [-180, +180] angle offset range
+    doa_default.updateCalibration(DEFAULT_MIC_DISTANCE_M, 20.0f, 0.35f, -45.0f, true, 8.0f, 135.0f);
+    assert(std::fabs(doa_default.getAngleOffsetDeg() - 135.0f) < 1e-4f);
+    doa_default.updateCalibration(DEFAULT_MIC_DISTANCE_M, 20.0f, 0.35f, -45.0f, true, 8.0f, -180.0f);
+    assert(std::fabs(doa_default.getAngleOffsetDeg() - (-180.0f)) < 1e-4f);
 
     printf("  [PASS] test_app_config_consistency passed.\n");
 }
@@ -1011,6 +1029,13 @@ static void test_gcc_phat_quad_wls_all_quadrants() {
     assert(fabsf(circular_angle_diff_deg(res_wrap_neg.angle_deg, -170.0f)) < 1.5f);
     assert(res_wrap_neg.angle_deg < -168.5f && res_wrap_neg.angle_deg >= -180.0f);
 
+    // Case C: Large rotational offset (-135 deg) via setAngleOffsetDeg() -> wavefront at -110 deg wraps to +25 deg
+    doa.setAngleOffsetDeg(-135.0f);
+    synthesize_quad_wavefront(-110.0f, fs, d, c_sound, n, ch0, ch1, ch2, ch3);
+    DoaResult res_large_off = doa.process(ch0.data(), ch1.data(), ch2.data(), ch3.data());
+    assert(res_large_off.valid);
+    assert(fabsf(circular_angle_diff_deg(res_large_off.angle_deg, 25.0f)) < 1.5f);
+
     doa.setAngleOffsetDeg(0.0f);
     printf("  [PASS] test_gcc_phat_quad_wls_all_quadrants passed.\n");
 }
@@ -1108,6 +1133,157 @@ static void test_gcc_phat_loop_closure_multipath_rejection() {
     printf("  [PASS] test_gcc_phat_loop_closure_multipath_rejection passed.\n");
 }
 
+static void test_display_circular_smoothing_and_outliers() {
+    printf("[TEST] Running test_display_circular_smoothing_and_outliers...\n");
+
+    // 1. Direct verification of wrapAngle180 and shortestAngularDiff across [-180, +180]
+    assert(fabsf(wrapAngle180(0.0f) - 0.0f) < 1e-6f);
+    assert(fabsf(wrapAngle180(180.0f) - 180.0f) < 1e-6f);
+    assert(fabsf(wrapAngle180(-180.0f) - (-180.0f)) < 1e-6f);
+    assert(fabsf(wrapAngle180(185.0f) - (-175.0f)) < 1e-5f);
+    assert(fabsf(wrapAngle180(-185.0f) - 175.0f) < 1e-5f);
+    assert(fabsf(wrapAngle180(540.0f) - 180.0f) < 1e-5f);
+    assert(fabsf(wrapAngle180(-540.0f) - (-180.0f)) < 1e-5f);
+    assert(wrapAngle180(NAN) == 0.0f);
+    assert(wrapAngle180(INFINITY) == 0.0f);
+
+    assert(fabsf(shortestAngularDiff(-175.0f, 175.0f) - 10.0f) < 1e-5f);
+    assert(fabsf(shortestAngularDiff(175.0f, -175.0f) - (-10.0f)) < 1e-5f);
+    assert(fabsf(shortestAngularDiff(-179.0f, 179.0f) - 2.0f) < 1e-5f);
+    assert(fabsf(shortestAngularDiff(179.0f, -179.0f) - (-2.0f)) < 1e-5f);
+    assert(fabsf(shortestAngularDiff(180.0f, -180.0f) - 0.0f) < 1e-5f);
+    assert(fabsf(shortestAngularDiff(-180.0f, 180.0f) - 0.0f) < 1e-5f);
+    assert(shortestAngularDiff(NAN, 10.0f) == 0.0f);
+    assert(shortestAngularDiff(10.0f, NAN) == 0.0f);
+
+    // 2. Clockwise circular EMA boundary wrapping: +175 deg -> -175 deg (true delta = +10 deg)
+    DisplaySmoothingFilter filter;
+    uint32_t t_ms = 100;
+    float a0 = filter.update(175.0f, t_ms);
+    assert(fabsf(a0 - 175.0f) < 1e-5f);
+    assert(filter.getConsecutiveOutliers() == 0);
+
+    // Step 1 toward -175 deg: 175 + 0.25 * 10 = +177.5 deg
+    t_ms += 25;
+    float a1 = filter.update(-175.0f, t_ms);
+    assert(filter.getConsecutiveOutliers() == 0);
+    assert(fabsf(a1 - 177.5f) < 1e-4f);
+
+    // Step 2 toward -175 deg: 177.5 + 0.25 * 7.5 = +179.375 deg
+    t_ms += 25;
+    float a2 = filter.update(-175.0f, t_ms);
+    assert(filter.getConsecutiveOutliers() == 0);
+    assert(fabsf(a2 - 179.375f) < 1e-4f);
+
+    // Step 3 toward -175 deg: 179.375 + 0.25 * 5.625 = 180.78125 -> wraps to -179.21875 deg!
+    t_ms += 25;
+    float a3 = filter.update(-175.0f, t_ms);
+    assert(filter.getConsecutiveOutliers() == 0);
+    assert(fabsf(a3 - (-179.21875f)) < 1e-4f);
+
+    // Continue converging to -175 deg; ensure needle always stays in rear hemisphere (|angle| >= 175)
+    for (int step = 0; step < 25; ++step) {
+        t_ms += 25;
+        float ang = filter.update(-175.0f, t_ms);
+        assert(filter.getConsecutiveOutliers() == 0);
+        assert(fabsf(ang) >= 174.999f && fabsf(ang) <= 180.0f);
+    }
+    assert(fabsf(filter.getSmoothedAngle() - (-175.0f)) < 0.05f);
+
+    // 3. Counter-clockwise circular EMA boundary wrapping: -175 deg -> +175 deg (true delta = -10 deg)
+    filter.reset();
+    t_ms = 1000;
+    assert(fabsf(filter.update(-175.0f, t_ms) - (-175.0f)) < 1e-5f);
+
+    // Step 1 toward +175 deg: -175 + 0.25 * (-10) = -177.5 deg
+    t_ms += 25;
+    assert(fabsf(filter.update(175.0f, t_ms) - (-177.5f)) < 1e-4f);
+    assert(filter.getConsecutiveOutliers() == 0);
+
+    // Step 2 toward +175 deg: -177.5 + 0.25 * (-7.5) = -179.375 deg
+    t_ms += 25;
+    assert(fabsf(filter.update(175.0f, t_ms) - (-179.375f)) < 1e-4f);
+    assert(filter.getConsecutiveOutliers() == 0);
+
+    // Step 3 toward +175 deg: -179.375 + 0.25 * (-5.625) = -180.78125 -> wraps to +179.21875 deg!
+    t_ms += 25;
+    assert(fabsf(filter.update(175.0f, t_ms) - 179.21875f) < 1e-4f);
+    assert(filter.getConsecutiveOutliers() == 0);
+
+    // 4. Tight boundary transition (+179 deg -> -179 deg, delta = +2 deg)
+    filter.reset();
+    t_ms = 2000;
+    filter.update(179.0f, t_ms);
+    t_ms += 25;
+    float tight1 = filter.update(-179.0f, t_ms); // 179 + 0.25 * 2 = 179.5
+    assert(fabsf(tight1 - 179.5f) < 1e-4f);
+    t_ms += 25;
+    float tight2 = filter.update(-179.0f, t_ms); // 179.5 + 0.25 * 1.5 = 179.875
+    assert(fabsf(tight2 - 179.875f) < 1e-4f);
+    t_ms += 25;
+    float tight3 = filter.update(-179.0f, t_ms); // 179.875 + 0.25 * 1.125 = 180.15625 -> -179.84375
+    assert(fabsf(tight3 - (-179.84375f)) < 1e-4f);
+
+    // 5. Outlier rejection and confirmation across +/-180 deg
+    filter.reset();
+    t_ms = 3000;
+    filter.update(170.0f, t_ms);
+
+    // Moderate jump across +/-180 deg (+170 -> -160 deg, shortest diff = +30 deg <= 45 deg):
+    // Must NOT be treated as an outlier; smooths to 170 + 0.25 * 30 = +177.5 deg
+    t_ms += 25;
+    float mod_cross = filter.update(-160.0f, t_ms);
+    assert(filter.getConsecutiveOutliers() == 0);
+    assert(fabsf(mod_cross - 177.5f) < 1e-4f);
+
+    // Isolated large outlier jump from +177.5 deg to +90.0 deg (diff = -87.5 deg, |diff| > 45 deg)
+    t_ms += 25;
+    float out_hold = filter.update(90.0f, t_ms);
+    assert(filter.getConsecutiveOutliers() == 1);
+    assert(fabsf(out_hold - 177.5f) < 1e-4f); // Held at +177.5 deg
+
+    // Next frame returns near rear (-178.0 deg, diff from +177.5 is +4.5 deg <= 45 deg)
+    t_ms += 25;
+    float recov = filter.update(-178.0f, t_ms);
+    assert(filter.getConsecutiveOutliers() == 0);
+    assert(fabsf(recov - 178.625f) < 1e-4f); // 177.5 + 0.25 * 4.5 = +178.625 deg
+
+    // 6. Sustained relocation straddling +/-180 deg:
+    // Start at 0 deg (North). Outlier 1 arrives at +170 deg (|diff| = 170 > 45).
+    // Outlier 2 arrives at -175 deg (|diff from 0| = 175 > 45, but shortestAngularDiff(-175, +170) = +15 deg <= 45!).
+    // Outlier 2 must confirm Outlier 1 across the +/-180 deg seam and snap to -175 deg!
+    filter.reset();
+    t_ms = 4000;
+    assert(fabsf(filter.update(0.0f, t_ms) - 0.0f) < 1e-5f);
+
+    t_ms += 25;
+    float reloc1 = filter.update(170.0f, t_ms);
+    assert(fabsf(reloc1 - 0.0f) < 1e-5f); // Held on first outlier
+    assert(filter.getConsecutiveOutliers() == 1);
+
+    t_ms += 25;
+    float reloc2 = filter.update(-175.0f, t_ms);
+    assert(fabsf(reloc2 - (-175.0f)) < 1e-5f); // Confirmed relocation across +/-180 seam!
+    assert(filter.getConsecutiveOutliers() == 0);
+
+    // 7. Exact antipodal 180 deg reversal straddling +180 and -180:
+    filter.reset();
+    t_ms = 5000;
+    assert(fabsf(filter.update(0.0f, t_ms) - 0.0f) < 1e-5f);
+    t_ms += 25;
+    assert(fabsf(filter.update(180.0f, t_ms) - 0.0f) < 1e-5f);
+    assert(filter.getConsecutiveOutliers() == 1);
+    t_ms += 25;
+    assert(fabsf(filter.update(-180.0f, t_ms) - (-180.0f)) < 1e-5f);
+    assert(filter.getConsecutiveOutliers() == 0);
+
+    // Non-finite input guard
+    t_ms += 25;
+    assert(fabsf(filter.update(NAN, t_ms) - (-180.0f)) < 1e-5f);
+
+    printf("  [PASS] test_display_circular_smoothing_and_outliers passed.\n");
+}
+
 int main() {
     test_gcc_phat_adaptive_noise_floor();
     test_display_smoothing_filter();
@@ -1119,6 +1295,7 @@ int main() {
     test_gcc_phat_quad_rms_and_pipeline();
     test_gcc_phat_quad_wls_all_quadrants();
     test_gcc_phat_loop_closure_multipath_rejection();
+    test_display_circular_smoothing_and_outliers();
     printf("\nAll unit tests passed successfully!\n");
     return 0;
 }

@@ -257,15 +257,15 @@ Every task, sub-step, and verification gate is structured as an actionable `- [ 
 ---
 
 ### Phase 4: Circular Display Smoothing, 360° Radar UI & Telemetry
-- [ ] **Step 4.1 — Upgrade [`src/display_filter.h`](../src/display_filter.h) & [`src/display_filter.cpp`](../src/display_filter.cpp) for Circular $S^1$ Smoothing**:
-  - [ ] Implement `wrapAngle180()` and `shortestAngularDiff()` so angular differences, outlier comparisons, and EMA updates operate on the unit circle $[-180^\circ, +180^\circ]$ without discontinuity at $\pm 180^\circ$.
-- [ ] **Step 4.2 — Upgrade [`src/main.cpp`](../src/main.cpp) for Quad-Mic DSP, 360° TFT Radar UI & Telemetry**:
-  - [ ] Update `dsp_task` to read 4 channels via `read_i2s_quad()` and invoke 4-channel `doa.process(ch0, ch1, ch2, ch3)`.
-  - [ ] Update `run_boot_self_test()` and `show_boot_prompt()` to report all 4 microphones (`M0..M3`) and stereo bus independence.
-  - [ ] Redesign `draw_radar_ui()` to draw a full $360^\circ$ circular radar (`cx = 64, cy = 44, r = 34`) with outer/inner range rings, N/E/S/W crosshair lines, cardinal degree markers (`0`, `+90`, `180`, `-90`), and a $360^\circ$ polar needle while keeping the bottom telemetry dashboard (`y = 84..159`).
-  - [ ] Update angle offset validation bounds in NVS/Portal/API to $[-180^\circ, +180^\circ]$.
-- [ ] **Step 4.3 — Update Documentation ([`doc/hardware.md`](hardware.md), [`doc/firmware.md`](firmware.md), [`doc/rest-api.md`](rest-api.md))**:
-  - [ ] Document the 4-mic square wiring (`GPIO 6` + `GPIO 7`), 6-pair dual-band WLS architecture, and $360^\circ$ telemetry conventions.
-- [ ] **Step 4.4 — Phase 4 Final Verification Gate**:
-  - [ ] Add unit tests in `test/test_adaptive_and_smoothing.cpp` for circular EMA boundary crossing ($+175^\circ \leftrightarrow -175^\circ$) and outlier rejection across $\pm 180^\circ$.
-  - [ ] Execute full unit test suite with ASAN/UBSAN and verify clean firmware build.
+- [x] **Step 4.1 — Upgrade [`src/display_filter.h`](../src/display_filter.h) & [`src/display_filter.cpp`](../src/display_filter.cpp) for Circular $S^1$ Smoothing**:
+  - [x] Implement `wrapAngle180()` and `shortestAngularDiff()` so angular differences, outlier comparisons, and EMA updates operate on the unit circle $[-180^\circ, +180^\circ]$ without discontinuity at $\pm 180^\circ$.
+- [x] **Step 4.2 — Upgrade [`src/main.cpp`](../src/main.cpp) for Quad-Mic DSP, 360° TFT Radar UI & Telemetry**:
+  - [x] Update `dsp_task` to read 4 channels via `read_i2s_quad()` and invoke 4-channel `doa.process(ch0, ch1, ch2, ch3)`.
+  - [x] Update `run_boot_self_test()` and `show_boot_prompt()` to report all 4 microphones (`M0..M3`) and stereo bus independence.
+  - [x] Redesign `draw_radar_ui()` to draw a full $360^\circ$ circular radar (`cx = 64, cy = 44, r = 34`) with outer/inner range rings, N/E/S/W crosshair lines, cardinal degree markers (`0`, `+90`, `180`, `-90`), and a $360^\circ$ polar needle while keeping the bottom telemetry dashboard (`y = 84..159`).
+  - [x] Update angle offset validation bounds in NVS/Portal/API to $[-180^\circ, +180^\circ]$.
+- [x] **Step 4.3 — Update Documentation ([`doc/hardware.md`](hardware.md), [`doc/firmware.md`](firmware.md), [`doc/rest-api.md`](rest-api.md))**:
+  - [x] Document the 4-mic square wiring (`GPIO 6` + `GPIO 7`), 6-pair dual-band WLS architecture, and $360^\circ$ telemetry conventions.
+- [x] **Step 4.4 — Phase 4 Final Verification Gate**:
+  - [x] Add unit tests in `test/test_adaptive_and_smoothing.cpp` for circular EMA boundary crossing ($+175^\circ \leftrightarrow -175^\circ$) and outlier rejection across $\pm 180^\circ$.
+  - [x] Execute full unit test suite with ASAN/UBSAN and verify clean firmware build.

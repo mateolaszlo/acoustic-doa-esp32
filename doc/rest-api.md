@@ -65,7 +65,7 @@ The expected response contains:
 
 `temperatura_okolice_c` is not required by the current firmware. The local BME280 is the source of temperature for sound-speed compensation.
 
-`kot_odmik` (or `angle_offset_deg`, float in degrees, between -45.0 and +45.0) is optional. Specifies the zero-angle calibration trim in degrees to compensate for I2S channel clocking/sampling skew or hardware mounting offsets.
+`kot_odmik` (or `angle_offset_deg`, float in degrees, between `-180.0` and `+180.0`) is optional. Specifies the rotational zero-angle calibration trim in degrees to compensate for hardware mounting orientation or array alignment offsets, wrapped circularly into $[-180^\circ, +180^\circ]$.
 `db_spl_offset` is optional in the current parser. If absent, the previously stored offset is retained.
 `prilagodljivi_prag` (or `adaptive_threshold_enabled`, boolean) is optional. When true, enables adaptive noise floor tracking; when false, fixed thresholding via `prag_glasnosti_db` is enforced. If absent, the previous setting is retained.
 `snr_rob_db` (or `snr_margin_db`, float in dB) is optional. Specifies the minimum SNR margin above the estimated ambient noise floor required to trigger DOA calculation. If absent, the previous margin is retained.
@@ -78,13 +78,14 @@ new valid synchronization is received.
 
 The firmware validates:
 
-- Positive microphone distance.
+- Positive microphone distance (square array side length $d > 0$).
 - Positive correlation threshold.
 - A sound-level threshold above -200 dB.
 - Finite floating-point values.
 - A supported sample rate: 44100 or 48000 Hz.
 - A supported window size: 512, 1024, or 2048 samples.
 - Non-negative, finite SNR margin ($0.0 \le \text{snr\_margin} \le 60.0\text{ dB}$).
+- Finite zero-angle offset within full-circle bounds ($-180.0^\circ \le \text{angle\_offset\_deg} \le +180.0^\circ$).
 
 Invalid responses are rejected and the previous local configuration remains active.
 Supported sample-rate/window changes reinitialize the audio and DSP path. If
@@ -141,10 +142,10 @@ Each measurement then occupies exactly 20 bytes:
 | Offset | Size | Field |
 |---:|---:|---|
 | 0 | 4 | Millisecond offset from the batch base timestamp |
-| 4 | 4 | `angle_deg` as float32 |
-| 8 | 4 | `delay_us` as float32 |
-| 12 | 4 | Calibrated sound level in dB as float32 |
-| 16 | 4 | Correlation confidence as float32 |
+| 4 | 4 | `angle_deg` as float32 ($360^\circ$ azimuth in $[-180^\circ, +180^\circ]$: $0^\circ = \text{Front/North}$, $+90^\circ = \text{Right/East}$, $\pm 180^\circ = \text{Back/South}$, $-90^\circ = \text{Left/West}$) |
+| 8 | 4 | `delay_us` as float32 (equivalent projected X-axis baseline delay $\frac{d \cdot \sin\phi}{c} \times 10^6\text{ }\mu\text{s}$) |
+| 12 | 4 | Calibrated sound level in dB as float32 (`rms_db + db_spl_offset`) |
+| 16 | 4 | Correlation confidence as float32 (weighted mean 6-pair WLS confidence in $[0, 1]$) |
 
 Therefore, the body size is `12 + (measurement_count * 20)` bytes. For
 example, eight measurements occupy 172 bytes. The timestamp of record `i` is
