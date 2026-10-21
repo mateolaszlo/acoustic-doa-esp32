@@ -5,11 +5,15 @@
 // ==============================================================================
 // 1. HARDWARE PINOUT & BUS SPEEDS
 // ==============================================================================
-// I2S Digital Microphones (ESP32-S3)
-constexpr int I2S_PORT_NUM              = 0;
+// I2S Digital Microphones (ESP32-S3 Dual-Bus Quad Array)
+constexpr int I2S_MASTER_PORT_NUM       = 0;
+constexpr int I2S_SLAVE_PORT_NUM        = 1;
+constexpr int I2S_PORT_NUM              = I2S_MASTER_PORT_NUM;
 constexpr int I2S_BCLK_PIN              = 4;
 constexpr int I2S_WS_PIN                = 5;
-constexpr int I2S_DIN_PIN               = 6;
+constexpr int I2S_DIN0_PIN              = 6;
+constexpr int I2S_DIN1_PIN              = 7;
+constexpr int I2S_DIN_PIN               = I2S_DIN0_PIN;
 
 // I2C Environmental Sensor (BME280)
 constexpr int I2C_SDA_PIN               = 8;
@@ -34,6 +38,8 @@ constexpr int SETUP_BUTTON_PIN          = 0;
 // ==============================================================================
 // 2. AUDIO & BUFFER SIZING
 // ==============================================================================
+constexpr size_t AUDIO_NUM_CHANNELS          = 4;    // 4-mic planar square array
+constexpr size_t AUDIO_NUM_PAIRS             = 6;    // C(4, 2) = 6 unique baselines
 constexpr size_t AUDIO_MAX_WINDOW_SIZE       = 2048; // Max DMA and DSP buffer capacity
 constexpr size_t DEFAULT_WINDOW_SIZE         = 1024;
 constexpr size_t AUDIO_DEFAULT_WINDOW_SIZE   = DEFAULT_WINDOW_SIZE;
@@ -57,6 +63,13 @@ constexpr float DEFAULT_DB_SPL_OFFSET                = 100.0f; // INMP441 dBFS-t
 constexpr float DEFAULT_SNR_MARGIN_DB                = 8.0f;
 constexpr float DEFAULT_ANGLE_OFFSET_DEG             = 0.0f;
 constexpr bool  DEFAULT_ADAPTIVE_THRESHOLD_ENABLED   = true;
+
+// Dual-Band GCC-PHAT Raised-Cosine Spectral Weighting Cutoffs
+constexpr float GCC_PHAT_MIN_HZ      = 300.0f;
+constexpr float GCC_PHAT_EDGE_MAX_HZ = 2200.0f;
+constexpr float GCC_PHAT_DIAG_MAX_HZ = 1450.0f;
+constexpr float GCC_PHAT_MAX_HZ      = GCC_PHAT_EDGE_MAX_HZ;
+constexpr float GCC_PHAT_RAMP_HZ     = 100.0f;
 
 // Parameter Plausibility & Validation Bounds
 constexpr float ANGLE_OFFSET_MIN_DEG    = -45.0f;

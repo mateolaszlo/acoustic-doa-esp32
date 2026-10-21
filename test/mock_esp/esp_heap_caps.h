@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdlib>
 #include <cstdint>
+#include <cstddef>
 
 #define MALLOC_CAP_INTERNAL (1 << 0)
 #define MALLOC_CAP_SPIRAM   (1 << 1)

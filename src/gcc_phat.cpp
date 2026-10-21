@@ -4,9 +4,6 @@
 #include <climits>
 
 static const char* TAG = "GCC_PHAT";
-static constexpr float GCC_PHAT_MIN_HZ = 300.0f;
-static constexpr float GCC_PHAT_MAX_HZ = 2200.0f;
-static constexpr float GCC_PHAT_RAMP_HZ = 100.0f;
 
 // Noise Floor Tracker Leaky Integrator Slew Constants
 static constexpr float NOISE_FLOOR_ALPHA_DOWN  = 0.02f;   // Fast tracking downward (~1-2 s)
@@ -16,26 +13,48 @@ static constexpr float NOISE_FLOOR_MIN_DB      = -85.0f;
 static constexpr float NOISE_FLOOR_MAX_DB      = -20.0f;
 static constexpr float NOISE_FLOOR_INITIAL_DB  = -100.0f;
 
-static float gcc_phat_band_weight(float frequency_hz) {
-    const float lower_ramp_start = GCC_PHAT_MIN_HZ - GCC_PHAT_RAMP_HZ;
-    const float upper_ramp_end = GCC_PHAT_MAX_HZ + GCC_PHAT_RAMP_HZ;
+namespace {
+
+struct MicPairDescriptor {
+    uint8_t mic_i;
+    uint8_t mic_j;
+    bool is_diagonal;
+};
+
+constexpr MicPairDescriptor MIC_PAIRS[AUDIO_NUM_PAIRS] = {
+    {0, 1, false}, // Pair 0: Right Edge (+Y), 300-2200 Hz
+    {1, 2, false}, // Pair 1: Front Edge (-X), 300-2200 Hz
+    {3, 2, false}, // Pair 2: Left Edge (+Y), 300-2200 Hz
+    {0, 3, false}, // Pair 3: Back Edge (-X), 300-2200 Hz
+    {3, 1, true},  // Pair 4: Diagonal LB -> RF (+X, +Y), 300-1450 Hz
+    {0, 2, true}   // Pair 5: Diagonal RB -> LF (-X, +Y), 300-1450 Hz
+};
+
+} // namespace
+
+float GccPhat::computeBandWeight(float frequency_hz, float min_hz,
+                                 float max_hz, float ramp_hz) {
+    if (!std::isfinite(frequency_hz) || max_hz < min_hz || ramp_hz <= 0.0f) {
+        return 0.0f;
+    }
+
+    const float lower_ramp_start = min_hz - ramp_hz;
+    const float upper_ramp_end = max_hz + ramp_hz;
 
     if (frequency_hz <= lower_ramp_start ||
         frequency_hz >= upper_ramp_end) {
         return 0.0f;
     }
-    if (frequency_hz < GCC_PHAT_MIN_HZ) {
-        const float progress =
-            (frequency_hz - lower_ramp_start) / GCC_PHAT_RAMP_HZ;
-        return 0.5f * (1.0f - cosf(M_PI * progress));
+    if (frequency_hz < min_hz) {
+        const float progress = (frequency_hz - lower_ramp_start) / ramp_hz;
+        return 0.5f * (1.0f - cosf(static_cast<float>(M_PI) * progress));
     }
-    if (frequency_hz <= GCC_PHAT_MAX_HZ) {
+    if (frequency_hz <= max_hz) {
         return 1.0f;
     }
 
-    const float progress =
-        (upper_ramp_end - frequency_hz) / GCC_PHAT_RAMP_HZ;
-    return 0.5f * (1.0f - cosf(M_PI * progress));
+    const float progress = (upper_ramp_end - frequency_hz) / ramp_hz;
+    return 0.5f * (1.0f - cosf(static_cast<float>(M_PI) * progress));
 }
 
 static int wrap_correlation_index(int lag, int fft_size) {
@@ -53,7 +72,9 @@ GccPhat::GccPhat(float sample_rate, float mic_distance_m, float temp_c,
       db_threshold(-45.0f), angle_offset_deg(DEFAULT_ANGLE_OFFSET_DEG), fft_size(0),
       adaptive_threshold_enabled(false), snr_margin_db(DEFAULT_SNR_MARGIN_DB),
       noise_floor_db(NOISE_FLOOR_INITIAL_DB), noise_floor_initialized(false),
-      window(nullptr), fft_x1(nullptr), fft_x2(nullptr), ccorr(nullptr) {
+      window(nullptr), band_weight_edge(nullptr), band_weight_diag(nullptr),
+      fft_ch{nullptr, nullptr, nullptr, nullptr}, ccorr(nullptr),
+      weight_sum_edge(0.0f), weight_sum_diag(0.0f) {
     c_sound = calculateSoundSpeed(temp_c, humidity_pct, pressure_pa);
 }
 
@@ -64,7 +85,9 @@ GccPhat::GccPhat(float sample_rate, float mic_distance_m, float temp_c,
       db_threshold(-45.0f), angle_offset_deg(DEFAULT_ANGLE_OFFSET_DEG), fft_size(0),
       adaptive_threshold_enabled(false), snr_margin_db(DEFAULT_SNR_MARGIN_DB),
       noise_floor_db(NOISE_FLOOR_INITIAL_DB), noise_floor_initialized(false),
-      window(nullptr), fft_x1(nullptr), fft_x2(nullptr), ccorr(nullptr) {
+      window(nullptr), band_weight_edge(nullptr), band_weight_diag(nullptr),
+      fft_ch{nullptr, nullptr, nullptr, nullptr}, ccorr(nullptr),
+      weight_sum_edge(0.0f), weight_sum_diag(0.0f) {
     c_sound = calculateSoundSpeed(temp_c, humidity_pct, pressure_pa);
     fft_size = window_size;
 }
@@ -174,13 +197,20 @@ bool GccPhat::configure(float sample_rate, size_t window_size) {
         return false;
     }
 
+    const size_t real_bytes = window_size * sizeof(float);
     const size_t complex_bytes = window_size * 2 * sizeof(float);
+
     float* new_window = static_cast<float*>(
-        heap_caps_malloc(window_size * sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-    float* new_fft_x1 = static_cast<float*>(
-        heap_caps_malloc(complex_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-    float* new_fft_x2 = static_cast<float*>(
-        heap_caps_malloc(complex_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        heap_caps_malloc(real_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    float* new_band_weight_edge = static_cast<float*>(
+        heap_caps_malloc(real_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    float* new_band_weight_diag = static_cast<float*>(
+        heap_caps_malloc(real_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    float* new_fft_ch[AUDIO_NUM_CHANNELS] = {nullptr, nullptr, nullptr, nullptr};
+    for (size_t c = 0; c < AUDIO_NUM_CHANNELS; ++c) {
+        new_fft_ch[c] = static_cast<float*>(
+            heap_caps_malloc(complex_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    }
     float* new_ccorr = static_cast<float*>(
         heap_caps_malloc(complex_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
 
@@ -191,17 +221,29 @@ bool GccPhat::configure(float sample_rate, size_t window_size) {
             ? current
             : static_cast<float*>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     };
-    new_window = allocate_psram(new_window, window_size * sizeof(float));
-    new_fft_x1 = allocate_psram(new_fft_x1, complex_bytes);
-    new_fft_x2 = allocate_psram(new_fft_x2, complex_bytes);
+    new_window = allocate_psram(new_window, real_bytes);
+    new_band_weight_edge = allocate_psram(new_band_weight_edge, real_bytes);
+    new_band_weight_diag = allocate_psram(new_band_weight_diag, real_bytes);
+    for (size_t c = 0; c < AUDIO_NUM_CHANNELS; ++c) {
+        new_fft_ch[c] = allocate_psram(new_fft_ch[c], complex_bytes);
+    }
     new_ccorr = allocate_psram(new_ccorr, complex_bytes);
 
-    if (new_window == nullptr || new_fft_x1 == nullptr || new_fft_x2 == nullptr ||
-        new_ccorr == nullptr) {
+    auto free_new_buffers = [&]() {
         heap_caps_free(new_window);
-        heap_caps_free(new_fft_x1);
-        heap_caps_free(new_fft_x2);
+        heap_caps_free(new_band_weight_edge);
+        heap_caps_free(new_band_weight_diag);
+        for (size_t c = 0; c < AUDIO_NUM_CHANNELS; ++c) {
+            heap_caps_free(new_fft_ch[c]);
+        }
         heap_caps_free(new_ccorr);
+    };
+
+    if (new_window == nullptr || new_band_weight_edge == nullptr ||
+        new_band_weight_diag == nullptr || new_fft_ch[0] == nullptr ||
+        new_fft_ch[1] == nullptr || new_fft_ch[2] == nullptr ||
+        new_fft_ch[3] == nullptr || new_ccorr == nullptr) {
+        free_new_buffers();
         ESP_LOGE(TAG, "Pomnilnika za FFT velikost %u ni mogoče rezervirati",
                  static_cast<unsigned>(window_size));
         return false;
@@ -211,93 +253,71 @@ bool GccPhat::configure(float sample_rate, size_t window_size) {
     esp_err_t ret = dsps_fft2r_init_fc32(NULL, static_cast<int>(window_size));
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Napaka pri inicializaciji FFT2R: %d", ret);
-        heap_caps_free(new_window);
-        heap_caps_free(new_fft_x1);
-        heap_caps_free(new_fft_x2);
-        heap_caps_free(new_ccorr);
+        free_new_buffers();
         return false;
     }
 
     releaseBuffers();
     window = new_window;
-    fft_x1 = new_fft_x1;
-    fft_x2 = new_fft_x2;
+    band_weight_edge = new_band_weight_edge;
+    band_weight_diag = new_band_weight_diag;
+    for (size_t c = 0; c < AUDIO_NUM_CHANNELS; ++c) {
+        fft_ch[c] = new_fft_ch[c];
+    }
     ccorr = new_ccorr;
     fs = sample_rate;
     fft_size = window_size;
 
     // Priprava Hannovega okna
     dsps_wind_hann_f32(window, static_cast<int>(fft_size));
+
+    // Predizračun dvopasovnih uteži (300-2200 Hz za robne pare, 300-1450 Hz za diagonali)
+    const float bin_hz = fs / static_cast<float>(fft_size);
+    weight_sum_edge = 0.0f;
+    weight_sum_diag = 0.0f;
+    for (size_t i = 0; i < fft_size; ++i) {
+        const size_t mirrored_bin = (i <= fft_size / 2) ? i : (fft_size - i);
+        const float frequency_hz = static_cast<float>(mirrored_bin) * bin_hz;
+        const float w_edge = computeBandWeight(
+            frequency_hz, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ, GCC_PHAT_RAMP_HZ);
+        const float w_diag = computeBandWeight(
+            frequency_hz, GCC_PHAT_MIN_HZ, GCC_PHAT_DIAG_MAX_HZ, GCC_PHAT_RAMP_HZ);
+        band_weight_edge[i] = w_edge;
+        band_weight_diag[i] = w_diag;
+        weight_sum_edge += w_edge;
+        weight_sum_diag += w_diag;
+    }
+
     resetNoiseFloor(-100.0f);
     return true;
 }
 
-DoaResult GccPhat::process(const int32_t* left_channel, const int32_t* right_channel) {
-    DoaResult result = {0.0f, 0.0f, 0.0f, -100.0f, false};
-    if (left_channel == nullptr || right_channel == nullptr || fft_size == 0 ||
-        window == nullptr || fft_x1 == nullptr || fft_x2 == nullptr || ccorr == nullptr) {
-        return result;
-    }
-
-    float left_mean = 0.0f;
-    float right_mean = 0.0f;
-    for (size_t i = 0; i < fft_size; i++) {
-        left_mean += static_cast<float>(left_channel[i]);
-        right_mean += static_cast<float>(right_channel[i]);
-    }
-    left_mean /= static_cast<float>(fft_size);
-    right_mean /= static_cast<float>(fft_size);
-
-    float energy_sum = 0.0f;
-
-    // 1. Odstranitev DC odmika, normalizacija in Hannovo oknenje
-    for (size_t i = 0; i < fft_size; i++) {
-        const float raw_s1 = (static_cast<float>(left_channel[i]) - left_mean) /
-                             PCM_INT32_TO_FLOAT_SCALE;
-        const float raw_s2 = (static_cast<float>(right_channel[i]) - right_mean) /
-                             PCM_INT32_TO_FLOAT_SCALE;
-
-        // Izračun neoknjene stereo energije obeh kanalov za simetrično zaznavo
-        energy_sum += 0.5f * (raw_s1 * raw_s1 + raw_s2 * raw_s2);
-
-        const float w = window[i];
-        // Komponente v kompleksni obliki [Real, Imag]
-        fft_x1[2 * i]     = raw_s1 * w;
-        fft_x1[2 * i + 1] = 0.0f;
-        fft_x2[2 * i]     = raw_s2 * w;
-        fft_x2[2 * i + 1] = 0.0f;
-    }
-
-    // Izračun ravni glasnosti (dBFS)
-    float rms = sqrtf(energy_sum / static_cast<float>(fft_size));
-    result.rms_db = (rms > 1e-5f) ? 20.0f * log10f(rms) : NOISE_FLOOR_INITIAL_DB;
-
-    // 1b. Določitev praga zaznave (prilagodljivi šum okolice ali fiksni prag)
+bool GccPhat::updateNoiseFloorAndCheckGate(float rms_db) {
     float effective_thresh = getEffectiveThresholdDb();
     if (adaptive_threshold_enabled) {
         if (!noise_floor_initialized) {
-            if (result.rms_db > NOISE_FLOOR_MIN_DB) {
+            if (rms_db > NOISE_FLOOR_MIN_DB) {
                 const float max_initial_seed = (effective_thresh < NOISE_FLOOR_MAX_DB)
                                                    ? effective_thresh
                                                    : NOISE_FLOOR_MAX_DB;
-                noise_floor_db = (result.rms_db < max_initial_seed)
-                                     ? result.rms_db
+                noise_floor_db = (rms_db < max_initial_seed)
+                                     ? rms_db
                                      : max_initial_seed;
                 noise_floor_initialized = true;
             }
         } else {
             const float trigger_threshold = noise_floor_db + snr_margin_db;
 
-            if (result.rms_db < noise_floor_db) {
+            if (rms_db < noise_floor_db) {
                 // Hiter padec ocene šuma ob utišanju ozadja (~1-2 s)
-                noise_floor_db += NOISE_FLOOR_ALPHA_DOWN * (result.rms_db - noise_floor_db);
-            } else if (result.rms_db < trigger_threshold) {
+                noise_floor_db += NOISE_FLOOR_ALPHA_DOWN * (rms_db - noise_floor_db);
+            } else if (rms_db < trigger_threshold) {
                 // Počasno sledenje dvigu šuma okolice pod pragom proženja
-                noise_floor_db += NOISE_FLOOR_ALPHA_UP * (result.rms_db - noise_floor_db);
+                noise_floor_db += NOISE_FLOOR_ALPHA_UP * (rms_db - noise_floor_db);
             } else {
                 // Zvočni dogodek / govor: zelo počasno prilagajanje, da trajen zvok
                 // ne zviša takoj praga in ne zaduši detekcije
-                noise_floor_db += NOISE_FLOOR_ALPHA_EVENT * (result.rms_db - noise_floor_db);
+                noise_floor_db += NOISE_FLOOR_ALPHA_EVENT * (rms_db - noise_floor_db);
             }
         }
 
@@ -311,45 +331,31 @@ DoaResult GccPhat::process(const int32_t* left_channel, const int32_t* right_cha
         }
     }
 
-    // Če je signal pretišji, preskočimo zahtevno računanje
-    if (result.rms_db < effective_thresh) {
-        return result;
-    }
+    return rms_db >= effective_thresh;
+}
 
-    // 2. Izvedba FFT za oba kanala
-    dsps_fft2r_fc32(fft_x1, static_cast<int>(fft_size));
-    dsps_fft2r_fc32(fft_x2, static_cast<int>(fft_size));
-    dsps_bit_rev_fc32(fft_x1, static_cast<int>(fft_size));
-    dsps_bit_rev_fc32(fft_x2, static_cast<int>(fft_size));
+void GccPhat::computePairCrossCorrelationIfft(size_t mic_i, size_t mic_j, const float* weights) {
+    const float* spec_i = fft_ch[mic_i];
+    const float* spec_j = fft_ch[mic_j];
 
-    // 3. Navzkrižni spekter moči z GCC-PHAT normalizacijo
-    // G12(f) = X1(f) * conj(X2(f))
-    // Psi(f) = G12(f) / |G12(f)|
-    const float bin_hz = fs / static_cast<float>(fft_size);
-    float weight_sum = 0.0f;
-
-    for (size_t i = 0; i < fft_size; i++) {
-        const size_t mirrored_bin = i <= fft_size / 2 ? i : fft_size - i;
-        const float frequency_hz =
-            static_cast<float>(mirrored_bin) * bin_hz;
-        const float band_weight = gcc_phat_band_weight(frequency_hz);
-        weight_sum += band_weight;
+    for (size_t i = 0; i < fft_size; ++i) {
+        const float band_weight = weights[i];
         if (band_weight == 0.0f) {
-            ccorr[2 * i] = 0.0f;
+            ccorr[2 * i]     = 0.0f;
             ccorr[2 * i + 1] = 0.0f;
             continue;
         }
 
-        float re1 = fft_x1[2 * i];
-        float im1 = fft_x1[2 * i + 1];
-        float re2 = fft_x2[2 * i];
-        float im2 = fft_x2[2 * i + 1];
+        const float re1 = spec_i[2 * i];
+        const float im1 = spec_i[2 * i + 1];
+        const float re2 = spec_j[2 * i];
+        const float im2 = spec_j[2 * i + 1];
 
         // Množenje s konjugirano vrednostjo: (re1 + j*im1) * (re2 - j*im2)
-        float cross_re = re1 * re2 + im1 * im2;
-        float cross_im = im1 * re2 - re1 * im2;
+        const float cross_re = re1 * re2 + im1 * im2;
+        const float cross_im = im1 * re2 - re1 * im2;
 
-        float magnitude = sqrtf(cross_re * cross_re + cross_im * cross_im);
+        const float magnitude = sqrtf(cross_re * cross_re + cross_im * cross_im);
 
         if (magnitude > 1e-8f) {
             ccorr[2 * i]     = (cross_re / magnitude) * band_weight;
@@ -360,13 +366,77 @@ DoaResult GccPhat::process(const int32_t* left_channel, const int32_t* right_cha
         }
     }
 
-    // 4. Inverzni FFT (IFFT)
-    // Ker v esp-dsp IFFT izračunamo preko zamenjave imag delov ali konjugacije:
-    for (size_t i = 0; i < fft_size; i++) {
-        ccorr[2 * i + 1] = -ccorr[2 * i + 1]; // Konjugiramo pred FFT
+    // Inverzni FFT (IFFT) preko konjugacije pred direktnim FFT
+    for (size_t i = 0; i < fft_size; ++i) {
+        ccorr[2 * i + 1] = -ccorr[2 * i + 1];
     }
     dsps_fft2r_fc32(ccorr, static_cast<int>(fft_size));
     dsps_bit_rev_fc32(ccorr, static_cast<int>(fft_size));
+}
+
+DoaResult GccPhat::process(const int32_t* left_channel, const int32_t* right_channel) {
+    DoaResult result = {0.0f, 0.0f, 0.0f, -100.0f, false};
+    if (left_channel == nullptr || right_channel == nullptr || fft_size == 0 ||
+        window == nullptr || band_weight_edge == nullptr ||
+        fft_ch[0] == nullptr || fft_ch[1] == nullptr || ccorr == nullptr) {
+        return result;
+    }
+
+    int64_t left_sum = 0;
+    int64_t right_sum = 0;
+    for (size_t i = 0; i < fft_size; i++) {
+        left_sum += static_cast<int64_t>(left_channel[i]);
+        right_sum += static_cast<int64_t>(right_channel[i]);
+    }
+    const int64_t fft_size_i64 = static_cast<int64_t>(fft_size);
+    const float inv_fft_size = 1.0f / static_cast<float>(fft_size);
+    const int64_t left_mean_int = left_sum / fft_size_i64;
+    const int64_t right_mean_int = right_sum / fft_size_i64;
+    const float left_mean_rem =
+        static_cast<float>(left_sum - left_mean_int * fft_size_i64) * inv_fft_size;
+    const float right_mean_rem =
+        static_cast<float>(right_sum - right_mean_int * fft_size_i64) * inv_fft_size;
+    const float inv_scale = 1.0f / PCM_INT32_TO_FLOAT_SCALE;
+
+    float energy_sum = 0.0f;
+
+    // 1. Odstranitev DC odmika, normalizacija in Hannovo oknenje
+    for (size_t i = 0; i < fft_size; i++) {
+        const float raw_s1 =
+            (static_cast<float>(static_cast<int64_t>(left_channel[i]) - left_mean_int) -
+             left_mean_rem) * inv_scale;
+        const float raw_s2 =
+            (static_cast<float>(static_cast<int64_t>(right_channel[i]) - right_mean_int) -
+             right_mean_rem) * inv_scale;
+
+        // Izračun neoknjene stereo energije obeh kanalov za simetrično zaznavo
+        energy_sum += 0.5f * (raw_s1 * raw_s1 + raw_s2 * raw_s2);
+
+        const float w = window[i];
+        // Komponente v kompleksni obliki [Real, Imag]
+        fft_ch[0][2 * i]     = raw_s1 * w;
+        fft_ch[0][2 * i + 1] = 0.0f;
+        fft_ch[1][2 * i]     = raw_s2 * w;
+        fft_ch[1][2 * i + 1] = 0.0f;
+    }
+
+    // Izračun ravni glasnosti (dBFS)
+    float rms = sqrtf(energy_sum * inv_fft_size);
+    result.rms_db = (rms > 1e-5f) ? 20.0f * log10f(rms) : NOISE_FLOOR_INITIAL_DB;
+
+    // 1b. Določitev praga zaznave (prilagodljivi šum okolice ali fiksni prag)
+    if (!updateNoiseFloorAndCheckGate(result.rms_db)) {
+        return result;
+    }
+
+    // 2. Izvedba FFT za oba kanala
+    dsps_fft2r_fc32(fft_ch[0], static_cast<int>(fft_size));
+    dsps_fft2r_fc32(fft_ch[1], static_cast<int>(fft_size));
+    dsps_bit_rev_fc32(fft_ch[0], static_cast<int>(fft_size));
+    dsps_bit_rev_fc32(fft_ch[1], static_cast<int>(fft_size));
+
+    // 3. Navzkrižni spekter moči z GCC-PHAT normalizacijo + 4. IFFT
+    computePairCrossCorrelationIfft(0, 1, band_weight_edge);
 
     // 5. Iskanje vrha korelacije znotraj fizično mogočih zakasnitev
     // Maksimalna možna zakasnitev (zvok prepotuje razdaljo d): tau_max = (d / c) * fs
@@ -374,11 +444,11 @@ DoaResult GccPhat::process(const int32_t* left_channel, const int32_t* right_cha
     if (max_lag >= static_cast<int>(fft_size)) {
         max_lag = static_cast<int>(fft_size) - 1;
     }
-    
+
     int best_idx = 0;
     float best_peak = -1.0f;
     const float norm_factor =
-        (weight_sum > 1e-6f) ? weight_sum : static_cast<float>(fft_size);
+        (weight_sum_edge > 1e-6f) ? weight_sum_edge : static_cast<float>(fft_size);
 
     for (int lag = -max_lag; lag <= max_lag; lag++) {
         int idx = (lag < 0) ? (static_cast<int>(fft_size) + lag) : lag;
@@ -436,14 +506,127 @@ DoaResult GccPhat::process(const int32_t* left_channel, const int32_t* right_cha
     return result;
 }
 
+DoaResult GccPhat::process(const int32_t* ch0, const int32_t* ch1,
+                           const int32_t* ch2, const int32_t* ch3) {
+    DoaResult result = {0.0f, 0.0f, 0.0f, -100.0f, false};
+    if (ch0 == nullptr || ch1 == nullptr || ch2 == nullptr || ch3 == nullptr ||
+        fft_size == 0 || window == nullptr ||
+        band_weight_edge == nullptr || band_weight_diag == nullptr ||
+        fft_ch[0] == nullptr || fft_ch[1] == nullptr ||
+        fft_ch[2] == nullptr || fft_ch[3] == nullptr || ccorr == nullptr) {
+        return result;
+    }
+
+    // 1. Odstranitev DC odmika po vseh 4 kanalih (v int64_t za 24-bitno natančnost brez plavanja)
+    int64_t ch_sum[AUDIO_NUM_CHANNELS] = {0, 0, 0, 0};
+    for (size_t i = 0; i < fft_size; ++i) {
+        ch_sum[0] += static_cast<int64_t>(ch0[i]);
+        ch_sum[1] += static_cast<int64_t>(ch1[i]);
+        ch_sum[2] += static_cast<int64_t>(ch2[i]);
+        ch_sum[3] += static_cast<int64_t>(ch3[i]);
+    }
+    const int64_t fft_size_i64 = static_cast<int64_t>(fft_size);
+    const float inv_fft_size = 1.0f / static_cast<float>(fft_size);
+    int64_t ch_mean_int[AUDIO_NUM_CHANNELS];
+    float ch_mean_rem[AUDIO_NUM_CHANNELS];
+    for (size_t c = 0; c < AUDIO_NUM_CHANNELS; ++c) {
+        ch_mean_int[c] = ch_sum[c] / fft_size_i64;
+        ch_mean_rem[c] =
+            static_cast<float>(ch_sum[c] - ch_mean_int[c] * fft_size_i64) * inv_fft_size;
+    }
+
+    // 2. 4-kanalna vsesmerna (omnidirekcionalna) neoknjena RMS energija in Hannovo oknenje
+    const float inv_scale = 1.0f / PCM_INT32_TO_FLOAT_SCALE;
+    float energy_sum = 0.0f;
+    for (size_t i = 0; i < fft_size; ++i) {
+        const float raw_s0 =
+            (static_cast<float>(static_cast<int64_t>(ch0[i]) - ch_mean_int[0]) - ch_mean_rem[0]) *
+            inv_scale;
+        const float raw_s1 =
+            (static_cast<float>(static_cast<int64_t>(ch1[i]) - ch_mean_int[1]) - ch_mean_rem[1]) *
+            inv_scale;
+        const float raw_s2 =
+            (static_cast<float>(static_cast<int64_t>(ch2[i]) - ch_mean_int[2]) - ch_mean_rem[2]) *
+            inv_scale;
+        const float raw_s3 =
+            (static_cast<float>(static_cast<int64_t>(ch3[i]) - ch_mean_int[3]) - ch_mean_rem[3]) *
+            inv_scale;
+
+        energy_sum += 0.25f * (raw_s0 * raw_s0 + raw_s1 * raw_s1 +
+                               raw_s2 * raw_s2 + raw_s3 * raw_s3);
+
+        const float w = window[i];
+        fft_ch[0][2 * i]     = raw_s0 * w;
+        fft_ch[0][2 * i + 1] = 0.0f;
+        fft_ch[1][2 * i]     = raw_s1 * w;
+        fft_ch[1][2 * i + 1] = 0.0f;
+        fft_ch[2][2 * i]     = raw_s2 * w;
+        fft_ch[2][2 * i + 1] = 0.0f;
+        fft_ch[3][2 * i]     = raw_s3 * w;
+        fft_ch[3][2 * i + 1] = 0.0f;
+    }
+
+    const float rms = sqrtf(energy_sum * inv_fft_size);
+    result.rms_db = (rms > 1e-5f) ? 20.0f * log10f(rms) : NOISE_FLOOR_INITIAL_DB;
+
+    // 3. Prilagodljivi šumni prag
+    if (!updateNoiseFloorAndCheckGate(result.rms_db)) {
+        return result;
+    }
+
+    // 4. Štirje direktni kompleksni FFT-ji (X0..X3)
+    for (size_t c = 0; c < AUDIO_NUM_CHANNELS; ++c) {
+        dsps_fft2r_fc32(fft_ch[c], static_cast<int>(fft_size));
+        dsps_bit_rev_fc32(fft_ch[c], static_cast<int>(fft_size));
+    }
+
+    // 5. Dvopasovno uteženi navzkrižni spektri moči in in-place IFFT za vseh 6 parov
+    float peak_conf_sum = 0.0f;
+    for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) {
+        const MicPairDescriptor& pair = MIC_PAIRS[p];
+        const float* weights = pair.is_diagonal ? band_weight_diag : band_weight_edge;
+        const float weight_sum = pair.is_diagonal ? weight_sum_diag : weight_sum_edge;
+        const float norm_factor =
+            (weight_sum > 1e-6f) ? weight_sum : static_cast<float>(fft_size);
+
+        computePairCrossCorrelationIfft(pair.mic_i, pair.mic_j, weights);
+
+        const float baseline_len = pair.is_diagonal ? (d * static_cast<float>(M_SQRT2)) : d;
+        int max_lag = static_cast<int>(ceilf((baseline_len / c_sound) * fs)) + 1;
+        if (max_lag >= static_cast<int>(fft_size)) {
+            max_lag = static_cast<int>(fft_size) - 1;
+        }
+
+        float best_peak = -1.0f;
+        for (int lag = -max_lag; lag <= max_lag; ++lag) {
+            const int idx = (lag < 0) ? (static_cast<int>(fft_size) + lag) : lag;
+            const float val = ccorr[2 * idx] / norm_factor;
+            if (val > best_peak) {
+                best_peak = val;
+            }
+        }
+        const float pair_conf = (best_peak > 1.0f) ? 1.0f : (best_peak < 0.0f ? 0.0f : best_peak);
+        peak_conf_sum += pair_conf;
+    }
+
+    result.confidence = peak_conf_sum / static_cast<float>(AUDIO_NUM_PAIRS);
+    return result;
+}
+
 void GccPhat::releaseBuffers() {
     heap_caps_free(window);
-    heap_caps_free(fft_x1);
-    heap_caps_free(fft_x2);
+    heap_caps_free(band_weight_edge);
+    heap_caps_free(band_weight_diag);
+    for (size_t c = 0; c < AUDIO_NUM_CHANNELS; ++c) {
+        heap_caps_free(fft_ch[c]);
+        fft_ch[c] = nullptr;
+    }
     heap_caps_free(ccorr);
     window = nullptr;
-    fft_x1 = nullptr;
-    fft_x2 = nullptr;
+    band_weight_edge = nullptr;
+    band_weight_diag = nullptr;
     ccorr = nullptr;
+    weight_sum_edge = 0.0f;
+    weight_sum_diag = 0.0f;
     fft_size = 0;
 }

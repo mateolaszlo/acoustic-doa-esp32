@@ -5,22 +5,113 @@
 #include <cstring>
 #include <cstdint>
 #include <vector>
+#include <esp_heap_caps.h>
+#include <esp_dsp.h>
 
 // --- Mock ESP-IDF and ESP-DSP for native host testing ---
+static int g_mock_fft_calls = 0;
+static int g_mock_bit_rev_calls = 0;
+static int g_mock_internal_alloc_calls = 0;
+static int g_mock_spiram_alloc_calls = 0;
+static int g_mock_fail_internal_after = -1; // -1 = never fail internal
+static int g_mock_fail_all_after = -1;      // -1 = never fail all
+static int g_mock_fft_init_ret = 0;
+
 extern "C" {
-    int dsps_fft2r_init_fc32(void*, int) { return 0; }
-    void dsps_wind_hann_f32(float* w, int n) {
-        for (int i = 0; i < n; i++) w[i] = 0.5f * (1.0f - cosf(2.0f * M_PI * i / (n - 1)));
+    int dsps_fft2r_init_fc32(void*, int) {
+        return g_mock_fft_init_ret;
     }
-    int dsps_fft2r_fc32(float*, int) { return 0; }
-    int dsps_bit_rev_fc32(float*, int) { return 0; }
-    void* heap_caps_malloc(size_t size, uint32_t) { return malloc(size); }
-    void heap_caps_free(void* ptr) { free(ptr); }
+
+    void dsps_wind_hann_f32(float* w, int n) {
+        for (int i = 0; i < n; i++) {
+            w[i] = 0.5f * (1.0f - cosf(2.0f * static_cast<float>(M_PI) * i / (n - 1)));
+        }
+    }
+
+    int dsps_fft2r_fc32(float* data, int n) {
+        g_mock_fft_calls++;
+        // Standard in-place Cooley-Tukey radix-2 complex FFT (leaves output in bit-reversed order
+        // until dsps_bit_rev_fc32 is called, matching ESP-DSP convention).
+        for (int len = n; len >= 2; len >>= 1) {
+            const int half = len >> 1;
+            const float angle_step = -2.0f * static_cast<float>(M_PI) / static_cast<float>(len);
+            for (int i = 0; i < n; i += len) {
+                for (int j = 0; j < half; ++j) {
+                    const float angle = angle_step * static_cast<float>(j);
+                    const float wr = cosf(angle);
+                    const float wi = sinf(angle);
+
+                    const int u = 2 * (i + j);
+                    const int v = 2 * (i + j + half);
+
+                    const float ur = data[u];
+                    const float ui = data[u + 1];
+                    const float vr = data[v];
+                    const float vi = data[v + 1];
+
+                    data[u]     = ur + vr;
+                    data[u + 1] = ui + vi;
+
+                    const float dr = ur - vr;
+                    const float di = ui - vi;
+                    data[v]     = dr * wr - di * wi;
+                    data[v + 1] = dr * wi + di * wr;
+                }
+            }
+        }
+        return 0;
+    }
+
+    int dsps_bit_rev_fc32(float* data, int n) {
+        g_mock_bit_rev_calls++;
+        int j = 0;
+        for (int i = 0; i < n; ++i) {
+            if (i < j) {
+                const float tr = data[2 * i];
+                const float ti = data[2 * i + 1];
+                data[2 * i]     = data[2 * j];
+                data[2 * i + 1] = data[2 * j + 1];
+                data[2 * j]     = tr;
+                data[2 * j + 1] = ti;
+            }
+            int bit = n >> 1;
+            while (bit > 0 && (j & bit) != 0) {
+                j ^= bit;
+                bit >>= 1;
+            }
+            j |= bit;
+        }
+        return 0;
+    }
+
+    void* heap_caps_malloc(size_t size, uint32_t caps) {
+        if ((caps & MALLOC_CAP_INTERNAL) != 0) {
+            g_mock_internal_alloc_calls++;
+            if (g_mock_fail_all_after >= 0 && g_mock_internal_alloc_calls > g_mock_fail_all_after) {
+                return nullptr;
+            }
+            if (g_mock_fail_internal_after >= 0 &&
+                g_mock_internal_alloc_calls > g_mock_fail_internal_after) {
+                return nullptr;
+            }
+        } else if ((caps & MALLOC_CAP_SPIRAM) != 0) {
+            g_mock_spiram_alloc_calls++;
+            if (g_mock_fail_all_after >= 0) {
+                return nullptr;
+            }
+        }
+        return malloc(size);
+    }
+
+    void heap_caps_free(void* ptr) {
+        free(ptr);
+    }
 }
 
 #include "../src/gcc_phat.h"
 #include "../src/display_filter.h"
 #include "../src/post_checker.h"
+#include "../src/i2s_sampler.h"
 
 // Test 1: GccPhat adaptive noise floor tracking
 void test_gcc_phat_adaptive_noise_floor() {
@@ -306,6 +397,158 @@ void test_post_checker() {
     printf("  [PASS] test_post_checker passed.\n");
 }
 
+// Test 3b: Quad-Microphone POST Statistical Heuristics (Bus 0 + Bus 1)
+static void test_quad_post_checker() {
+    printf("[TEST] Running test_quad_post_checker...\n");
+
+    const size_t n = 1024;
+    std::vector<int32_t> ch0(n, 0);
+    std::vector<int32_t> ch1(n, 0);
+    std::vector<int32_t> ch2(n, 0);
+    std::vector<int32_t> ch3(n, 0);
+
+    auto fill_nominal = [&]() {
+        for (size_t i = 0; i < n; ++i) {
+            const int k = static_cast<int>(i);
+            ch0[i] = static_cast<int32_t>((sinf(k * 0.11f) + ((k % 7) - 3) * 0.05f) * 2147483.0f);
+            ch1[i] = static_cast<int32_t>((cosf(k * 0.13f) + ((k % 11) - 5) * 0.05f) * 2147483.0f);
+            ch2[i] = static_cast<int32_t>((sinf(k * 0.17f + 0.7f) + ((k % 13) - 6) * 0.04f) * 2147483.0f);
+            ch3[i] = static_cast<int32_t>((cosf(k * 0.19f + 1.2f) + ((k % 5) - 2) * 0.06f) * 2147483.0f);
+        }
+    };
+
+    // Scenario 0: Null / empty guards
+    MicrophoneHealthResult res_null = evaluate_quad_microphone_health(nullptr, n);
+    assert(!res_null.all_ok);
+    assert(!res_null.ch_ok[0] && !res_null.ch_ok[1] && !res_null.ch_ok[2] && !res_null.ch_ok[3]);
+    assert(!res_null.bus0_distinct && !res_null.bus1_distinct && !res_null.cross_bus_distinct);
+
+    MicrophoneHealthResult res_zero = evaluate_quad_microphone_health(
+        ch0.data(), ch1.data(), ch2.data(), ch3.data(), 0);
+    assert(!res_zero.all_ok);
+
+    MicrophoneHealthResult res_one_null = evaluate_quad_microphone_health(
+        ch0.data(), ch1.data(), nullptr, ch3.data(), n);
+    assert(!res_one_null.all_ok);
+
+    // Scenario 1: All 4 channels nominal and independent
+    fill_nominal();
+    const int32_t* const ptrs[4] = {ch0.data(), ch1.data(), ch2.data(), ch3.data()};
+    MicrophoneHealthResult res_nom = evaluate_quad_microphone_health(ptrs, n);
+    for (size_t c = 0; c < AUDIO_NUM_CHANNELS; ++c) {
+        assert(res_nom.ch_ok[c]);
+        assert(res_nom.ch_rms_db[c] > -70.0f && res_nom.ch_rms_db[c] < -50.0f);
+        assert(res_nom.ch_min[c] < 0 && res_nom.ch_max[c] > 0);
+    }
+    assert(res_nom.bus0_distinct);
+    assert(res_nom.bus1_distinct);
+    assert(res_nom.cross_bus_distinct);
+    assert(res_nom.all_ok);
+    assert(res_nom.left_ok && res_nom.right_ok && res_nom.stereo_distinct);
+
+    // Scenario 2: Single-channel flatline on Mic 2 (stuck constant value)
+    fill_nominal();
+    for (size_t i = 0; i < n; ++i) {
+        ch2[i] = -128;
+    }
+    MicrophoneHealthResult res_flat2 = evaluate_quad_microphone_health(
+        ch0.data(), ch1.data(), ch2.data(), ch3.data(), n);
+    assert(res_flat2.ch_ok[0]);
+    assert(res_flat2.ch_ok[1]);
+    assert(!res_flat2.ch_ok[2]);
+    assert(res_flat2.ch_ok[3]);
+    assert(res_flat2.bus0_distinct);
+    assert(res_flat2.bus1_distinct);
+    assert(res_flat2.cross_bus_distinct);
+    assert(!res_flat2.all_ok);
+
+    // Scenario 3: Single-channel rail short on Mic 3 (DC short with ripple and AC clipping)
+    fill_nominal();
+    for (size_t i = 0; i < n; ++i) {
+        ch3[i] = 2147480000 - static_cast<int32_t>((i % 5) * 1000);
+    }
+    MicrophoneHealthResult res_rail_dc = evaluate_quad_microphone_health(
+        ch0.data(), ch1.data(), ch2.data(), ch3.data(), n);
+    assert(res_rail_dc.ch_ok[0] && res_rail_dc.ch_ok[1] && res_rail_dc.ch_ok[2]);
+    assert(!res_rail_dc.ch_ok[3]);
+    assert(res_rail_dc.ch_rms_db[3] >= POST_MIC_RAIL_SHORT_RMS_DB);
+    assert(!res_rail_dc.all_ok);
+
+    fill_nominal();
+    for (size_t i = 0; i < n; ++i) {
+        ch3[i] = (i % 2 == 0) ? 2147480000 : -2147480000;
+    }
+    MicrophoneHealthResult res_rail_ac = evaluate_quad_microphone_health(
+        ch0.data(), ch1.data(), ch2.data(), ch3.data(), n);
+    assert(!res_rail_ac.ch_ok[3]);
+    assert(res_rail_ac.ch_rms_db[3] >= POST_MIC_RAIL_SHORT_RMS_DB);
+    assert(!res_rail_ac.all_ok);
+
+    // Scenario 4: Bus 1 L/R collision (Mic 2 and Mic 3 both jumpered to same L/R phase)
+    fill_nominal();
+    for (size_t i = 0; i < n; ++i) {
+        ch3[i] = ch2[i];
+    }
+    MicrophoneHealthResult res_bus1_col = evaluate_quad_microphone_health(
+        ch0.data(), ch1.data(), ch2.data(), ch3.data(), n);
+    assert(res_bus1_col.ch_ok[0] && res_bus1_col.ch_ok[1] &&
+           res_bus1_col.ch_ok[2] && res_bus1_col.ch_ok[3]);
+    assert(res_bus1_col.bus0_distinct);
+    assert(!res_bus1_col.bus1_distinct);
+    assert(res_bus1_col.cross_bus_distinct);
+    assert(!res_bus1_col.stereo_distinct);
+    assert(res_bus1_col.identical_samples == n);
+    assert(!res_bus1_col.all_ok);
+
+    // Scenario 5: Bus 0/1 cross-collision (GPIO 6 DIN0 shorted to GPIO 7 DIN1)
+    fill_nominal();
+    for (size_t i = 0; i < n; ++i) {
+        ch2[i] = ch0[i];
+        ch3[i] = ch1[i];
+    }
+    MicrophoneHealthResult res_cross_col = evaluate_quad_microphone_health(
+        ch0.data(), ch1.data(), ch2.data(), ch3.data(), n);
+    assert(res_cross_col.ch_ok[0] && res_cross_col.ch_ok[1] &&
+           res_cross_col.ch_ok[2] && res_cross_col.ch_ok[3]);
+    assert(res_cross_col.bus0_distinct);
+    assert(res_cross_col.bus1_distinct);
+    assert(!res_cross_col.cross_bus_distinct);
+    assert(!res_cross_col.stereo_distinct);
+    assert(res_cross_col.identical_samples == n);
+    assert(!res_cross_col.all_ok);
+
+    // Scenario 6: Collision threshold boundary (< 85% distinct vs >= 85% collision)
+    fill_nominal();
+    const size_t below_thresh = (n * POST_MIC_MAX_COLLISION_PCT) / 100; // 870 samples (84.96%)
+    for (size_t i = 0; i < below_thresh; ++i) {
+        ch1[i] = ch0[i];
+    }
+    MicrophoneHealthResult res_edge_pass = evaluate_quad_microphone_health(
+        ch0.data(), ch1.data(), ch2.data(), ch3.data(), n);
+    assert(res_edge_pass.bus0_distinct);
+
+    ch1[below_thresh] = ch0[below_thresh]; // 871 samples (85.06% >= 85%)
+    MicrophoneHealthResult res_edge_fail = evaluate_quad_microphone_health(
+        ch0.data(), ch1.data(), ch2.data(), ch3.data(), n);
+    assert(!res_edge_fail.bus0_distinct);
+    assert(!res_edge_fail.all_ok);
+
+    // Scenario 7: Dead 24-bit mic with high DC bias (0x5003FF00, ~ -4.08 dBFS) + 1-LSB toggle
+    // True AC RMS is -144.5 dBFS (<= -95 dBFS flatline threshold). Must not false-pass from float drift.
+    fill_nominal();
+    for (size_t i = 0; i < n; ++i) {
+        ch3[i] = 0x5003FF00 + static_cast<int32_t>((i & 1) << 8);
+    }
+    MicrophoneHealthResult res_dc_flat = evaluate_quad_microphone_health(
+        ch0.data(), ch1.data(), ch2.data(), ch3.data(), n);
+    assert(res_dc_flat.ch_ok[0] && res_dc_flat.ch_ok[1] && res_dc_flat.ch_ok[2]);
+    assert(!res_dc_flat.ch_ok[3]);
+    assert(res_dc_flat.ch_rms_db[3] <= POST_MIC_FLATLINE_RMS_DB);
+    assert(!res_dc_flat.all_ok);
+
+    printf("  [PASS] test_quad_post_checker passed.\n");
+}
+
 static void test_gcc_phat_angle_offset() {
     printf("[TEST] Running test_gcc_phat_angle_offset...\n");
 
@@ -366,7 +609,15 @@ static void test_gcc_phat_angle_offset() {
 static void test_app_config_consistency() {
     printf("[TEST] Running test_app_config_consistency...\n");
 
-    // Verify central defaults
+    // Verify central defaults and 4-mic hardware topology constants
+    assert(AUDIO_NUM_CHANNELS == 4);
+    assert(AUDIO_NUM_PAIRS == 6);
+    assert(I2S_MASTER_PORT_NUM == 0);
+    assert(I2S_SLAVE_PORT_NUM == 1);
+    assert(I2S_PORT_NUM == I2S_MASTER_PORT_NUM);
+    assert(I2S_DIN0_PIN == 6);
+    assert(I2S_DIN1_PIN == 7);
+    assert(I2S_DIN_PIN == I2S_DIN0_PIN);
     assert(std::fabs(DEFAULT_MIC_DISTANCE_M - 0.082f) < 1e-4f);
     assert(DEFAULT_SAMPLE_RATE == 44100);
     assert(DEFAULT_WINDOW_SIZE == 1024);
@@ -391,16 +642,261 @@ static void test_app_config_consistency() {
     assert(std::fabs(doa_default.getAngleOffsetDeg() - DEFAULT_ANGLE_OFFSET_DEG) < 1e-4f);
     assert(std::fabs(doa_default.getSnrMarginDb() - DEFAULT_SNR_MARGIN_DB) < 1e-4f);
     assert(std::fabs(doa_default.getSoundSpeed() - DEFAULT_SOUND_SPEED_MPS) < 0.5f);
+    assert(std::fabs(GCC_PHAT_MIN_HZ - 300.0f) < 1e-4f);
+    assert(std::fabs(GCC_PHAT_EDGE_MAX_HZ - 2200.0f) < 1e-4f);
+    assert(std::fabs(GCC_PHAT_DIAG_MAX_HZ - 1450.0f) < 1e-4f);
+    assert(std::fabs(GCC_PHAT_RAMP_HZ - 100.0f) < 1e-4f);
 
     printf("  [PASS] test_app_config_consistency passed.\n");
+}
+
+static void test_gcc_phat_dual_band_weights() {
+    printf("[TEST] Running test_gcc_phat_dual_band_weights...\n");
+
+    // 1. Direct evaluation of computeBandWeight for edge (300-2200 Hz, 100 Hz ramp)
+    // and diagonal (300-1450 Hz, 100 Hz ramp) bands
+    assert(GccPhat::computeBandWeight(0.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) == 0.0f);
+    assert(GccPhat::computeBandWeight(150.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) == 0.0f);
+    assert(GccPhat::computeBandWeight(200.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) == 0.0f);
+    assert(fabsf(GccPhat::computeBandWeight(250.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) - 0.5f) < 1e-6f);
+    assert(GccPhat::computeBandWeight(300.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) == 1.0f);
+    assert(GccPhat::computeBandWeight(1000.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) == 1.0f);
+    assert(GccPhat::computeBandWeight(1450.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) == 1.0f);
+    assert(GccPhat::computeBandWeight(1800.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) == 1.0f);
+    assert(GccPhat::computeBandWeight(2200.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) == 1.0f);
+    assert(fabsf(GccPhat::computeBandWeight(2250.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) - 0.5f) < 1e-6f);
+    assert(GccPhat::computeBandWeight(2300.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) == 0.0f);
+    assert(GccPhat::computeBandWeight(5000.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) == 0.0f);
+
+    // Diagonal band (300-1450 Hz, 100 Hz ramp)
+    assert(GccPhat::computeBandWeight(200.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_DIAG_MAX_HZ) == 0.0f);
+    assert(fabsf(GccPhat::computeBandWeight(250.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_DIAG_MAX_HZ) - 0.5f) < 1e-6f);
+    assert(GccPhat::computeBandWeight(300.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_DIAG_MAX_HZ) == 1.0f);
+    assert(GccPhat::computeBandWeight(1000.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_DIAG_MAX_HZ) == 1.0f);
+    assert(GccPhat::computeBandWeight(1450.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_DIAG_MAX_HZ) == 1.0f);
+    assert(fabsf(GccPhat::computeBandWeight(1500.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_DIAG_MAX_HZ) - 0.5f) < 1e-6f);
+    assert(GccPhat::computeBandWeight(1550.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_DIAG_MAX_HZ) == 0.0f);
+    assert(GccPhat::computeBandWeight(1800.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_DIAG_MAX_HZ) == 0.0f);
+    assert(GccPhat::computeBandWeight(2200.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_DIAG_MAX_HZ) == 0.0f);
+
+    // Invalid parameter guards
+    assert(GccPhat::computeBandWeight(NAN, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) == 0.0f);
+    assert(GccPhat::computeBandWeight(1000.0f, 2000.0f, 500.0f) == 0.0f);
+    assert(GccPhat::computeBandWeight(1000.0f, 300.0f, 2200.0f, 0.0f) == 0.0f);
+
+    // 2. Verify precomputed tables and normalization sums across supported sample rates & window sizes
+    const uint32_t rates[2] = {44100, 48000};
+    const size_t windows[3] = {512, 1024, 2048};
+
+    GccPhat doa;
+    for (size_t r = 0; r < 2; ++r) {
+        for (size_t w = 0; w < 3; ++w) {
+            const float fs = static_cast<float>(rates[r]);
+            const size_t n = windows[w];
+            assert(doa.configure(fs, n));
+            assert(doa.getFftSize() == n);
+
+            const float* w_edge = doa.getEdgeBandWeights();
+            const float* w_diag = doa.getDiagBandWeights();
+            assert(w_edge != nullptr);
+            assert(w_diag != nullptr);
+
+            // DC (0 Hz) and Nyquist (fs/2) must be 0.0f
+            assert(w_edge[0] == 0.0f && w_diag[0] == 0.0f);
+            assert(w_edge[n / 2] == 0.0f && w_diag[n / 2] == 0.0f);
+
+            const float bin_hz = fs / static_cast<float>(n);
+            float sum_edge = 0.0f;
+            float sum_diag = 0.0f;
+            size_t edge_only_bins = 0;
+
+            for (size_t i = 0; i < n; ++i) {
+                assert(w_edge[i] >= 0.0f && w_edge[i] <= 1.0f);
+                assert(w_diag[i] >= 0.0f && w_diag[i] <= 1.0f);
+                assert(w_diag[i] <= w_edge[i] + 1e-6f);
+
+                // Conjugate mirror symmetry across Nyquist
+                if (i > 0 && i < n / 2) {
+                    assert(fabsf(w_edge[i] - w_edge[n - i]) < 1e-6f);
+                    assert(fabsf(w_diag[i] - w_diag[n - i]) < 1e-6f);
+                }
+
+                const size_t mirrored_bin = (i <= n / 2) ? i : (n - i);
+                const float freq = static_cast<float>(mirrored_bin) * bin_hz;
+                if (freq >= 300.0f && freq <= 1450.0f) {
+                    assert(fabsf(w_edge[i] - 1.0f) < 1e-6f);
+                    assert(fabsf(w_diag[i] - 1.0f) < 1e-6f);
+                } else if (freq >= 1550.0f && freq <= 2200.0f) {
+                    assert(fabsf(w_edge[i] - 1.0f) < 1e-6f);
+                    assert(w_diag[i] == 0.0f);
+                    edge_only_bins++;
+                } else if (freq <= 200.0f || freq >= 2300.0f) {
+                    assert(w_edge[i] == 0.0f);
+                    assert(w_diag[i] == 0.0f);
+                }
+
+                sum_edge += w_edge[i];
+                sum_diag += w_diag[i];
+            }
+
+            assert(edge_only_bins > 0);
+            assert(fabsf(doa.getEdgeWeightSum() - sum_edge) < 1e-4f);
+            assert(fabsf(doa.getDiagWeightSum() - sum_diag) < 1e-4f);
+            assert(doa.getEdgeWeightSum() > doa.getDiagWeightSum());
+            assert(doa.getDiagWeightSum() > 0.0f);
+        }
+    }
+
+    printf("  [PASS] test_gcc_phat_dual_band_weights passed.\n");
+}
+
+static void test_gcc_phat_quad_rms_and_pipeline() {
+    printf("[TEST] Running test_gcc_phat_quad_rms_and_pipeline...\n");
+
+    const size_t n = 1024;
+    const float fs = 44100.0f;
+    GccPhat doa(fs, DEFAULT_MIC_DISTANCE_M, 20.0f);
+    assert(doa.init(n));
+
+    std::vector<int32_t> zeros(n, 0);
+    std::vector<int32_t> sig(n, 0);
+    const int32_t loud_amp = 21474836; // ~ -40 dBFS
+    uint32_t lcg = 0x12345678u;
+    for (size_t i = 0; i < n; ++i) {
+        lcg = lcg * 1664525u + 1013904223u;
+        const float white = (static_cast<float>(static_cast<int32_t>(lcg >> 8)) / 8388608.0f) - 1.0f;
+        sig[i] = static_cast<int32_t>(white * static_cast<float>(loud_amp));
+    }
+
+    // 1. Null-pointer guards on 4-channel process()
+    assert(!doa.process(nullptr, zeros.data(), zeros.data(), zeros.data()).valid);
+    assert(!doa.process(zeros.data(), nullptr, zeros.data(), zeros.data()).valid);
+    assert(!doa.process(zeros.data(), zeros.data(), nullptr, zeros.data()).valid);
+    assert(!doa.process(zeros.data(), zeros.data(), zeros.data(), nullptr).valid);
+
+    // 2. 4-channel omnidirectional RMS symmetry across ch0, ch1, ch2, ch3
+    DoaResult r_ch0 = doa.process(sig.data(), zeros.data(), zeros.data(), zeros.data());
+    DoaResult r_ch1 = doa.process(zeros.data(), sig.data(), zeros.data(), zeros.data());
+    DoaResult r_ch2 = doa.process(zeros.data(), zeros.data(), sig.data(), zeros.data());
+    DoaResult r_ch3 = doa.process(zeros.data(), zeros.data(), zeros.data(), sig.data());
+
+    assert(fabsf(r_ch0.rms_db - r_ch1.rms_db) < 1e-5f);
+    assert(fabsf(r_ch0.rms_db - r_ch2.rms_db) < 1e-5f);
+    assert(fabsf(r_ch0.rms_db - r_ch3.rms_db) < 1e-5f);
+
+    // Full 4-channel excitation must equal 2-channel full stereo excitation (+6.0206 dB over single-ch)
+    DoaResult r_all4 = doa.process(sig.data(), sig.data(), sig.data(), sig.data());
+    DoaResult r_stereo = doa.process(sig.data(), sig.data());
+    assert(fabsf(r_all4.rms_db - r_stereo.rms_db) < 1e-5f);
+    assert(fabsf((r_all4.rms_db - r_ch0.rms_db) - 6.0206f) < 1e-3f);
+
+    // 3. Independent DC offset removal across all 4 channels (including large 24-bit DC bias 0x5003FF00)
+    std::vector<int32_t> ch0_dc(n), ch1_dc(n), ch2_dc(n), ch3_dc(n);
+    for (size_t i = 0; i < n; ++i) {
+        ch0_dc[i] = sig[i] + 0x5003FF00;
+        ch1_dc[i] = sig[i] - 0x4E123400;
+        ch2_dc[i] = sig[i] + 300000000;
+        ch3_dc[i] = sig[i] - 250000000;
+    }
+    DoaResult r_dc = doa.process(ch0_dc.data(), ch1_dc.data(), ch2_dc.data(), ch3_dc.data());
+    assert(fabsf(r_dc.rms_db - r_all4.rms_db) < 1e-5f);
+
+    // Verify a silent high-DC-bias line (0x5003FF00 with 1-LSB toggle) does not false-seed adaptive noise floor
+    doa.setAdaptiveThreshold(true, 8.0f);
+    doa.resetNoiseFloor(-100.0f);
+    std::vector<int32_t> dc_flat(n);
+    for (size_t i = 0; i < n; ++i) {
+        dc_flat[i] = 0x5003FF00 + static_cast<int32_t>((i & 1) << 8);
+    }
+    DoaResult r_dc_flat = doa.process(dc_flat.data(), dc_flat.data(), dc_flat.data(), dc_flat.data());
+    assert(r_dc_flat.rms_db <= -99.0f);
+    assert(!doa.isNoiseFloorInitialized());
+    doa.setAdaptiveThreshold(false, 8.0f);
+
+    // 4. Verify 4 forward FFTs + 6 inverse FFTs = 10 FFTs when above threshold, and 0 when below
+    g_mock_fft_calls = 0;
+    g_mock_bit_rev_calls = 0;
+    DoaResult r_quiet = doa.process(zeros.data(), zeros.data(), zeros.data(), zeros.data());
+    assert(r_quiet.rms_db <= -99.0f);
+    assert(g_mock_fft_calls == 0);
+    assert(g_mock_bit_rev_calls == 0);
+
+    g_mock_fft_calls = 0;
+    g_mock_bit_rev_calls = 0;
+    DoaResult r_active = doa.process(sig.data(), sig.data(), sig.data(), sig.data());
+    assert(g_mock_fft_calls == static_cast<int>(AUDIO_NUM_CHANNELS + AUDIO_NUM_PAIRS)); // 4 + 6 = 10
+    assert(g_mock_bit_rev_calls == static_cast<int>(AUDIO_NUM_CHANNELS + AUDIO_NUM_PAIRS));
+    assert(fabsf(r_active.confidence - 1.0f) < 1e-4f);
+
+    // 5. Dual-band spectral selectivity:
+    // Synthesize 4 channels with coherent multitone in [1650 Hz, 2150 Hz] (edge-only passband)
+    // plus uncorrelated noise across the spectrum so bins outside [1650, 2150 Hz] are incoherent.
+    // Diagonal pairs (cutoff 1450 Hz, zero >= 1550 Hz) reject the coherent [1650, 2150 Hz] band completely,
+    // whereas edge pairs (cutoff 2200 Hz) capture the coherent [1650, 2150 Hz] band.
+    std::vector<int32_t> ch_u[4];
+    for (size_t c = 0; c < 4; ++c) {
+        ch_u[c].resize(n, 0);
+    }
+    for (size_t i = 0; i < n; ++i) {
+        float coherent_high = 0.0f;
+        for (int bin = 38; bin <= 50; ++bin) { // 1636 Hz .. 2153 Hz
+            coherent_high += cosf(2.0f * static_cast<float>(M_PI) *
+                                  static_cast<float>(bin * static_cast<int>(i)) /
+                                  static_cast<float>(n) + static_cast<float>(bin) * 0.37f);
+        }
+        coherent_high /= 3.0f; // Keep RMS well above -45 dBFS threshold
+        for (size_t c = 0; c < 4; ++c) {
+            lcg = lcg * 1664525u + 1013904223u;
+            const float noise = ((static_cast<float>(static_cast<int32_t>(lcg >> 8)) / 8388608.0f) - 1.0f) * 0.25f;
+            ch_u[c][i] = static_cast<int32_t>((coherent_high + noise) * static_cast<float>(loud_amp));
+        }
+    }
+    DoaResult r_edge_only = doa.process(
+        ch_u[0].data(), ch_u[1].data(), ch_u[2].data(), ch_u[3].data());
+    assert(r_edge_only.rms_db > doa.getEffectiveThresholdDb());
+    assert(r_edge_only.confidence > 0.15f && r_edge_only.confidence < 0.45f);
+    assert(r_active.confidence > r_edge_only.confidence + 0.5f);
+
+    // 6. Verify configure() SPIRAM fallback and clean rollback on allocation / FFT init failure
+    g_mock_internal_alloc_calls = 0;
+    g_mock_spiram_alloc_calls = 0;
+    g_mock_fail_internal_after = 3; // Allow first 3 buffers in internal RAM, force remaining 5 to SPIRAM
+    assert(doa.configure(48000.0f, 2048));
+    assert(g_mock_spiram_alloc_calls == 5);
+    assert(doa.getFftSize() == 2048);
+    g_mock_fail_internal_after = -1;
+
+    // Now force total allocation failure mid-way through configure(44100, 512):
+    // Previous valid state (48000 Hz, 2048 samples) must remain intact with zero leaks!
+    const float prev_edge_sum = doa.getEdgeWeightSum();
+    const float* prev_edge_ptr = doa.getEdgeBandWeights();
+    g_mock_internal_alloc_calls = 0;
+    g_mock_fail_all_after = 4; // Fail after 4 allocations
+    assert(!doa.configure(44100.0f, 512));
+    g_mock_fail_all_after = -1;
+    assert(doa.getFftSize() == 2048);
+    assert(doa.getEdgeBandWeights() == prev_edge_ptr);
+    assert(fabsf(doa.getEdgeWeightSum() - prev_edge_sum) < 1e-5f);
+
+    // Force dsps_fft2r_init_fc32 failure: buffers must be freed and previous state preserved
+    g_mock_fft_init_ret = -1;
+    assert(!doa.configure(44100.0f, 512));
+    g_mock_fft_init_ret = 0;
+    assert(doa.getFftSize() == 2048);
+    assert(doa.getEdgeBandWeights() == prev_edge_ptr);
+
+    printf("  [PASS] test_gcc_phat_quad_rms_and_pipeline passed.\n");
 }
 
 int main() {
     test_gcc_phat_adaptive_noise_floor();
     test_display_smoothing_filter();
     test_post_checker();
+    test_quad_post_checker();
     test_gcc_phat_angle_offset();
     test_app_config_consistency();
+    test_gcc_phat_dual_band_weights();
+    test_gcc_phat_quad_rms_and_pipeline();
     printf("\nAll unit tests passed successfully!\n");
     return 0;
 }

@@ -2,6 +2,15 @@
 #include <cstddef>
 #include <cstdint>
 
+#ifndef ESP_OK
+#define ESP_OK 0
+#endif
+#ifndef ESP_FAIL
+#define ESP_FAIL -1
+#endif
+
+typedef int esp_err_t;
+
 #ifdef __cplusplus
 extern "C" {
 #endif

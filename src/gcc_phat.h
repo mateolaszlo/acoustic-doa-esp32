@@ -34,6 +34,8 @@ public:
     // Atomically switches the sample rate and FFT size after successful setup.
     bool configure(float sample_rate, size_t window_size);
     DoaResult process(const int32_t* left_channel, const int32_t* right_channel);
+    DoaResult process(const int32_t* ch0, const int32_t* ch1,
+                      const int32_t* ch2, const int32_t* ch3);
     void updateCalibration(float distance_m, float temp_c, float humidity_pct,
                            float pressure_pa, float corr_thresh, float db_thresh,
                            bool adaptive_thresh = false,
@@ -46,6 +48,8 @@ public:
     static float calculateSoundSpeed(float temp_c = DEFAULT_TEMPERATURE_C,
                                      float humidity_pct = DEFAULT_HUMIDITY_PCT,
                                      float pressure_pa = DEFAULT_PRESSURE_PA);
+    static float computeBandWeight(float frequency_hz, float min_hz,
+                                   float max_hz, float ramp_hz = GCC_PHAT_RAMP_HZ);
     float getSoundSpeed() const { return c_sound; }
 
     void setAngleOffsetDeg(float offset_deg);
@@ -58,6 +62,12 @@ public:
     float getEffectiveThresholdDb() const;
     void resetNoiseFloor(float initial_db = -100.0f);
     bool isNoiseFloorInitialized() const { return noise_floor_initialized; }
+
+    size_t getFftSize() const { return fft_size; }
+    const float* getEdgeBandWeights() const { return band_weight_edge; }
+    const float* getDiagBandWeights() const { return band_weight_diag; }
+    float getEdgeWeightSum() const { return weight_sum_edge; }
+    float getDiagWeightSum() const { return weight_sum_diag; }
 
 private:
     float fs;
@@ -75,9 +85,14 @@ private:
 
     // Medpomnilniki za FFT (kompleksna števila: [Re, Im, Re, Im...])
     float* window;
-    float* fft_x1;
-    float* fft_x2;
+    float* band_weight_edge;
+    float* band_weight_diag;
+    float* fft_ch[4];
     float* ccorr;
-    
+    float weight_sum_edge;
+    float weight_sum_diag;
+
+    bool updateNoiseFloorAndCheckGate(float rms_db);
+    void computePairCrossCorrelationIfft(size_t mic_i, size_t mic_j, const float* weights);
     void releaseBuffers();
 };
