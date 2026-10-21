@@ -242,17 +242,17 @@ Every task, sub-step, and verification gate is structured as an actionable `- [ 
 ---
 
 ### Phase 3: 6-Pair Delay Refinement, Loop Validation & 2D WLS Solver
-- [ ] **Step 3.1 — Implement Sub-Sample Parabolic Peak Refinement for All 6 Pairs**:
-  - [ ] Search each pair $p \in \{0 \dots 5\}$ within its physical lag bound $\text{max\_lag}_p = \lceil \frac{\|\mathbf{b}_p\|}{c} f_s \rceil + 1$ ($12$ samples for edges, $16$ samples for diagonals).
-  - [ ] Refine peak index with 3-point parabolic interpolation to obtain $(\tau_p, \text{confidence}_p)$.
-- [ ] **Step 3.2 — Implement Triangle Loop-Closure Multipath Filter & $2\times 2$ WLS Azimuth Solver**:
-  - [ ] Compute the 4 closed-triangle loop closure residuals $e_0 \dots e_3$ and apply Gaussian consistency weights $\psi_p = \exp(-e_{\text{pair},p}^2 / (2 \sigma_{\text{loop}}^2))$.
-  - [ ] Assemble and solve the $2\times 2$ WLS normal equations $\mathbf{A}\hat{\mathbf{u}} = \mathbf{g}$ for $[\hat{u}_x, \hat{u}_y]^T$.
-  - [ ] Compute $\phi_{\text{raw}} = \text{atan2f}(\hat{u}_x, \hat{u}_y) \cdot \frac{180^\circ}{\pi}$, apply `angle_offset_deg` with $[-180^\circ, +180^\circ]$ wrap-around, and populate `DoaResult`.
-- [ ] **Step 3.3 — Phase 3 Verification & Stop Gate**:
-  - [ ] Implement a full-pipeline synthetic FFT/IFFT test in `test/test_adaptive_and_smoothing.cpp` injecting delayed broadband signals across all 4 quadrants ($0^\circ, +45^\circ, +90^\circ, +135^\circ, \pm 180^\circ, -135^\circ, -90^\circ, -45^\circ$) and verifying $< 1.5^\circ$ azimuth accuracy.
-  - [ ] Add a synthetic multipath test corrupting one pair's lag by $+8$ samples and verifying that loop-closure weighting suppresses the corrupted pair and recovers the true angle.
-  - [ ] Run host unit tests with ASAN/UBSAN and verify 100% pass before proceeding to Phase 4.
+- [x] **Step 3.1 — Implement Sub-Sample Parabolic Peak Refinement for All 6 Pairs**:
+  - [x] Search each pair $p \in \{0 \dots 5\}$ within its physical lag bound $\text{max\_lag}_p = \lceil \frac{\|\mathbf{b}_p\|}{c} f_s \rceil + 1$ ($12$ samples for edges, $16$ samples for diagonals).
+  - [x] Refine peak index with 3-point parabolic interpolation to obtain $(\tau_p, \text{confidence}_p)$.
+- [x] **Step 3.2 — Implement Triangle Loop-Closure Multipath Filter & $2\times 2$ WLS Azimuth Solver**:
+  - [x] Compute the 4 closed-triangle loop closure residuals $e_0 \dots e_3$ and apply Gaussian consistency weights $\psi_p = \exp(-e_{\text{pair},p}^2 / (2 \sigma_{\text{loop}}^2))$.
+  - [x] Assemble and solve the $2\times 2$ WLS normal equations $\mathbf{A}\hat{\mathbf{u}} = \mathbf{g}$ for $[\hat{u}_x, \hat{u}_y]^T$.
+  - [x] Compute $\phi_{\text{raw}} = \text{atan2f}(\hat{u}_x, \hat{u}_y) \cdot \frac{180^\circ}{\pi}$, apply `angle_offset_deg` with $[-180^\circ, +180^\circ]$ wrap-around, and populate `DoaResult`.
+- [x] **Step 3.3 — Phase 3 Verification & Stop Gate**:
+  - [x] Implement a full-pipeline synthetic FFT/IFFT test in `test/test_adaptive_and_smoothing.cpp` injecting delayed broadband signals across all 4 quadrants ($0^\circ, +45^\circ, +90^\circ, +135^\circ, \pm 180^\circ, -135^\circ, -90^\circ, -45^\circ$) and verifying $< 1.5^\circ$ azimuth accuracy.
+  - [x] Add a synthetic multipath test corrupting one pair's lag by $+8$ samples and verifying that loop-closure weighting suppresses the corrupted pair and recovers the true angle.
+  - [x] Run host unit tests with ASAN/UBSAN and verify 100% pass before proceeding to Phase 4.
 
 ---
 

@@ -7,7 +7,7 @@
 #define N_SAMPLES AUDIO_DEFAULT_WINDOW_SIZE // Število vzorcev (potenca 2 za FFT)
 
 struct DoaResult {
-    float angle_deg;       // Kot θ v stopinjah [-90, +90]
+    float angle_deg;       // Azimut v stopinjah [-180, +180] (4-mic) oz. [-90, +90] (2-mic)
     float delay_us;        // Zakasnitev v mikrosekundah
     float confidence;      // Normaliziran korelacijski vrh [0, 1]
     float rms_db;          // Glasnost v dBFS
@@ -36,6 +36,9 @@ public:
     DoaResult process(const int32_t* left_channel, const int32_t* right_channel);
     DoaResult process(const int32_t* ch0, const int32_t* ch1,
                       const int32_t* ch2, const int32_t* ch3);
+    DoaResult solveWlsAzimuth(const float pair_lags_samples[AUDIO_NUM_PAIRS],
+                              const float pair_confidences[AUDIO_NUM_PAIRS],
+                              float rms_db);
     void updateCalibration(float distance_m, float temp_c, float humidity_pct,
                            float pressure_pa, float corr_thresh, float db_thresh,
                            bool adaptive_thresh = false,
@@ -68,6 +71,10 @@ public:
     const float* getDiagBandWeights() const { return band_weight_diag; }
     float getEdgeWeightSum() const { return weight_sum_edge; }
     float getDiagWeightSum() const { return weight_sum_diag; }
+    const float* getLastPairLagsSamples() const { return last_pair_lags_samples; }
+    const float* getLastPairConfidences() const { return last_pair_confidences; }
+    const float* getLastPairLoopWeights() const { return last_pair_psi; }
+    const float* getLastPairWlsWeights() const { return last_pair_weights; }
 
 private:
     float fs;
@@ -91,6 +98,10 @@ private:
     float* ccorr;
     float weight_sum_edge;
     float weight_sum_diag;
+    float last_pair_lags_samples[AUDIO_NUM_PAIRS];
+    float last_pair_confidences[AUDIO_NUM_PAIRS];
+    float last_pair_psi[AUDIO_NUM_PAIRS];
+    float last_pair_weights[AUDIO_NUM_PAIRS];
 
     bool updateNoiseFloorAndCheckGate(float rms_db);
     void computePairCrossCorrelationIfft(size_t mic_i, size_t mic_j, const float* weights);

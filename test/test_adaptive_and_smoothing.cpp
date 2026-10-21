@@ -888,6 +888,226 @@ static void test_gcc_phat_quad_rms_and_pipeline() {
     printf("  [PASS] test_gcc_phat_quad_rms_and_pipeline passed.\n");
 }
 
+static float circular_angle_diff_deg(float a_deg, float b_deg) {
+    float diff = fmodf(a_deg - b_deg + 180.0f, 360.0f);
+    if (diff < 0.0f) {
+        diff += 360.0f;
+    }
+    return diff - 180.0f;
+}
+
+static void synthesize_quad_wavefront(float azimuth_deg, float fs, float d, float c_sound,
+                                      size_t n, std::vector<int32_t>& ch0,
+                                      std::vector<int32_t>& ch1,
+                                      std::vector<int32_t>& ch2,
+                                      std::vector<int32_t>& ch3) {
+    ch0.assign(n, 0);
+    ch1.assign(n, 0);
+    ch2.assign(n, 0);
+    ch3.assign(n, 0);
+
+    const float phi_rad = azimuth_deg * (static_cast<float>(M_PI) / 180.0f);
+    const float u_x = sinf(phi_rad);
+    const float u_y = cosf(phi_rad);
+
+    // Microphone positions:
+    // r0 = (+d/2, -d/2), r1 = (+d/2, +d/2), r2 = (-d/2, +d/2), r3 = (-d/2, -d/2)
+    const float half_d = 0.5f * d;
+    const float r_x[4] = { +half_d, +half_d, -half_d, -half_d };
+    const float r_y[4] = { -half_d, +half_d, +half_d, -half_d };
+
+    // Arrival times relative to array center: t_m = -(r_m . u) / c_sound
+    float t_arrival[4];
+    for (size_t m = 0; m < 4; ++m) {
+        t_arrival[m] = -(r_x[m] * u_x + r_y[m] * u_y) / c_sound;
+    }
+
+    // Broadband Schroeder-phase multitone spanning 250 Hz .. 2250 Hz
+    const int num_tones = 64;
+    const float f_start = 260.0f;
+    const float f_end = 2220.0f;
+    const float f_step = (f_end - f_start) / static_cast<float>(num_tones - 1);
+    const float amp = 21474836.0f / 8.0f; // Strong signal well above -45 dBFS threshold
+
+    std::vector<int32_t>* ch_ptrs[4] = { &ch0, &ch1, &ch2, &ch3 };
+
+    for (size_t i = 0; i < n; ++i) {
+        const float t_base = static_cast<float>(i) / fs;
+        for (size_t m = 0; m < 4; ++m) {
+            const float t_wave = t_base - t_arrival[m];
+            float sample_val = 0.0f;
+            for (int k = 0; k < num_tones; ++k) {
+                const float freq = f_start + static_cast<float>(k) * f_step;
+                const float phase = static_cast<float>(M_PI) *
+                                    static_cast<float>(k * (k + 1)) /
+                                    static_cast<float>(num_tones);
+                sample_val += cosf(2.0f * static_cast<float>(M_PI) * freq * t_wave + phase);
+            }
+            (*ch_ptrs[m])[i] = static_cast<int32_t>(sample_val * amp);
+        }
+    }
+}
+
+static void test_gcc_phat_quad_wls_all_quadrants() {
+    printf("[TEST] Running test_gcc_phat_quad_wls_all_quadrants...\n");
+
+    const size_t n = 1024;
+    const float fs = 44100.0f;
+    const float d = DEFAULT_MIC_DISTANCE_M; // 0.082 m
+    GccPhat doa(fs, d, 20.0f);
+    assert(doa.init(n));
+    const float c_sound = doa.getSoundSpeed();
+
+    // Test all 8 required cardinal/intercardinal directions across all 4 quadrants
+    // (including both +180 and -180) plus additional oblique angles
+    const float test_angles_deg[] = {
+        0.0f, 45.0f, 90.0f, 135.0f, 180.0f, -180.0f, -135.0f, -90.0f, -45.0f,
+        30.0f, -60.0f, 120.0f, -150.0f
+    };
+    const size_t num_angles = sizeof(test_angles_deg) / sizeof(test_angles_deg[0]);
+
+    std::vector<int32_t> ch0, ch1, ch2, ch3;
+
+    for (size_t a = 0; a < num_angles; ++a) {
+        const float target_deg = test_angles_deg[a];
+        synthesize_quad_wavefront(target_deg, fs, d, c_sound, n, ch0, ch1, ch2, ch3);
+
+        DoaResult res = doa.process(ch0.data(), ch1.data(), ch2.data(), ch3.data());
+        const float err_deg = fabsf(circular_angle_diff_deg(res.angle_deg, target_deg));
+
+        printf("  Target: %+6.1f deg -> Estimated: %+6.2f deg (err: %.3f deg, conf: %.3f, delay: %+7.2f us)\n",
+               target_deg, res.angle_deg, err_deg, res.confidence, res.delay_us);
+
+        assert(res.valid);
+        assert(res.confidence > 0.85f);
+        assert(err_deg < 1.5f);
+
+        // Verify all 6 pairs have high loop-closure consistency weight on clean wavefronts
+        const float* psi = doa.getLastPairLoopWeights();
+        for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) {
+            assert(psi[p] > 0.90f);
+        }
+
+        // Verify equivalent X-axis broadside delay telemetry matches angle_deg
+        const float expected_delay_us =
+            ((d * sinf(res.angle_deg * static_cast<float>(M_PI) / 180.0f)) / c_sound) * 1e6f;
+        assert(fabsf(res.delay_us - expected_delay_us) < 1e-3f);
+    }
+
+    // Verify circular wrap180 angle_offset_deg compensation across the +-180 deg boundary
+    // Case A: Wavefront at -170 deg with +20 deg offset -> (-170 - 20) = -190 -> wraps to +170 deg
+    doa.setAngleOffsetDeg(20.0f);
+    synthesize_quad_wavefront(-170.0f, fs, d, c_sound, n, ch0, ch1, ch2, ch3);
+    DoaResult res_wrap_pos = doa.process(ch0.data(), ch1.data(), ch2.data(), ch3.data());
+    assert(res_wrap_pos.valid);
+    assert(fabsf(circular_angle_diff_deg(res_wrap_pos.angle_deg, 170.0f)) < 1.5f);
+    assert(res_wrap_pos.angle_deg > 168.5f && res_wrap_pos.angle_deg <= 180.0f);
+
+    // Case B: Wavefront at +170 deg with -20 deg offset -> (+170 - (-20)) = +190 -> wraps to -170 deg
+    doa.setAngleOffsetDeg(-20.0f);
+    synthesize_quad_wavefront(170.0f, fs, d, c_sound, n, ch0, ch1, ch2, ch3);
+    DoaResult res_wrap_neg = doa.process(ch0.data(), ch1.data(), ch2.data(), ch3.data());
+    assert(res_wrap_neg.valid);
+    assert(fabsf(circular_angle_diff_deg(res_wrap_neg.angle_deg, -170.0f)) < 1.5f);
+    assert(res_wrap_neg.angle_deg < -168.5f && res_wrap_neg.angle_deg >= -180.0f);
+
+    doa.setAngleOffsetDeg(0.0f);
+    printf("  [PASS] test_gcc_phat_quad_wls_all_quadrants passed.\n");
+}
+
+static void test_gcc_phat_loop_closure_multipath_rejection() {
+    printf("[TEST] Running test_gcc_phat_loop_closure_multipath_rejection...\n");
+
+    const size_t n = 1024;
+    const float fs = 44100.0f;
+    const float d = DEFAULT_MIC_DISTANCE_M;
+    GccPhat doa(fs, d, 20.0f);
+    assert(doa.init(n));
+    const float c_sound = doa.getSoundSpeed();
+
+    const float test_angles_deg[] = {
+        0.0f, 45.0f, 90.0f, 135.0f, 180.0f, -180.0f, -135.0f, -90.0f, -45.0f
+    };
+    const size_t num_angles = sizeof(test_angles_deg) / sizeof(test_angles_deg[0]);
+
+    std::vector<int32_t> ch0, ch1, ch2, ch3;
+
+    for (size_t a = 0; a < num_angles; ++a) {
+        const float target_deg = test_angles_deg[a];
+        synthesize_quad_wavefront(target_deg, fs, d, c_sound, n, ch0, ch1, ch2, ch3);
+
+        // 1. Run full FFT/IFFT pipeline to extract baseline sub-sample lags and confidences
+        DoaResult clean_res = doa.process(ch0.data(), ch1.data(), ch2.data(), ch3.data());
+        assert(clean_res.valid);
+
+        float base_lags[AUDIO_NUM_PAIRS];
+        float base_confs[AUDIO_NUM_PAIRS];
+        for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) {
+            base_lags[p] = doa.getLastPairLagsSamples()[p];
+            base_confs[p] = doa.getLastPairConfidences()[p];
+        }
+
+        // 2. Inject simulated multipath (+8 samples lag corruption) into each pair p in {0..5}
+        for (size_t bad_pair = 0; bad_pair < AUDIO_NUM_PAIRS; ++bad_pair) {
+            float corrupted_lags[AUDIO_NUM_PAIRS];
+            for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) {
+                corrupted_lags[p] = base_lags[p];
+            }
+            corrupted_lags[bad_pair] += 8.0f; // Simulated reflection spike (+8 samples)
+
+            DoaResult mp_res = doa.solveWlsAzimuth(corrupted_lags, base_confs, clean_res.rms_db);
+            const float err_deg = fabsf(circular_angle_diff_deg(mp_res.angle_deg, target_deg));
+            const float* psi = doa.getLastPairLoopWeights();
+            const float* wls_w = doa.getLastPairWlsWeights();
+
+            // Verify corrupted pair is heavily suppressed (exp(-8^2 / (2 * 1.5^2)) = 6.6e-7)
+            assert(psi[bad_pair] < 1e-4f);
+            assert(wls_w[bad_pair] < 1e-4f);
+
+            // Verify all 5 uncorrupted pairs retain high consistency weight via their clean triangle
+            for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) {
+                if (p != bad_pair) {
+                    assert(psi[p] > 0.90f);
+                }
+            }
+
+            // Verify true direct angle is accurately recovered (< 1.5 deg error)
+            assert(mp_res.valid);
+            assert(err_deg < 1.5f);
+
+            // Also verify non-finite (NAN) lag on bad_pair is completely zero-weighted
+            // rather than treated as a fake 0.0f lag
+            corrupted_lags[bad_pair] = NAN;
+            DoaResult nan_res = doa.solveWlsAzimuth(corrupted_lags, base_confs, clean_res.rms_db);
+            assert(nan_res.valid);
+            assert(fabsf(circular_angle_diff_deg(nan_res.angle_deg, target_deg)) < 1.5f);
+            assert(doa.getLastPairConfidences()[bad_pair] == 0.0f);
+            assert(doa.getLastPairLoopWeights()[bad_pair] == 0.0f);
+            assert(doa.getLastPairWlsWeights()[bad_pair] == 0.0f);
+        }
+    }
+
+    // 3. Verify incoherent reverberation / solver edge cases are rejected
+    const float bad_lags[AUDIO_NUM_PAIRS] = { 9.0f, -8.0f, -6.0f, 7.0f, 11.0f, -10.0f };
+    const float low_confs[AUDIO_NUM_PAIRS] = { 0.30f, 0.30f, 0.30f, 0.30f, 0.30f, 0.30f };
+    assert(!doa.solveWlsAzimuth(bad_lags, low_confs, -30.0f).valid);
+    assert(!doa.solveWlsAzimuth(nullptr, low_confs, -30.0f).valid);
+    assert(!doa.solveWlsAzimuth(bad_lags, nullptr, -30.0f).valid);
+
+    // Verify diagnostic arrays are cleared when process() gates out a silent frame
+    std::vector<int32_t> silent(n, 0);
+    DoaResult silent_res = doa.process(silent.data(), silent.data(), silent.data(), silent.data());
+    assert(!silent_res.valid);
+    for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) {
+        assert(doa.getLastPairLagsSamples()[p] == 0.0f);
+        assert(doa.getLastPairConfidences()[p] == 0.0f);
+        assert(doa.getLastPairLoopWeights()[p] == 0.0f);
+        assert(doa.getLastPairWlsWeights()[p] == 0.0f);
+    }
+
+    printf("  [PASS] test_gcc_phat_loop_closure_multipath_rejection passed.\n");
+}
+
 int main() {
     test_gcc_phat_adaptive_noise_floor();
     test_display_smoothing_filter();
@@ -897,6 +1117,8 @@ int main() {
     test_app_config_consistency();
     test_gcc_phat_dual_band_weights();
     test_gcc_phat_quad_rms_and_pipeline();
+    test_gcc_phat_quad_wls_all_quadrants();
+    test_gcc_phat_loop_closure_multipath_rejection();
     printf("\nAll unit tests passed successfully!\n");
     return 0;
 }

@@ -19,16 +19,35 @@ struct MicPairDescriptor {
     uint8_t mic_i;
     uint8_t mic_j;
     bool is_diagonal;
+    float dir_x;
+    float dir_y;
+    uint8_t tri_a;
+    uint8_t tri_b;
 };
 
 constexpr MicPairDescriptor MIC_PAIRS[AUDIO_NUM_PAIRS] = {
-    {0, 1, false}, // Pair 0: Right Edge (+Y), 300-2200 Hz
-    {1, 2, false}, // Pair 1: Front Edge (-X), 300-2200 Hz
-    {3, 2, false}, // Pair 2: Left Edge (+Y), 300-2200 Hz
-    {0, 3, false}, // Pair 3: Back Edge (-X), 300-2200 Hz
-    {3, 1, true},  // Pair 4: Diagonal LB -> RF (+X, +Y), 300-1450 Hz
-    {0, 2, true}   // Pair 5: Diagonal RB -> LF (-X, +Y), 300-1450 Hz
+    {0, 1, false,  0.0f,  1.0f, 0, 2}, // Pair 0: Right Edge (+Y), 300-2200 Hz
+    {1, 2, false, -1.0f,  0.0f, 0, 3}, // Pair 1: Front Edge (-X), 300-2200 Hz
+    {3, 2, false,  0.0f,  1.0f, 1, 3}, // Pair 2: Left Edge (+Y), 300-2200 Hz
+    {0, 3, false, -1.0f,  0.0f, 1, 2}, // Pair 3: Back Edge (-X), 300-2200 Hz
+    {3, 1, true,   1.0f,  1.0f, 2, 3}, // Pair 4: Diagonal LB -> RF (+X, +Y), 300-1450 Hz
+    {0, 2, true,  -1.0f,  1.0f, 0, 1}  // Pair 5: Diagonal RB -> LF (-X, +Y), 300-1450 Hz
 };
+
+float wrap_angle_180(float angle_deg) {
+    if (!std::isfinite(angle_deg)) {
+        return 0.0f;
+    }
+    float wrapped = fmodf(angle_deg + 180.0f, 360.0f);
+    if (wrapped < 0.0f) {
+        wrapped += 360.0f;
+    }
+    wrapped -= 180.0f;
+    if (wrapped == -180.0f && angle_deg > 0.0f) {
+        return 180.0f;
+    }
+    return wrapped;
+}
 
 } // namespace
 
@@ -74,7 +93,11 @@ GccPhat::GccPhat(float sample_rate, float mic_distance_m, float temp_c,
       noise_floor_db(NOISE_FLOOR_INITIAL_DB), noise_floor_initialized(false),
       window(nullptr), band_weight_edge(nullptr), band_weight_diag(nullptr),
       fft_ch{nullptr, nullptr, nullptr, nullptr}, ccorr(nullptr),
-      weight_sum_edge(0.0f), weight_sum_diag(0.0f) {
+      weight_sum_edge(0.0f), weight_sum_diag(0.0f),
+      last_pair_lags_samples{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
+      last_pair_confidences{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
+      last_pair_psi{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
+      last_pair_weights{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f} {
     c_sound = calculateSoundSpeed(temp_c, humidity_pct, pressure_pa);
 }
 
@@ -87,7 +110,11 @@ GccPhat::GccPhat(float sample_rate, float mic_distance_m, float temp_c,
       noise_floor_db(NOISE_FLOOR_INITIAL_DB), noise_floor_initialized(false),
       window(nullptr), band_weight_edge(nullptr), band_weight_diag(nullptr),
       fft_ch{nullptr, nullptr, nullptr, nullptr}, ccorr(nullptr),
-      weight_sum_edge(0.0f), weight_sum_diag(0.0f) {
+      weight_sum_edge(0.0f), weight_sum_diag(0.0f),
+      last_pair_lags_samples{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
+      last_pair_confidences{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
+      last_pair_psi{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
+      last_pair_weights{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f} {
     c_sound = calculateSoundSpeed(temp_c, humidity_pct, pressure_pa);
     fft_size = window_size;
 }
@@ -509,6 +536,12 @@ DoaResult GccPhat::process(const int32_t* left_channel, const int32_t* right_cha
 DoaResult GccPhat::process(const int32_t* ch0, const int32_t* ch1,
                            const int32_t* ch2, const int32_t* ch3) {
     DoaResult result = {0.0f, 0.0f, 0.0f, -100.0f, false};
+    for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) {
+        last_pair_lags_samples[p] = 0.0f;
+        last_pair_confidences[p] = 0.0f;
+        last_pair_psi[p] = 0.0f;
+        last_pair_weights[p] = 0.0f;
+    }
     if (ch0 == nullptr || ch1 == nullptr || ch2 == nullptr || ch3 == nullptr ||
         fft_size == 0 || window == nullptr ||
         band_weight_edge == nullptr || band_weight_diag == nullptr ||
@@ -580,8 +613,11 @@ DoaResult GccPhat::process(const int32_t* ch0, const int32_t* ch1,
         dsps_bit_rev_fc32(fft_ch[c], static_cast<int>(fft_size));
     }
 
-    // 5. Dvopasovno uteženi navzkrižni spektri moči in in-place IFFT za vseh 6 parov
-    float peak_conf_sum = 0.0f;
+    // 5. Dvopasovno uteženi navzkrižni spektri moči, IFFT in parabolična interpolacija vrha za vseh 6 parov
+    float pair_lags_samples[AUDIO_NUM_PAIRS];
+    float pair_confidences[AUDIO_NUM_PAIRS];
+    const int fft_size_int = static_cast<int>(fft_size);
+
     for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) {
         const MicPairDescriptor& pair = MIC_PAIRS[p];
         const float* weights = pair.is_diagonal ? band_weight_diag : band_weight_edge;
@@ -593,23 +629,213 @@ DoaResult GccPhat::process(const int32_t* ch0, const int32_t* ch1,
 
         const float baseline_len = pair.is_diagonal ? (d * static_cast<float>(M_SQRT2)) : d;
         int max_lag = static_cast<int>(ceilf((baseline_len / c_sound) * fs)) + 1;
-        if (max_lag >= static_cast<int>(fft_size)) {
-            max_lag = static_cast<int>(fft_size) - 1;
+        if (max_lag >= fft_size_int) {
+            max_lag = fft_size_int - 1;
         }
 
+        int best_idx = 0;
         float best_peak = -1.0f;
         for (int lag = -max_lag; lag <= max_lag; ++lag) {
-            const int idx = (lag < 0) ? (static_cast<int>(fft_size) + lag) : lag;
+            const int idx = (lag < 0) ? (fft_size_int + lag) : lag;
             const float val = ccorr[2 * idx] / norm_factor;
             if (val > best_peak) {
                 best_peak = val;
+                best_idx = lag;
             }
         }
-        const float pair_conf = (best_peak > 1.0f) ? 1.0f : (best_peak < 0.0f ? 0.0f : best_peak);
-        peak_conf_sum += pair_conf;
+
+        // 3-točkovna parabolična interpolacija za podvzorčno zakasnitev in vrh
+        const int idx_m1 = wrap_correlation_index(best_idx - 1, fft_size_int);
+        const int idx_p1 = wrap_correlation_index(best_idx + 1, fft_size_int);
+
+        const float alpha = ccorr[2 * idx_m1] / norm_factor;
+        const float beta  = best_peak;
+        const float gamma = ccorr[2 * idx_p1] / norm_factor;
+
+        float p_offset = 0.0f;
+        float peak_val = beta;
+        const float denom = (alpha - 2.0f * beta + gamma);
+        if (denom < -1e-6f) {
+            p_offset = 0.5f * (alpha - gamma) / denom;
+            if (p_offset > 0.5f) {
+                p_offset = 0.5f;
+            } else if (p_offset < -0.5f) {
+                p_offset = -0.5f;
+            }
+            const float vertex_val = beta - 0.25f * (alpha - gamma) * p_offset;
+            if (vertex_val > peak_val) {
+                peak_val = vertex_val;
+            }
+        }
+
+        pair_lags_samples[p] = static_cast<float>(best_idx) + p_offset;
+        pair_confidences[p] = (peak_val > 1.0f) ? 1.0f : (peak_val < 0.0f ? 0.0f : peak_val);
     }
 
+    // 6. Zaprto-zančno preverjanje trikotnikov in 2x2 WLS cenilnik azimuta
+    return solveWlsAzimuth(pair_lags_samples, pair_confidences, result.rms_db);
+}
+
+DoaResult GccPhat::solveWlsAzimuth(const float pair_lags_samples[AUDIO_NUM_PAIRS],
+                                   const float pair_confidences[AUDIO_NUM_PAIRS],
+                                   float rms_db) {
+    DoaResult result = {0.0f, 0.0f, 0.0f, rms_db, false};
+    for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) {
+        last_pair_lags_samples[p] = 0.0f;
+        last_pair_confidences[p] = 0.0f;
+        last_pair_psi[p] = 0.0f;
+        last_pair_weights[p] = 0.0f;
+    }
+    if (pair_lags_samples == nullptr || pair_confidences == nullptr ||
+        !std::isfinite(d) || d <= 0.0f ||
+        !std::isfinite(c_sound) || c_sound <= 0.0f ||
+        !std::isfinite(fs) || fs <= 0.0f) {
+        return result;
+    }
+
+    float peak_conf_sum = 0.0f;
+    bool pair_valid[AUDIO_NUM_PAIRS];
+    for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) {
+        const bool valid_inputs =
+            std::isfinite(pair_lags_samples[p]) && std::isfinite(pair_confidences[p]);
+        pair_valid[p] = valid_inputs;
+        const float lag = valid_inputs ? pair_lags_samples[p] : 0.0f;
+        float conf = valid_inputs ? pair_confidences[p] : 0.0f;
+        if (conf > 1.0f) {
+            conf = 1.0f;
+        } else if (conf < 0.0f) {
+            conf = 0.0f;
+        }
+        last_pair_lags_samples[p] = lag;
+        last_pair_confidences[p] = conf;
+        peak_conf_sum += conf;
+    }
     result.confidence = peak_conf_sum / static_cast<float>(AUDIO_NUM_PAIRS);
+
+    // 1. Štiri zaprto-zančne trikotniške napake (v vzorcih)
+    const float dn0 = last_pair_lags_samples[0];
+    const float dn1 = last_pair_lags_samples[1];
+    const float dn2 = last_pair_lags_samples[2];
+    const float dn3 = last_pair_lags_samples[3];
+    const float dn4 = last_pair_lags_samples[4];
+    const float dn5 = last_pair_lags_samples[5];
+
+    const float tri_err[4] = {
+        (pair_valid[0] && pair_valid[1] && pair_valid[5])
+            ? fabsf(dn0 + dn1 - dn5)
+            : INFINITY, // Trikotnik 0: (0-1-2) [Pari 0, 1, 5]
+        (pair_valid[3] && pair_valid[2] && pair_valid[5])
+            ? fabsf(dn3 + dn2 - dn5)
+            : INFINITY, // Trikotnik 1: (0-3-2) [Pari 3, 2, 5]
+        (pair_valid[0] && pair_valid[3] && pair_valid[4])
+            ? fabsf(dn0 - dn3 - dn4)
+            : INFINITY, // Trikotnik 2: (0-1-3) [Pari 0, 3, 4]
+        (pair_valid[4] && pair_valid[1] && pair_valid[2])
+            ? fabsf(dn4 + dn1 - dn2)
+            : INFINITY  // Trikotnik 3: (3-1-2) [Pari 4, 1, 2]
+    };
+
+    // 2. Gaussove uteži konsistentnosti parov psi_p za zatiranje večpotnih odbojev
+    const float sigma_loop = DOA_LOOP_CLOSURE_TOLERANCE_SAMPLES;
+    const float inv_two_sigma_sq = 1.0f / (2.0f * sigma_loop * sigma_loop);
+    const float min_pair_conf = 0.75f * correlation_threshold;
+
+    for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) {
+        if (!pair_valid[p]) {
+            last_pair_psi[p] = 0.0f;
+            last_pair_weights[p] = 0.0f;
+            continue;
+        }
+        const float e_a = tri_err[MIC_PAIRS[p].tri_a];
+        const float e_b = tri_err[MIC_PAIRS[p].tri_b];
+        const float e_pair = (e_a < e_b) ? e_a : e_b;
+        const float psi = std::isfinite(e_pair) ? expf(-(e_pair * e_pair) * inv_two_sigma_sq) : 0.0f;
+        last_pair_psi[p] = psi;
+
+        const float conf = last_pair_confidences[p];
+        if (conf >= min_pair_conf) {
+            last_pair_weights[p] = (conf * conf) * psi;
+        } else {
+            last_pair_weights[p] = 0.0f;
+        }
+    }
+
+    // Zavrnitev nekohorentnega odmeva/šuma: če noben trikotnik ni konsistenten (e_t <= 2.5)
+    // in hkrati nimamo vsaj dveh pravokotnih robnih parov nad correlation_threshold
+    const bool any_consistent_triangle =
+        (tri_err[0] <= 2.5f) || (tri_err[1] <= 2.5f) ||
+        (tri_err[2] <= 2.5f) || (tri_err[3] <= 2.5f);
+    const bool has_y_edge = (last_pair_confidences[0] >= correlation_threshold) ||
+                            (last_pair_confidences[2] >= correlation_threshold);
+    const bool has_x_edge = (last_pair_confidences[1] >= correlation_threshold) ||
+                            (last_pair_confidences[3] >= correlation_threshold);
+    if (!any_consistent_triangle && !(has_y_edge && has_x_edge)) {
+        return result;
+    }
+
+    // 3. Sestava in rešitev 2x2 WLS normalnih enačb: A * u = g
+    float s_xx = 0.0f;
+    float s_xy = 0.0f;
+    float s_yy = 0.0f;
+    float g_x = 0.0f;
+    float g_y = 0.0f;
+    float weight_sum = 0.0f;
+    float weighted_conf_num = 0.0f;
+
+    for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) {
+        const float w_p = last_pair_weights[p];
+        if (w_p <= 0.0f) {
+            continue;
+        }
+        const float b_x = MIC_PAIRS[p].dir_x * d;
+        const float b_y = MIC_PAIRS[p].dir_y * d;
+        const float tau_p = last_pair_lags_samples[p] / fs;
+
+        s_xx += w_p * b_x * b_x;
+        s_xy += w_p * b_x * b_y;
+        s_yy += w_p * b_y * b_y;
+        g_x  += c_sound * w_p * tau_p * b_x;
+        g_y  += c_sound * w_p * tau_p * b_y;
+
+        weight_sum += w_p;
+        weighted_conf_num += w_p * last_pair_confidences[p];
+    }
+
+    if (weight_sum <= 1e-12f) {
+        return result;
+    }
+
+    const float mean_conf = weighted_conf_num / weight_sum;
+    result.confidence = (mean_conf > 1.0f) ? 1.0f : (mean_conf < 0.0f ? 0.0f : mean_conf);
+    if (mean_conf < correlation_threshold) {
+        return result;
+    }
+
+    const float lambda = 1e-6f * d * d;
+    const float a_xx = s_xx + lambda;
+    const float a_yy = s_yy + lambda;
+    const float det = a_xx * a_yy - s_xy * s_xy;
+    if (det <= 1e-20f) {
+        return result;
+    }
+
+    const float u_x = (a_yy * g_x - s_xy * g_y) / det;
+    const float u_y = (a_xx * g_y - s_xy * g_x) / det;
+    const float u_norm = sqrtf(u_x * u_x + u_y * u_y);
+
+    if (!std::isfinite(u_norm) || u_norm <= 0.05f || u_norm > 1.35f) {
+        return result;
+    }
+
+    // 4. Polni 360-stopinjski azimut [-180, +180] in krožna kompenzacija angle_offset_deg
+    const float phi_raw = atan2f(u_x, u_y) * (180.0f / static_cast<float>(M_PI));
+    const float offset_deg = std::isfinite(angle_offset_deg) ? angle_offset_deg : 0.0f;
+    const float phi_cal = wrap_angle_180(phi_raw - offset_deg);
+    const float phi_cal_rad = phi_cal * (static_cast<float>(M_PI) / 180.0f);
+
+    result.angle_deg = phi_cal;
+    result.delay_us = ((d * sinf(phi_cal_rad)) / c_sound) * 1e6f;
+    result.valid = true;
     return result;
 }
 
