@@ -321,13 +321,6 @@ static BootSelfTestResult run_boot_self_test(uint32_t sample_rate) {
 
     res.i2s_driver_ok = init_i2s_microphones(sample_rate);
     if (res.i2s_driver_ok) {
-        // Let I2S clock run for ~140 ms so the INMP441 internal high-pass filter and charge pump stabilize
-        static int32_t l_discard[POST_SAMPLE_COUNT];
-        static int32_t r_discard[POST_SAMPLE_COUNT];
-        for (int b = 0; b < POST_WARMUP_BLOCKS; ++b) {
-            read_i2s_stereo(l_discard, r_discard, POST_SAMPLE_COUNT);
-        }
-
         static int32_t l_test[POST_SAMPLE_COUNT];
         static int32_t r_test[POST_SAMPLE_COUNT];
         if (read_i2s_stereo(l_test, r_test, POST_SAMPLE_COUNT)) {

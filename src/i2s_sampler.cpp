@@ -5,6 +5,8 @@
 
 #define I2S_PORT (static_cast<i2s_port_t>(I2S_PORT_NUM))
 
+static int32_t interleaved_buf[AUDIO_MAX_WINDOW_SIZE * 2];
+
 bool init_i2s_microphones(uint32_t sample_rate) {
     i2s_config_t i2s_config = {
         .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
@@ -35,6 +37,14 @@ bool init_i2s_microphones(uint32_t sample_rate) {
         return false;
     }
     i2s_zero_dma_buffer(I2S_PORT);
+
+    // Let I2S clock run for ~140 ms so the INMP441 internal charge pump
+    // and high-pass filter settle before delivering audio to consumers.
+    const size_t warmup_bytes = POST_SAMPLE_COUNT * 2 * sizeof(int32_t);
+    for (int b = 0; b < POST_WARMUP_BLOCKS; ++b) {
+        size_t bytes_read = 0;
+        i2s_read(I2S_PORT, interleaved_buf, warmup_bytes, &bytes_read, portMAX_DELAY);
+    }
     return true;
 }
 
@@ -43,7 +53,6 @@ void deinit_i2s_microphones() {
 }
 
 bool read_i2s_stereo(int32_t* left, int32_t* right, size_t count) {
-    static int32_t interleaved_buf[AUDIO_MAX_WINDOW_SIZE * 2];
     if (left == nullptr || right == nullptr || count == 0 ||
         count > AUDIO_MAX_WINDOW_SIZE) {
         return false;
