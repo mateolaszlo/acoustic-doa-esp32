@@ -12,8 +12,8 @@ static constexpr float GCC_PHAT_RAMP_HZ = 100.0f;
 static constexpr float NOISE_FLOOR_ALPHA_DOWN  = 0.02f;   // Fast tracking downward (~1-2 s)
 static constexpr float NOISE_FLOOR_ALPHA_UP    = 0.005f;  // Slow tracking upward under trigger
 static constexpr float NOISE_FLOOR_ALPHA_EVENT = 0.0005f; // Creep tracking during acoustic events
-static constexpr float NOISE_FLOOR_MIN_DB      = -95.0f;
-static constexpr float NOISE_FLOOR_MAX_DB      = -5.0f;
+static constexpr float NOISE_FLOOR_MIN_DB      = -85.0f;
+static constexpr float NOISE_FLOOR_MAX_DB      = -20.0f;
 static constexpr float NOISE_FLOOR_INITIAL_DB  = -100.0f;
 
 static float gcc_phat_band_weight(float frequency_hz) {
@@ -146,12 +146,15 @@ float GccPhat::getEffectiveThresholdDb() const {
     if (adaptive_threshold_enabled && noise_floor_initialized) {
         return noise_floor_db + snr_margin_db;
     }
-    return db_threshold;
+    const float fixed_dbfs = (db_threshold < 0.0f)
+                                 ? db_threshold
+                                 : (db_threshold - DEFAULT_DB_SPL_OFFSET);
+    return (fixed_dbfs > NOISE_FLOOR_MAX_DB) ? NOISE_FLOOR_MAX_DB : fixed_dbfs;
 }
 
 void GccPhat::resetNoiseFloor(float initial_db) {
     noise_floor_db = initial_db;
-    noise_floor_initialized = (initial_db >= -95.0f);
+    noise_floor_initialized = (initial_db >= NOISE_FLOOR_MIN_DB);
 }
 
 bool GccPhat::init() {
@@ -249,17 +252,19 @@ DoaResult GccPhat::process(const int32_t* left_channel, const int32_t* right_cha
 
     // 1. Odstranitev DC odmika, normalizacija in Hannovo oknenje
     for (size_t i = 0; i < fft_size; i++) {
-        float s1 = ((static_cast<float>(left_channel[i]) - left_mean) /
-                    PCM_INT32_TO_FLOAT_SCALE) * window[i];
-        float s2 = ((static_cast<float>(right_channel[i]) - right_mean) /
-                    PCM_INT32_TO_FLOAT_SCALE) * window[i];
+        const float raw_s1 = (static_cast<float>(left_channel[i]) - left_mean) /
+                             PCM_INT32_TO_FLOAT_SCALE;
+        const float raw_s2 = (static_cast<float>(right_channel[i]) - right_mean) /
+                             PCM_INT32_TO_FLOAT_SCALE;
 
-        energy_sum += s1 * s1;
+        // Izračun neoknjene stereo energije obeh kanalov za simetrično zaznavo
+        energy_sum += 0.5f * (raw_s1 * raw_s1 + raw_s2 * raw_s2);
 
+        const float w = window[i];
         // Komponente v kompleksni obliki [Real, Imag]
-        fft_x1[2 * i]     = s1;
+        fft_x1[2 * i]     = raw_s1 * w;
         fft_x1[2 * i + 1] = 0.0f;
-        fft_x2[2 * i]     = s2;
+        fft_x2[2 * i]     = raw_s2 * w;
         fft_x2[2 * i + 1] = 0.0f;
     }
 
@@ -268,11 +273,16 @@ DoaResult GccPhat::process(const int32_t* left_channel, const int32_t* right_cha
     result.rms_db = (rms > 1e-5f) ? 20.0f * log10f(rms) : NOISE_FLOOR_INITIAL_DB;
 
     // 1b. Določitev praga zaznave (prilagodljivi šum okolice ali fiksni prag)
-    float effective_thresh = db_threshold;
+    float effective_thresh = getEffectiveThresholdDb();
     if (adaptive_threshold_enabled) {
         if (!noise_floor_initialized) {
             if (result.rms_db > NOISE_FLOOR_MIN_DB) {
-                noise_floor_db = result.rms_db;
+                const float max_initial_seed = (effective_thresh < NOISE_FLOOR_MAX_DB)
+                                                   ? effective_thresh
+                                                   : NOISE_FLOOR_MAX_DB;
+                noise_floor_db = (result.rms_db < max_initial_seed)
+                                     ? result.rms_db
+                                     : max_initial_seed;
                 noise_floor_initialized = true;
             }
         } else {
