@@ -332,11 +332,44 @@ static void test_gcc_phat_angle_offset() {
     printf("  [PASS] test_gcc_phat_angle_offset passed.\n");
 }
 
+static void test_app_config_consistency() {
+    printf("[TEST] Running test_app_config_consistency...\n");
+
+    // Verify central defaults
+    assert(std::fabs(DEFAULT_MIC_DISTANCE_M - 0.082f) < 1e-4f);
+    assert(DEFAULT_SAMPLE_RATE == 44100);
+    assert(DEFAULT_WINDOW_SIZE == 1024);
+    assert(AUDIO_MAX_WINDOW_SIZE >= DEFAULT_WINDOW_SIZE);
+
+    // Audio config whitelist validator
+    assert(is_supported_audio_config(44100, 512));
+    assert(is_supported_audio_config(44100, 1024));
+    assert(is_supported_audio_config(44100, 2048));
+    assert(is_supported_audio_config(48000, 1024));
+    assert(!is_supported_audio_config(96000, 1024));
+    assert(!is_supported_audio_config(44100, 256));
+    assert(!is_supported_audio_config(44100, 4096));
+
+    // Validation boundaries sanity
+    assert(ANGLE_OFFSET_MIN_DEG < 0.0f && ANGLE_OFFSET_MAX_DEG > 0.0f);
+    assert(SNR_MARGIN_MIN_DB >= 0.0f && SNR_MARGIN_MAX_DB > SNR_MARGIN_MIN_DB);
+    assert(SPL_THRESHOLD_MIN_DB < SPL_THRESHOLD_MAX_DB);
+
+    // Verify default-constructed GccPhat inherits central app_config constants
+    GccPhat doa_default;
+    assert(std::fabs(doa_default.getAngleOffsetDeg() - DEFAULT_ANGLE_OFFSET_DEG) < 1e-4f);
+    assert(std::fabs(doa_default.getSnrMarginDb() - DEFAULT_SNR_MARGIN_DB) < 1e-4f);
+    assert(std::fabs(doa_default.getSoundSpeed() - DEFAULT_SOUND_SPEED_MPS) < 0.5f);
+
+    printf("  [PASS] test_app_config_consistency passed.\n");
+}
+
 int main() {
     test_gcc_phat_adaptive_noise_floor();
     test_display_smoothing_filter();
     test_post_checker();
     test_gcc_phat_angle_offset();
+    test_app_config_consistency();
     printf("\nAll unit tests passed successfully!\n");
     return 0;
 }

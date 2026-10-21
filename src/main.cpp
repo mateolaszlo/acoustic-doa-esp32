@@ -16,43 +16,19 @@
 #include <cstring>
 #include <sys/time.h>
 
+#include "app_config.h"
 #include "gcc_phat.h"
 #include "display_filter.h"
 #include "post_checker.h"
-
-// I2C Pini za ESP32-S3 (BME280)
-#define I2C_SDA_PIN 8
-#define I2C_SCL_PIN 9
-
-// SPI Pini za KMR-1.8 TFT (ST7735)
-#define TFT_CS_PIN 10
-#define TFT_MOSI_PIN 11
-#define TFT_SCLK_PIN 12
-#define TFT_DC_PIN 13
-#define TFT_RST_PIN 14
-#define TFT_INVERT_COLORS false
-#define SETUP_BUTTON_PIN 0
-#define SETUP_BOOT_DELAY_MS 3000
-#define SETUP_AP_NAME "Acoustic-Locator-Setup"
-#define SETUP_AP_PASSWORD "configure123"
-#define CONFIG_REFRESH_INTERVAL_MS 60000UL
-#define HTTP_RETRY_COUNT 3
-#define NETWORK_MAX_REQUEST_INTERVAL_MS 200UL
-#define NETWORK_BATCH_MAX_MEASUREMENTS 8
-#define NETWORK_BATCH_FLUSH_INTERVAL_MS 200UL
-#define NETWORK_QUEUE_LENGTH 64
-#define DSP_MAX_WINDOW_SIZE 2048
-#define DSP_DIAGNOSTIC_INTERVAL_MS 10000UL
-#define TASK_WATCHDOG_TIMEOUT_SECONDS 30
 
 // Globalne periferne enote
 Adafruit_BME280 bme; // I2C
 
 // Deljene spremenljivke med jedroma (Thread-safe)
-std::atomic<float> current_sound_speed(343.9f);
-std::atomic<float> current_temperature(20.0f);
-std::atomic<float> current_humidity(50.0f);
-std::atomic<float> current_pressure(101325.0f);
+std::atomic<float> current_sound_speed(DEFAULT_SOUND_SPEED_MPS);
+std::atomic<float> current_temperature(DEFAULT_TEMPERATURE_C);
+std::atomic<float> current_humidity(DEFAULT_HUMIDITY_PCT);
+std::atomic<float> current_pressure(DEFAULT_PRESSURE_PA);
 
 // Funkcije iz i2s_sampler.cpp
 bool init_i2s_microphones(uint32_t sample_rate);
@@ -73,20 +49,20 @@ static constexpr uint16_t CLOCK_FLAG_SERVER_SYNCHRONIZED = 0x0002;
 static constexpr uint16_t CLOCK_FLAG_MONOTONIC_UPTIME = 0x0004;
 
 struct DeviceConfig {
-    String wifi_ssid;
-    String wifi_password;
-    String api_url;
-    String api_key;
-    uint32_t device_id = 0;
-    float microphone_distance_m = 0.082f;
-    float correlation_threshold = 0.35f;
-    float sound_level_threshold_db_spl = 55.0f;
-    float db_spl_offset = 0.0f;
-    float angle_offset_deg = 0.0f;
-    uint32_t sample_rate = 44100;
-    uint32_t window_size = N_SAMPLES;
-    bool adaptive_threshold_enabled = true;
-    float snr_margin_db = 8.0f;
+    String wifi_ssid                    = DEFAULT_WIFI_SSID;
+    String wifi_password                = DEFAULT_WIFI_PASSWORD;
+    String api_url                      = DEFAULT_API_URL;
+    String api_key                      = DEFAULT_API_KEY;
+    uint32_t device_id                  = 0;
+    float microphone_distance_m         = DEFAULT_MIC_DISTANCE_M;
+    float correlation_threshold         = DEFAULT_CORRELATION_THRESHOLD;
+    float sound_level_threshold_db_spl  = DEFAULT_SOUND_LEVEL_THRESHOLD_DB_SPL;
+    float db_spl_offset                 = DEFAULT_DB_SPL_OFFSET;
+    float angle_offset_deg              = DEFAULT_ANGLE_OFFSET_DEG;
+    uint32_t sample_rate                = DEFAULT_SAMPLE_RATE;
+    uint32_t window_size                = DEFAULT_WINDOW_SIZE;
+    bool adaptive_threshold_enabled     = DEFAULT_ADAPTIVE_THRESHOLD_ENABLED;
+    float snr_margin_db                 = DEFAULT_SNR_MARGIN_DB;
 };
 
 struct NetworkMeasurement {
@@ -95,25 +71,25 @@ struct NetworkMeasurement {
     uint16_t clock_flags;
 };
 
-static GccPhat doa(44100, 0.082f, 20.0f); // 44.1 kHz, 8.2 cm, 20 °C
+static GccPhat doa(DEFAULT_SAMPLE_RATE, DEFAULT_MIC_DISTANCE_M, DEFAULT_TEMPERATURE_C);
 static QueueHandle_t display_queue;
 static QueueHandle_t network_queue;
 static SPIClass tft_spi(FSPI);
 static Adafruit_ST7735 display(&tft_spi, TFT_CS_PIN, TFT_DC_PIN, TFT_RST_PIN);
-static GFXcanvas16 canvas(128, 160);
+static GFXcanvas16 canvas(TFT_WIDTH, TFT_HEIGHT);
 static SemaphoreHandle_t doa_mutex;
 static SemaphoreHandle_t config_mutex;
 static SemaphoreHandle_t i2s_mutex;
 static Preferences preferences;
 static DeviceConfig device_config;
-static std::atomic<float> db_spl_offset(0.0f);
+static std::atomic<float> db_spl_offset(DEFAULT_DB_SPL_OFFSET);
 static std::atomic<bool> server_available(false);
 static std::atomic<int64_t> ntp_utc_offset_ms(0);
 static std::atomic<bool> ntp_time_valid(false);
 static std::atomic<int64_t> server_utc_offset_ms(0);
 static std::atomic<bool> server_time_valid(false);
 static std::atomic<float> current_noise_floor_db(-100.0f);
-static std::atomic<bool> adaptive_threshold_active(true);
+static std::atomic<bool> adaptive_threshold_active(DEFAULT_ADAPTIVE_THRESHOLD_ENABLED);
 static bool display_initialized = false;
 static bool bme_initialized = false;
 static bool setup_mode = false;
@@ -126,11 +102,6 @@ static std::atomic<uint32_t> display_queue_drops(0);
 static std::atomic<uint32_t> network_queue_drops(0);
 static std::atomic<uint32_t> dsp_blocks_processed(0);
 static std::atomic<uint32_t> dsp_max_processing_us(0);
-
-static bool is_supported_audio_config(uint32_t sample_rate, uint32_t window_size) {
-    return (sample_rate == 44100 || sample_rate == 48000) &&
-           (window_size == 512 || window_size == 1024 || window_size == 2048);
-}
 
 static uint32_t audio_block_duration_us(uint32_t sample_rate, uint32_t window_size) {
     return static_cast<uint32_t>(
@@ -148,34 +119,37 @@ static float get_preference_float(const char *key, float fallback) {
 static void load_device_config() {
     preferences.begin("acoustic", false);
 
-    device_config.wifi_ssid = get_preference_string("wifi_ssid", DEFAULT_WIFI_SSID);
+    device_config.wifi_ssid = get_preference_string("wifi_ssid", device_config.wifi_ssid.c_str());
     device_config.wifi_password =
-        get_preference_string("wifi_pass", DEFAULT_WIFI_PASSWORD);
-    device_config.api_url = get_preference_string("api_url", DEFAULT_API_URL);
-    device_config.api_key = get_preference_string("api_key", DEFAULT_API_KEY);
-    device_config.device_id = preferences.getUInt("device_id", 0);
-    device_config.microphone_distance_m = get_preference_float("mic_distance", 0.082f);
+        get_preference_string("wifi_pass", device_config.wifi_password.c_str());
+    device_config.api_url = get_preference_string("api_url", device_config.api_url.c_str());
+    device_config.api_key = get_preference_string("api_key", device_config.api_key.c_str());
+    device_config.device_id = preferences.getUInt("device_id", device_config.device_id);
+    device_config.microphone_distance_m =
+        get_preference_float("mic_distance", device_config.microphone_distance_m);
     device_config.correlation_threshold =
-        get_preference_float("corr_threshold", 0.35f);
+        get_preference_float("corr_threshold", device_config.correlation_threshold);
     device_config.sound_level_threshold_db_spl =
-        get_preference_float("spl_threshold", 55.0f);
-    device_config.db_spl_offset = get_preference_float("spl_offset", 0.0f);
-    device_config.angle_offset_deg = get_preference_float("ang_offset", 0.0f);
+        get_preference_float("spl_threshold", device_config.sound_level_threshold_db_spl);
+    device_config.db_spl_offset =
+        get_preference_float("spl_offset", device_config.db_spl_offset);
+    device_config.angle_offset_deg =
+        get_preference_float("ang_offset", device_config.angle_offset_deg);
     if (!std::isfinite(device_config.angle_offset_deg) ||
-        device_config.angle_offset_deg < -45.0f ||
-        device_config.angle_offset_deg > 45.0f) {
-        device_config.angle_offset_deg = 0.0f;
+        device_config.angle_offset_deg < ANGLE_OFFSET_MIN_DEG ||
+        device_config.angle_offset_deg > ANGLE_OFFSET_MAX_DEG) {
+        device_config.angle_offset_deg = DEFAULT_ANGLE_OFFSET_DEG;
     }
-    device_config.sample_rate = preferences.getUInt("sample_rate", 44100);
-    device_config.window_size = preferences.getUInt("window_size", N_SAMPLES);
+    device_config.sample_rate = preferences.getUInt("sample_rate", device_config.sample_rate);
+    device_config.window_size = preferences.getUInt("window_size", device_config.window_size);
     device_config.adaptive_threshold_enabled =
-        preferences.isKey("adapt_thresh") ? preferences.getBool("adapt_thresh") : true;
+        preferences.isKey("adapt_thresh") ? preferences.getBool("adapt_thresh") : device_config.adaptive_threshold_enabled;
     device_config.snr_margin_db =
-        get_preference_float("snr_margin", 8.0f);
+        get_preference_float("snr_margin", device_config.snr_margin_db);
     if (!std::isfinite(device_config.snr_margin_db) ||
-        device_config.snr_margin_db < 0.0f ||
-        device_config.snr_margin_db > 60.0f) {
-        device_config.snr_margin_db = 8.0f;
+        device_config.snr_margin_db < SNR_MARGIN_MIN_DB ||
+        device_config.snr_margin_db > SNR_MARGIN_MAX_DB) {
+        device_config.snr_margin_db = DEFAULT_SNR_MARGIN_DB;
     }
     db_spl_offset.store(device_config.db_spl_offset);
     adaptive_threshold_active.store(device_config.adaptive_threshold_enabled);
@@ -264,7 +238,7 @@ static void handle_setup_save() {
     device_config.adaptive_threshold_enabled = setup_server.hasArg("adapt_thresh");
     if (setup_server.hasArg("snr_margin")) {
         float snr = setup_server.arg("snr_margin").toFloat();
-        if (std::isfinite(snr) && snr >= 0.0f && snr <= 60.0f) {
+        if (std::isfinite(snr) && snr >= SNR_MARGIN_MIN_DB && snr <= SNR_MARGIN_MAX_DB) {
             device_config.snr_margin_db = snr;
         } else {
             setup_server.send(400, "text/plain", "Invalid SNR margin (must be 0-60 dB)");
@@ -273,13 +247,13 @@ static void handle_setup_save() {
     }
     if (setup_server.hasArg("spl_threshold")) {
         float spl = setup_server.arg("spl_threshold").toFloat();
-        if (std::isfinite(spl) && spl >= -200.0f && spl <= 200.0f) {
+        if (std::isfinite(spl) && spl >= SPL_THRESHOLD_MIN_DB && spl <= SPL_THRESHOLD_MAX_DB) {
             device_config.sound_level_threshold_db_spl = spl;
         }
     }
     if (setup_server.hasArg("ang_offset")) {
         float ang = setup_server.arg("ang_offset").toFloat();
-        if (std::isfinite(ang) && ang >= -45.0f && ang <= 45.0f) {
+        if (std::isfinite(ang) && ang >= ANGLE_OFFSET_MIN_DEG && ang <= ANGLE_OFFSET_MAX_DEG) {
             device_config.angle_offset_deg = ang;
         } else {
             setup_server.send(400, "text/plain", "Invalid angle offset (must be -45 to +45 deg)");
@@ -348,16 +322,16 @@ static BootSelfTestResult run_boot_self_test(uint32_t sample_rate) {
     res.i2s_driver_ok = init_i2s_microphones(sample_rate);
     if (res.i2s_driver_ok) {
         // Let I2S clock run for ~140 ms so the INMP441 internal high-pass filter and charge pump stabilize
-        static int32_t l_discard[1024];
-        static int32_t r_discard[1024];
-        for (int b = 0; b < 6; ++b) {
-            read_i2s_stereo(l_discard, r_discard, 1024);
+        static int32_t l_discard[POST_SAMPLE_COUNT];
+        static int32_t r_discard[POST_SAMPLE_COUNT];
+        for (int b = 0; b < POST_WARMUP_BLOCKS; ++b) {
+            read_i2s_stereo(l_discard, r_discard, POST_SAMPLE_COUNT);
         }
 
-        static int32_t l_test[1024];
-        static int32_t r_test[1024];
-        if (read_i2s_stereo(l_test, r_test, 1024)) {
-            res.mic_health = evaluate_microphone_health(l_test, r_test, 1024);
+        static int32_t l_test[POST_SAMPLE_COUNT];
+        static int32_t r_test[POST_SAMPLE_COUNT];
+        if (read_i2s_stereo(l_test, r_test, POST_SAMPLE_COUNT)) {
+            res.mic_health = evaluate_microphone_health(l_test, r_test, POST_SAMPLE_COUNT);
         }
         deinit_i2s_microphones();
     }
@@ -375,9 +349,10 @@ static BootSelfTestResult run_boot_self_test(uint32_t sample_rate) {
 
     if (res.bme_ok) {
         Serial.printf("[PASS] BME280 I2C  : OK (T: %.1fC, P: %.1f hPa)\n",
-                      res.bme_temp_c, res.bme_pres_hpa);
+                  res.bme_temp_c, res.bme_pres_hpa);
     } else {
-        Serial.println("[WARN] BME280 I2C  : NOT FOUND (Using default c=343.9 m/s)");
+        Serial.printf("[WARN] BME280 I2C  : NOT FOUND (Using default c=%.1f m/s)\n",
+                      DEFAULT_SOUND_SPEED_MPS);
     }
 
     Serial.printf("[%s] I2S Driver  : %s (%u Hz Stereo)\n",
@@ -399,10 +374,11 @@ static BootSelfTestResult run_boot_self_test(uint32_t sample_rate) {
                   static_cast<long>(res.mic_health.right_min),
                   static_cast<long>(res.mic_health.right_max));
 
-    Serial.printf("[%s] Stereo L/R  : %s (%u/1024 identical)\n",
+    Serial.printf("[%s] Stereo L/R  : %s (%u/%u identical)\n",
                   res.mic_health.stereo_distinct ? "PASS" : "FAIL",
                   res.mic_health.stereo_distinct ? "Independent channels verified" : "CHANNEL COLLISION",
-                  static_cast<unsigned>(res.mic_health.identical_samples));
+                  static_cast<unsigned>(res.mic_health.identical_samples),
+                  static_cast<unsigned>(POST_SAMPLE_COUNT));
 
     Serial.println("==================================================");
     Serial.printf("STATUS: %s\n", res.all_nominal ? "ALL SYSTEMS NOMINAL" : "HARDWARE DEGRADED - CHECK WIRING");
@@ -420,7 +396,7 @@ static void show_boot_prompt(uint32_t remaining_ms, uint32_t total_ms, const Boo
     canvas.setTextColor(ST77XX_CYAN);
     canvas.setCursor(14, 6);
     canvas.println("ACOUSTIC LOCATOR");
-    canvas.drawFastHLine(8, 16, 112, 0x7BEF);
+    canvas.drawFastHLine(8, 16, 112, COLOR_MUTED_GRAY);
 
     // POST Checklist
     // PSRAM
@@ -445,7 +421,7 @@ static void show_boot_prompt(uint32_t remaining_ms, uint32_t total_ms, const Boo
         canvas.setTextColor(ST77XX_GREEN);
         canvas.printf("[OK] %.0fC", post.bme_temp_c);
     } else {
-        canvas.setTextColor(0x7BEF);
+        canvas.setTextColor(COLOR_MUTED_GRAY);
         canvas.print("[--] Default");
     }
 
@@ -488,7 +464,7 @@ static void show_boot_prompt(uint32_t remaining_ms, uint32_t total_ms, const Boo
         canvas.print("[FAIL] Collsn");
     }
 
-    canvas.drawFastHLine(8, 82, 112, 0x7BEF);
+    canvas.drawFastHLine(8, 82, 112, COLOR_MUTED_GRAY);
 
     // Poziv za setup
     canvas.setTextColor(ST77XX_YELLOW);
@@ -507,7 +483,7 @@ static void show_boot_prompt(uint32_t remaining_ms, uint32_t total_ms, const Boo
     }
 
     // Besedilo odštevanja
-    canvas.setTextColor(0x7BEF);
+    canvas.setTextColor(COLOR_MUTED_GRAY);
     canvas.setCursor(14, 118);
     int sec = (remaining_ms + 999) / 1000;
     canvas.printf("Starting in %d s...", sec);
@@ -522,7 +498,7 @@ static void show_boot_prompt(uint32_t remaining_ms, uint32_t total_ms, const Boo
         canvas.print("STATUS: DEGRADED");
     }
 
-    display.drawRGBBitmap(0, 0, canvas.getBuffer(), 128, 160);
+    display.drawRGBBitmap(0, 0, canvas.getBuffer(), TFT_WIDTH, TFT_HEIGHT);
 }
 
 static void show_setup_portal_screen() {
@@ -533,7 +509,7 @@ static void show_setup_portal_screen() {
     canvas.setTextColor(ST77XX_YELLOW);
     canvas.setCursor(16, 12);
     canvas.println("=== SETUP MODE ===");
-    canvas.drawFastHLine(10, 24, 108, 0x7BEF);
+    canvas.drawFastHLine(10, 24, 108, COLOR_MUTED_GRAY);
 
     canvas.setTextColor(ST77XX_WHITE);
     canvas.setCursor(8, 34);
@@ -554,15 +530,15 @@ static void show_setup_portal_screen() {
     canvas.println("Open in browser:");
     canvas.setTextColor(ST77XX_GREEN);
     canvas.setCursor(8, 106);
-    canvas.println("http://192.168.4.1");
+    canvas.println("http://" SETUP_AP_DEFAULT_IP_STR);
 
-    canvas.setTextColor(0x7BEF);
+    canvas.setTextColor(COLOR_MUTED_GRAY);
     canvas.setCursor(8, 130);
     canvas.println("Save & reboot");
     canvas.setCursor(8, 142);
     canvas.println("when finished.");
 
-    display.drawRGBBitmap(0, 0, canvas.getBuffer(), 128, 160);
+    display.drawRGBBitmap(0, 0, canvas.getBuffer(), TFT_WIDTH, TFT_HEIGHT);
 }
 
 static void enter_setup_mode() {
@@ -804,14 +780,14 @@ static void initialize_task_watchdog() {
 
 // --- NALOGA NA JEDRU 1: DSP OBDELAVA ---
 void dsp_task(void *param) {
-    static int32_t left_buf[DSP_MAX_WINDOW_SIZE];
-    static int32_t right_buf[DSP_MAX_WINDOW_SIZE];
+    static int32_t left_buf[AUDIO_MAX_WINDOW_SIZE];
+    static int32_t right_buf[AUDIO_MAX_WINDOW_SIZE];
     esp_task_wdt_add(nullptr);
 
     while (true) {
         uint32_t window_size;
         uint32_t sample_rate;
-        if (xSemaphoreTake(config_mutex, pdMS_TO_TICKS(10)) != pdTRUE) {
+        if (xSemaphoreTake(config_mutex, pdMS_TO_TICKS(CONFIG_MUTEX_FAST_TIMEOUT_MS)) != pdTRUE) {
             esp_task_wdt_reset();
             continue;
         }
@@ -862,9 +838,9 @@ void dsp_task(void *param) {
 }
 
 static bool apply_dsp_calibration(float temperature_c,
-                                  float humidity_pct = 50.0f,
-                                  float pressure_pa = 101325.0f) {
-    if (xSemaphoreTake(config_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+                                  float humidity_pct = DEFAULT_HUMIDITY_PCT,
+                                  float pressure_pa = DEFAULT_PRESSURE_PA) {
+    if (xSemaphoreTake(config_mutex, pdMS_TO_TICKS(CONFIG_MUTEX_BLOCK_TIMEOUT_MS)) != pdTRUE) {
         Serial.println("Could not lock device configuration");
         return false;
     }
@@ -883,15 +859,15 @@ static bool apply_dsp_calibration(float temperature_c,
 
     if (microphone_distance_m <= 0.0f ||
         correlation_threshold <= 0.0f ||
-        sound_level_threshold_db_spl <= -200.0f ||
+        sound_level_threshold_db_spl < SPL_THRESHOLD_MIN_DB ||
         !is_supported_audio_config(sample_rate, window_size) ||
-        !std::isfinite(snr_margin) || snr_margin < 0.0f || snr_margin > 60.0f ||
-        !std::isfinite(angle_offset) || angle_offset < -80.0f || angle_offset > 80.0f) {
+        !std::isfinite(snr_margin) || snr_margin < SNR_MARGIN_MIN_DB || snr_margin > SNR_MARGIN_MAX_DB ||
+        !std::isfinite(angle_offset) || angle_offset < ANGLE_OFFSET_MIN_DEG || angle_offset > ANGLE_OFFSET_MAX_DEG) {
         Serial.println("Invalid or unsupported remote calibration");
         return false;
     }
 
-    if (xSemaphoreTake(doa_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+    if (xSemaphoreTake(doa_mutex, pdMS_TO_TICKS(DOA_MUTEX_BLOCK_TIMEOUT_MS)) != pdTRUE) {
         Serial.println("Could not lock DSP calibration");
         return false;
     }
@@ -1065,12 +1041,12 @@ static bool fetch_remote_calibration() {
     }
 
     if (distance <= 0.0f || correlation <= 0.0f ||
-        spl_threshold <= -200.0f ||
+        spl_threshold < SPL_THRESHOLD_MIN_DB ||
         !is_supported_audio_config(sample_rate, window_size) ||
         !isfinite(distance) || !isfinite(correlation) ||
         !isfinite(spl_threshold) || !isfinite(offset) ||
-        !isfinite(snr_margin) || snr_margin < 0.0f || snr_margin > 60.0f ||
-        !isfinite(angle_offset) || angle_offset < -45.0f || angle_offset > 45.0f) {
+        !isfinite(snr_margin) || snr_margin < SNR_MARGIN_MIN_DB || snr_margin > SNR_MARGIN_MAX_DB ||
+        !isfinite(angle_offset) || angle_offset < ANGLE_OFFSET_MIN_DEG || angle_offset > ANGLE_OFFSET_MAX_DEG) {
         Serial.println("Calibration response contains invalid or unsupported values");
         return false;
     }
@@ -1082,7 +1058,7 @@ static bool fetch_remote_calibration() {
         return false;
     }
 
-    if (xSemaphoreTake(config_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+    if (xSemaphoreTake(config_mutex, pdMS_TO_TICKS(CONFIG_MUTEX_BLOCK_TIMEOUT_MS)) != pdTRUE) {
         Serial.println("Could not lock device configuration for update");
         reconfigure_audio(previous.sample_rate, previous.window_size);
         return false;
@@ -1270,10 +1246,10 @@ void draw_radar_ui(float angle_deg, float temp_c, float hum, float pres, float c
                    float db_spl, bool api_available, bool adaptive_active = false) {
     canvas.fillScreen(ST77XX_BLACK);
 
-    // 1. Izris polkrožnega radarja (središče na x=64, y=75, polmer r=52)
-    const int cx = 64;
-    const int cy = 68;
-    const int r = 52;
+    // 1. Izris polkrožnega radarja
+    const int cx = RADAR_CENTER_X;
+    const int cy = RADAR_CENTER_Y;
+    const int r = RADAR_RADIUS;
 
     // Značka načina delovanja (AUTO ali FIX) v zgornjem desnem kotu
     if (adaptive_active) {
@@ -1283,19 +1259,19 @@ void draw_radar_ui(float angle_deg, float temp_c, float hum, float pres, float c
         canvas.setCursor(96, 5);
         canvas.print("AUTO");
     } else {
-        canvas.drawRoundRect(96, 3, 29, 11, 2, 0x4208);
+        canvas.drawRoundRect(96, 3, 29, 11, 2, COLOR_BADGE_BORDER);
         canvas.setTextSize(1);
-        canvas.setTextColor(0x7BEF);
+        canvas.setTextColor(COLOR_MUTED_GRAY);
         canvas.setCursor(102, 5);
         canvas.print("FIX");
     }
 
-    // Barvna mreža radarja (temno zelena: 0x03E0)
-    canvas.drawCircle(cx, cy, r, 0x03E0);
-    canvas.drawCircle(cx, cy, r / 2, 0x03E0);
+    // Barvna mreža radarja (temno zelena)
+    canvas.drawCircle(cx, cy, r, COLOR_RADAR_GRID);
+    canvas.drawCircle(cx, cy, r / 2, COLOR_RADAR_GRID);
     // Prekrijemo spodnjo polovico kroga
-    canvas.fillRect(0, cy + 1, 128, r + 2, ST77XX_BLACK);
-    canvas.drawLine(cx - r, cy, cx + r, cy, 0x03E0);
+    canvas.fillRect(0, cy + 1, TFT_WIDTH, r + 2, ST77XX_BLACK);
+    canvas.drawLine(cx - r, cy, cx + r, cy, COLOR_RADAR_GRID);
 
     // Oznake kotov
     canvas.setTextSize(1);
@@ -1307,8 +1283,9 @@ void draw_radar_ui(float angle_deg, float temp_c, float hum, float pres, float c
     canvas.setCursor(104, cy - 10);
     canvas.print("+90");
 
-    // 2. Izris igle (barva glede na glasnost: rdeča > 75 dB SPL, rumena > 60 dB SPL, sicer zelena)
-    uint16_t needle_color = (db_spl > 75.0f) ? ST77XX_RED : ((db_spl > 60.0f) ? ST77XX_YELLOW : ST77XX_GREEN);
+    // 2. Izris igle (barva glede na glasnost)
+    uint16_t needle_color = (db_spl > NEEDLE_HIGH_SPL_THRESHOLD) ? ST77XX_RED :
+                            ((db_spl > NEEDLE_MED_SPL_THRESHOLD) ? ST77XX_YELLOW : ST77XX_GREEN);
     float rad = (angle_deg - 90.0f) * (M_PI / 180.0f);
     int target_x = cx + static_cast<int>(r * cosf(rad));
     int target_y = cy + static_cast<int>(r * sinf(rad));
@@ -1316,8 +1293,8 @@ void draw_radar_ui(float angle_deg, float temp_c, float hum, float pres, float c
     canvas.drawLine(cx, cy, target_x, target_y, needle_color);
     canvas.fillCircle(target_x, target_y, 3, needle_color);
 
-    // 3. Spodnja nadzorna plošča s telemetrijo (y = 75 do 159)
-    canvas.drawFastHLine(0, 75, 128, 0x7BEF); // Siva ločilna črta
+    // 3. Spodnja nadzorna plošča s telemetrijo
+    canvas.drawFastHLine(0, 75, TFT_WIDTH, COLOR_MUTED_GRAY); // Siva ločilna črta
 
     canvas.setTextSize(2);
     canvas.setTextColor(ST77XX_CYAN);
@@ -1355,11 +1332,11 @@ void draw_radar_ui(float angle_deg, float temp_c, float hum, float pres, float c
     }
 
     // Pošlji celotno sliko na zaslon v enem kosu prek SPI
-    display.drawRGBBitmap(0, 0, canvas.getBuffer(), 128, 160);
+    display.drawRGBBitmap(0, 0, canvas.getBuffer(), TFT_WIDTH, TFT_HEIGHT);
 }
 
 void init_sensors_and_display() {
-    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN, 400000); // 400 kHz Fast I2C za BME280
+    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN, I2C_BUS_SPEED_HZ);
 
     // 1. Zagon SPI TFT zaslona KMR-1.8 (ST7735)
     tft_spi.begin(TFT_SCLK_PIN, -1, TFT_MOSI_PIN, -1);
@@ -1372,12 +1349,13 @@ void init_sensors_and_display() {
     display_initialized = true;
 
     // 2. Zagon BME280
-    bme_initialized = bme.begin(0x76, &Wire);
+    bme_initialized = bme.begin(BME280_ADDR_PRIMARY, &Wire);
     if (!bme_initialized) {
-        // Če ni na 0x76, poskusi še privzeti 0x77
-        bme_initialized = bme.begin(0x77, &Wire);
+        // Če ni na primarnem naslovu, poskusi še sekundarnega
+        bme_initialized = bme.begin(BME280_ADDR_SECONDARY, &Wire);
         if (!bme_initialized) {
-            Serial.println("BME280 senzor ni bil najden! Uporabljam privzeto c=343.9 m/s");
+            Serial.printf("BME280 senzor ni bil najden! Uporabljam privzeto c=%.1f m/s\n",
+                          DEFAULT_SOUND_SPEED_MPS);
             log_i2c_devices();
         }
     }
@@ -1398,7 +1376,7 @@ void init_sensors_and_display() {
 // Periodično branje BME280
 void update_environmental_compensation() {
     static unsigned long last_read = 0;
-    if (millis() - last_read > 2000) { // Vsaki 2 sekundi
+    if (millis() - last_read > SENSOR_READ_INTERVAL_MS) {
         last_read = millis();
 
         if (!bme_initialized) {
@@ -1432,7 +1410,7 @@ void sensor_display_task(void *param) {
     while (true) {
         update_environmental_compensation();
 
-        if (xQueueReceive(display_queue, &event, pdMS_TO_TICKS(100))) {
+        if (xQueueReceive(display_queue, &event, pdMS_TO_TICKS(DISPLAY_QUEUE_TIMEOUT_MS))) {
             last_event = event;
             const uint32_t now_ms = millis();
             const float display_angle = display_filter.update(event.angle_deg, now_ms);
@@ -1504,7 +1482,7 @@ void setup() {
     }
 
     // Ustvari FreeRTOS objekte za prenos rezultatov in zaščito DSP konfiguracije
-    display_queue = xQueueCreate(10, sizeof(DoaResult));
+    display_queue = xQueueCreate(DISPLAY_QUEUE_LENGTH, sizeof(DoaResult));
     network_queue = xQueueCreate(NETWORK_QUEUE_LENGTH, sizeof(NetworkMeasurement));
     doa_mutex = xSemaphoreCreateMutex();
     config_mutex = xSemaphoreCreateMutex();
@@ -1519,9 +1497,11 @@ void setup() {
 
     if (!is_supported_audio_config(device_config.sample_rate,
                                    device_config.window_size)) {
-        Serial.println("Unsupported saved audio configuration; using 44100 Hz / 1024 samples");
-        device_config.sample_rate = 44100;
-        device_config.window_size = 1024;
+        Serial.printf("Unsupported saved audio configuration; using %lu Hz / %zu samples\n",
+                      static_cast<unsigned long>(DEFAULT_SAMPLE_RATE),
+                      DEFAULT_WINDOW_SIZE);
+        device_config.sample_rate = DEFAULT_SAMPLE_RATE;
+        device_config.window_size = DEFAULT_WINDOW_SIZE;
     }
     if (!doa.configure(static_cast<float>(device_config.sample_rate),
                        device_config.window_size)) {
@@ -1555,23 +1535,24 @@ void setup() {
     initialize_task_watchdog();
 
     // Zaženi DSP nalogo na Jedru 1 (prioriteta 5 - visoka)
-    if (xTaskCreatePinnedToCore(dsp_task, "DSP_Task", 8192, NULL, 5, NULL, 1) != pdPASS) {
+    if (xTaskCreatePinnedToCore(dsp_task, "DSP_Task", TASK_DSP_STACK_SIZE,
+                                NULL, TASK_DSP_PRIORITY, NULL, TASK_DSP_CORE) != pdPASS) {
         Serial.println("DSP naloge ni bilo mogoce zagnati!");
         while (true) {
             delay(1000);
         }
     }
 
-    if (xTaskCreatePinnedToCore(sensor_display_task, "Sensor_Display", 4096,
-                                NULL, 2, NULL, 0) != pdPASS) {
+    if (xTaskCreatePinnedToCore(sensor_display_task, "Sensor_Display", TASK_SENSOR_DISPLAY_STACK_SIZE,
+                                NULL, TASK_SENSOR_DISPLAY_PRIORITY, NULL, TASK_SENSOR_DISPLAY_CORE) != pdPASS) {
         Serial.println("Sensor/display naloge ni bilo mogoce zagnati!");
         while (true) {
             delay(1000);
         }
     }
 
-    if (xTaskCreatePinnedToCore(network_task, "Network_Task", 8192,
-                                NULL, 2, NULL, 0) != pdPASS) {
+    if (xTaskCreatePinnedToCore(network_task, "Network_Task", TASK_NETWORK_STACK_SIZE,
+                                NULL, TASK_NETWORK_PRIORITY, NULL, TASK_NETWORK_CORE) != pdPASS) {
         Serial.println("Omrezne naloge ni bilo mogoce zagnati!");
         while (true) {
             delay(1000);

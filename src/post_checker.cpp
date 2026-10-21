@@ -1,4 +1,5 @@
 #include "post_checker.h"
+#include "app_config.h"
 #include <cmath>
 
 MicrophoneHealthResult evaluate_microphone_health(const int32_t* left,
@@ -47,8 +48,8 @@ MicrophoneHealthResult evaluate_microphone_health(const int32_t* left,
             result.identical_samples++;
         }
 
-        const float l_ac = (static_cast<float>(left[i]) - l_mean) / 2147483648.0f;
-        const float r_ac = (static_cast<float>(right[i]) - r_mean) / 2147483648.0f;
+        const float l_ac = (static_cast<float>(left[i]) - l_mean) / PCM_INT32_TO_FLOAT_SCALE;
+        const float r_ac = (static_cast<float>(right[i]) - r_mean) / PCM_INT32_TO_FLOAT_SCALE;
         l_ac_sum += l_ac * l_ac;
         r_ac_sum += r_ac * r_ac;
     }
@@ -61,19 +62,19 @@ MicrophoneHealthResult evaluate_microphone_health(const int32_t* left,
 
     // A valid microphone must:
     // 1. Have active variance (min != max)
-    // 2. Not be completely silent/floating (RMS > -95 dBFS)
-    // 3. Not be pegged against the rail (RMS < -3 dBFS)
+    // 2. Not be completely silent/floating (RMS > POST_MIC_FLATLINE_RMS_DB)
+    // 3. Not be pegged against the rail (RMS < POST_MIC_RAIL_SHORT_RMS_DB)
     result.left_ok = (result.left_min != result.left_max) &&
-                     (result.left_rms_db > -95.0f) &&
-                     (result.left_rms_db < -3.0f);
+                     (result.left_rms_db > POST_MIC_FLATLINE_RMS_DB) &&
+                     (result.left_rms_db < POST_MIC_RAIL_SHORT_RMS_DB);
 
     result.right_ok = (result.right_min != result.right_max) &&
-                      (result.right_rms_db > -95.0f) &&
-                      (result.right_rms_db < -3.0f);
+                      (result.right_rms_db > POST_MIC_FLATLINE_RMS_DB) &&
+                      (result.right_rms_db < POST_MIC_RAIL_SHORT_RMS_DB);
 
     // In true independent stereo audio, identical samples over a large block
-    // should not exceed 85% of samples (e.g. 870 out of 1024)
-    result.stereo_distinct = (result.identical_samples * 100 < count * 85);
+    // should not exceed POST_MIC_MAX_COLLISION_PCT (e.g. 85%)
+    result.stereo_distinct = (result.identical_samples * 100 < count * POST_MIC_MAX_COLLISION_PCT);
 
     return result;
 }

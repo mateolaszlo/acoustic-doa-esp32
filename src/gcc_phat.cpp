@@ -8,6 +8,14 @@ static constexpr float GCC_PHAT_MIN_HZ = 300.0f;
 static constexpr float GCC_PHAT_MAX_HZ = 2200.0f;
 static constexpr float GCC_PHAT_RAMP_HZ = 100.0f;
 
+// Noise Floor Tracker Leaky Integrator Slew Constants
+static constexpr float NOISE_FLOOR_ALPHA_DOWN  = 0.02f;   // Fast tracking downward (~1-2 s)
+static constexpr float NOISE_FLOOR_ALPHA_UP    = 0.005f;  // Slow tracking upward under trigger
+static constexpr float NOISE_FLOOR_ALPHA_EVENT = 0.0005f; // Creep tracking during acoustic events
+static constexpr float NOISE_FLOOR_MIN_DB      = -95.0f;
+static constexpr float NOISE_FLOOR_MAX_DB      = -5.0f;
+static constexpr float NOISE_FLOOR_INITIAL_DB  = -100.0f;
+
 static float gcc_phat_band_weight(float frequency_hz) {
     const float lower_ramp_start = GCC_PHAT_MIN_HZ - GCC_PHAT_RAMP_HZ;
     const float upper_ramp_end = GCC_PHAT_MAX_HZ + GCC_PHAT_RAMP_HZ;
@@ -40,20 +48,22 @@ static int wrap_correlation_index(int lag, int fft_size) {
 
 GccPhat::GccPhat(float sample_rate, float mic_distance_m, float temp_c,
                  float humidity_pct, float pressure_pa)
-    : fs(sample_rate), d(mic_distance_m), correlation_threshold(0.35f),
-      db_threshold(-45.0f), angle_offset_deg(0.0f), fft_size(0),
-      adaptive_threshold_enabled(false), snr_margin_db(8.0f),
-      noise_floor_db(-100.0f), noise_floor_initialized(false),
+    : fs(sample_rate), d(mic_distance_m),
+      correlation_threshold(DEFAULT_CORRELATION_THRESHOLD),
+      db_threshold(-45.0f), angle_offset_deg(DEFAULT_ANGLE_OFFSET_DEG), fft_size(0),
+      adaptive_threshold_enabled(false), snr_margin_db(DEFAULT_SNR_MARGIN_DB),
+      noise_floor_db(NOISE_FLOOR_INITIAL_DB), noise_floor_initialized(false),
       window(nullptr), fft_x1(nullptr), fft_x2(nullptr), ccorr(nullptr) {
     c_sound = calculateSoundSpeed(temp_c, humidity_pct, pressure_pa);
 }
 
 GccPhat::GccPhat(float sample_rate, float mic_distance_m, float temp_c,
                  size_t window_size, float humidity_pct, float pressure_pa)
-    : fs(sample_rate), d(mic_distance_m), correlation_threshold(0.35f),
-      db_threshold(-45.0f), angle_offset_deg(0.0f), fft_size(0),
-      adaptive_threshold_enabled(false), snr_margin_db(8.0f),
-      noise_floor_db(-100.0f), noise_floor_initialized(false),
+    : fs(sample_rate), d(mic_distance_m),
+      correlation_threshold(DEFAULT_CORRELATION_THRESHOLD),
+      db_threshold(-45.0f), angle_offset_deg(DEFAULT_ANGLE_OFFSET_DEG), fft_size(0),
+      adaptive_threshold_enabled(false), snr_margin_db(DEFAULT_SNR_MARGIN_DB),
+      noise_floor_db(NOISE_FLOOR_INITIAL_DB), noise_floor_initialized(false),
       window(nullptr), fft_x1(nullptr), fft_x2(nullptr), ccorr(nullptr) {
     c_sound = calculateSoundSpeed(temp_c, humidity_pct, pressure_pa);
     fft_size = window_size;
@@ -66,13 +76,13 @@ GccPhat::~GccPhat() {
 float GccPhat::calculateSoundSpeed(float temp_c, float humidity_pct, float pressure_pa) {
     // Zaščita pred neveljavnimi odčitki senzorja
     if (!std::isfinite(temp_c) || temp_c < -40.0f || temp_c > 85.0f) {
-        temp_c = 20.0f;
+        temp_c = DEFAULT_TEMPERATURE_C;
     }
     if (!std::isfinite(humidity_pct) || humidity_pct < 0.0f || humidity_pct > 100.0f) {
-        humidity_pct = 50.0f;
+        humidity_pct = DEFAULT_HUMIDITY_PCT;
     }
     if (!std::isfinite(pressure_pa) || pressure_pa < 30000.0f || pressure_pa > 120000.0f) {
-        pressure_pa = 101325.0f;
+        pressure_pa = DEFAULT_PRESSURE_PA;
     }
 
     // 1. Nasičeni parni tlak vode (Magnus-Tetens v Pa)
@@ -240,9 +250,9 @@ DoaResult GccPhat::process(const int32_t* left_channel, const int32_t* right_cha
     // 1. Odstranitev DC odmika, normalizacija in Hannovo oknenje
     for (size_t i = 0; i < fft_size; i++) {
         float s1 = ((static_cast<float>(left_channel[i]) - left_mean) /
-                    2147483648.0f) * window[i];
+                    PCM_INT32_TO_FLOAT_SCALE) * window[i];
         float s2 = ((static_cast<float>(right_channel[i]) - right_mean) /
-                    2147483648.0f) * window[i];
+                    PCM_INT32_TO_FLOAT_SCALE) * window[i];
 
         energy_sum += s1 * s1;
 
@@ -255,13 +265,13 @@ DoaResult GccPhat::process(const int32_t* left_channel, const int32_t* right_cha
 
     // Izračun ravni glasnosti (dBFS)
     float rms = sqrtf(energy_sum / static_cast<float>(fft_size));
-    result.rms_db = (rms > 1e-5f) ? 20.0f * log10f(rms) : -100.0f;
+    result.rms_db = (rms > 1e-5f) ? 20.0f * log10f(rms) : NOISE_FLOOR_INITIAL_DB;
 
     // 1b. Določitev praga zaznave (prilagodljivi šum okolice ali fiksni prag)
     float effective_thresh = db_threshold;
     if (adaptive_threshold_enabled) {
         if (!noise_floor_initialized) {
-            if (result.rms_db > -95.0f) {
+            if (result.rms_db > NOISE_FLOOR_MIN_DB) {
                 noise_floor_db = result.rms_db;
                 noise_floor_initialized = true;
             }
@@ -270,22 +280,22 @@ DoaResult GccPhat::process(const int32_t* left_channel, const int32_t* right_cha
 
             if (result.rms_db < noise_floor_db) {
                 // Hiter padec ocene šuma ob utišanju ozadja (~1-2 s)
-                noise_floor_db += 0.02f * (result.rms_db - noise_floor_db);
+                noise_floor_db += NOISE_FLOOR_ALPHA_DOWN * (result.rms_db - noise_floor_db);
             } else if (result.rms_db < trigger_threshold) {
                 // Počasno sledenje dvigu šuma okolice pod pragom proženja
-                noise_floor_db += 0.005f * (result.rms_db - noise_floor_db);
+                noise_floor_db += NOISE_FLOOR_ALPHA_UP * (result.rms_db - noise_floor_db);
             } else {
                 // Zvočni dogodek / govor: zelo počasno prilagajanje, da trajen zvok
                 // ne zviša takoj praga in ne zaduši detekcije
-                noise_floor_db += 0.0005f * (result.rms_db - noise_floor_db);
+                noise_floor_db += NOISE_FLOOR_ALPHA_EVENT * (result.rms_db - noise_floor_db);
             }
         }
 
         if (noise_floor_initialized) {
-            if (noise_floor_db < -95.0f) {
-                noise_floor_db = -95.0f;
-            } else if (noise_floor_db > -5.0f) {
-                noise_floor_db = -5.0f;
+            if (noise_floor_db < NOISE_FLOOR_MIN_DB) {
+                noise_floor_db = NOISE_FLOOR_MIN_DB;
+            } else if (noise_floor_db > NOISE_FLOOR_MAX_DB) {
+                noise_floor_db = NOISE_FLOOR_MAX_DB;
             }
             effective_thresh = noise_floor_db + snr_margin_db;
         }

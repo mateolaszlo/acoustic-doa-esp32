@@ -1,12 +1,9 @@
 #include <Arduino.h>
 #include <driver/i2s.h>
 #include <esp_log.h>
+#include "app_config.h"
 
-#define I2S_PORT      I2S_NUM_0
-#define I2S_BCLK_PIN  GPIO_NUM_4
-#define I2S_WS_PIN    GPIO_NUM_5
-#define I2S_DIN_PIN   GPIO_NUM_6
-#define I2S_MAX_SAMPLES 2048
+#define I2S_PORT (static_cast<i2s_port_t>(I2S_PORT_NUM))
 
 bool init_i2s_microphones(uint32_t sample_rate) {
     i2s_config_t i2s_config = {
@@ -46,9 +43,9 @@ void deinit_i2s_microphones() {
 }
 
 bool read_i2s_stereo(int32_t* left, int32_t* right, size_t count) {
-    static int32_t interleaved_buf[I2S_MAX_SAMPLES * 2];
+    static int32_t interleaved_buf[AUDIO_MAX_WINDOW_SIZE * 2];
     if (left == nullptr || right == nullptr || count == 0 ||
-        count > I2S_MAX_SAMPLES) {
+        count > AUDIO_MAX_WINDOW_SIZE) {
         return false;
     }
 
