@@ -239,7 +239,7 @@ static void log_dsp_diagnostics() {
 }
 
 static void initialize_task_watchdog() {
-    esp_err_t result = esp_task_wdt_init(TASK_WATCHDOG_TIMEOUT_SECONDS, false);
+    esp_err_t result = esp_task_wdt_init(TASK_WATCHDOG_TIMEOUT_SECONDS, true);
     if (result != ESP_OK && result != ESP_ERR_INVALID_STATE) {
         Serial.printf("Task watchdog initialization failed: %s\n", esp_err_to_name(result));
     }
