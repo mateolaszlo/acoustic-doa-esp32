@@ -4,12 +4,12 @@ This directory documents the current ESP32-S3 firmware for a four-microphone pla
 
 ## Documentation
 
-- [Hardware and wiring](doc/hardware.md)
-- [Firmware architecture](doc/firmware.md)
-- [Build, provisioning, and setup](doc/setup.md)
-- [REST API integration](doc/rest-api.md)
-- [Testing & verification](doc/testing.md)
-- [Troubleshooting](doc/troubleshooting.md)
+- [Hardware and wiring](docs/hardware.md)
+- [Firmware architecture](docs/firmware.md)
+- [Build, provisioning, and setup](docs/setup.md)
+- [REST API integration](docs/rest-api.md)
+- [Testing & verification](docs/testing.md)
+- [Troubleshooting](docs/troubleshooting.md)
 
 ## Project scope
 
@@ -26,7 +26,7 @@ The firmware:
 - Stores device credentials and calibration settings in ESP32 NVS flash.
 - Provides a button-triggered setup access point with a DNS-based captive portal.
 
-The backend, database, and web dashboard are separate systems. See [REST API integration](doc/rest-api.md) for the firmware-side contract.
+The backend, database, and web dashboard are separate systems. See [REST API integration](docs/rest-api.md) for the firmware-side contract.
 
 ## Testing
 
@@ -40,7 +40,7 @@ make test
 ./scripts/run_tests.sh
 ```
 
-See [Testing documentation](doc/testing.md) for mock details and full suite descriptions.
+See [Testing documentation](docs/testing.md) for mock details and full suite descriptions.
 
 ## Current target
 

@@ -15,6 +15,7 @@
 | `src/network/rest_client.h` / `.cpp` | HTTP keep-alive batch transmission (`POST /api/v1/meritve`) and remote calibration retrieval (`GET /api/v1/naprave/{id}/kalibracija`) |
 | `src/network/setup_portal.h` / `.cpp` | SoftAP captive portal and embedded HTTP web server for device Wi-Fi and calibration provisioning |
 | `src/ui/radar_ui.h` / `.cpp` | 360° circular radar scope rendering, polar needle visualization, POST checklist prompt, degraded screen, and setup portal UI on ST7735 TFT |
+| `src/ui/serial_ui.h` / `.cpp` | Human-facing serial console TLI formatting: ASCII boot self-test report card, degraded alert banner, I2C bus scan, live DOA event telemetry, and DSP metrics |
 | `src/ui/display_filter.h` / `.cpp` | Circular $S^1$ EMA smoothing (`wrapAngle180`, `shortestAngularDiff`), outlier rejection across $\pm 180^\circ$, and radar needle angle calculation |
 | `platformio.ini` | Board, framework, monitor, and library dependencies |
 

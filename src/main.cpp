@@ -13,6 +13,7 @@
 #include "config/config_store.h"
 #include "audio/post_checker.h"
 #include "ui/radar_ui.h"
+#include "ui/serial_ui.h"
 #include "network/setup_portal.h"
 #include "network/rest_protocol.h"
 #include "network/rest_client.h"
@@ -63,21 +64,6 @@ static uint32_t audio_block_duration_us(uint32_t sample_rate, uint32_t window_si
         (static_cast<uint64_t>(window_size) * 1000000ULL) / sample_rate);
 }
 
-static void log_i2c_devices() {
-    bool found_device = false;
-    Serial.println("I2C scan:");
-    for (uint8_t address = 1; address < 127; ++address) {
-        Wire.beginTransmission(address);
-        if (Wire.endTransmission() == 0) {
-            Serial.printf("  Found device at 0x%02X\n", address);
-            found_device = true;
-        }
-    }
-    if (!found_device) {
-        Serial.println("  No I2C devices found");
-    }
-}
-
 static BootSelfTestResult run_boot_self_test(uint32_t sample_rate) {
     BootSelfTestResult res;
     res.psram_ok = psramFound();
@@ -102,69 +88,13 @@ static BootSelfTestResult run_boot_self_test(uint32_t sample_rate) {
 
     res.all_nominal = res.psram_ok && res.i2s_driver_ok && res.mic_health.all_ok;
 
-    Serial.println("\n==================================================");
-    Serial.println("           ACOUSTIC LOCATOR BOOT SELF-TEST        ");
-    Serial.println("==================================================");
-    Serial.printf("[%s] Octal PSRAM : %s (%u KB)\n",
-                  res.psram_ok ? "PASS" : "FAIL",
-                  res.psram_ok ? "Found" : "Missing",
-                  static_cast<unsigned>(res.psram_bytes / 1024));
-
-    if (res.bme_ok) {
-        Serial.printf("[PASS] BME280 I2C  : OK (T: %.1fC, P: %.1f hPa)\n",
-                      res.bme_temp_c, res.bme_pres_hpa);
-    } else {
-        Serial.printf("[WARN] BME280 I2C  : NOT FOUND (Using default c=%.1f m/s)\n",
-                      DEFAULT_SOUND_SPEED_MPS);
-    }
-
-    Serial.printf("[%s] I2S Driver  : %s (%u Hz Dual-Bus Quad)\n",
-                  res.i2s_driver_ok ? "PASS" : "FAIL",
-                  res.i2s_driver_ok ? "Initialized (I2S0 Master + I2S1 Slave)" : "Failed",
-                  static_cast<unsigned>(sample_rate));
-
-    static const char* const mic_labels[AUDIO_NUM_CHANNELS] = {
-        "M0 (RB/I2S0L)", "M1 (RF/I2S0R)", "M2 (LF/I2S1L)", "M3 (LB/I2S1R)"
-    };
-    for (size_t c = 0; c < AUDIO_NUM_CHANNELS; ++c) {
-        const bool ok = res.mic_health.ch_ok[c];
-        const char* state = ok
-            ? "ACTIVE"
-            : (res.mic_health.ch_min[c] == res.mic_health.ch_max[c] ? "FLATLINE" : "OUT OF BOUNDS");
-        Serial.printf("[%s] %-13s: %s (RMS: %.1f dBFS, min=%ld, max=%ld)\n",
-                      ok ? "PASS" : "FAIL", mic_labels[c], state,
-                      res.mic_health.ch_rms_db[c],
-                      static_cast<long>(res.mic_health.ch_min[c]),
-                      static_cast<long>(res.mic_health.ch_max[c]));
-    }
-
-    const bool sync_ok = res.i2s_driver_ok &&
-                         res.mic_health.bus0_distinct &&
-                         res.mic_health.bus1_distinct &&
-                         res.mic_health.cross_bus_distinct;
-    Serial.printf("[%s] Bus Sync    : Bus0=%s, Bus1=%s, CrossBus=%s (max identical=%u/%u)\n",
-                  sync_ok ? "PASS" : "FAIL",
-                  res.mic_health.bus0_distinct ? "OK" : "COLLISION",
-                  res.mic_health.bus1_distinct ? "OK" : "COLLISION",
-                  res.mic_health.cross_bus_distinct ? "OK" : "SHORTED",
-                  static_cast<unsigned>(res.mic_health.identical_samples),
-                  static_cast<unsigned>(POST_SAMPLE_COUNT));
-
-    Serial.println("==================================================");
-    Serial.printf("STATUS: %s\n", res.all_nominal ? "ALL SYSTEMS NOMINAL" : "HARDWARE DEGRADED - CHECK WIRING");
-    Serial.println("==================================================\n");
+    SerialUI::printSelfTestReport(res, sample_rate);
 
     return res;
 }
 
 static void handle_hardware_degraded(const BootSelfTestResult &post) {
-    Serial.println("\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-    Serial.println("  CRITICAL: BOOT SELF-TEST FAILED - HALTING!");
-    Serial.println("  Real-time DOA processing and network streaming");
-    Serial.println("  are suspended to prevent corrupt measurements.");
-    Serial.println("  Fix hardware wiring and press RST to reboot,");
-    Serial.println("  or hold BOOT (GPIO 0) to enter setup mode.");
-    Serial.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+    SerialUI::printHardwareDegradedAlert();
 
     radar_display.drawHardwareDegraded(post);
 
@@ -297,18 +227,15 @@ static void log_dsp_diagnostics() {
     window_size = device_config.window_size;
     xSemaphoreGive(config_mutex);
 
-    Serial.printf(
-        "DSP stats: blocks=%lu, deadline_misses=%lu, max_processing=%lu us, "
-        "budget=%lu us, i2s_failures=%lu, display_drops=%lu, network_drops=%lu, "
-        "stack_free=%u\n",
-        static_cast<unsigned long>(dsp_blocks_processed.load()),
-        static_cast<unsigned long>(dsp_deadline_misses.load()),
-        static_cast<unsigned long>(dsp_max_processing_us.load()),
-        static_cast<unsigned long>(audio_block_duration_us(sample_rate, window_size)),
-        static_cast<unsigned long>(dsp_i2s_read_failures.load()),
-        static_cast<unsigned long>(display_queue_drops.load()),
-        static_cast<unsigned long>(network_queue_drops.load()),
-        static_cast<unsigned int>(uxTaskGetStackHighWaterMark(nullptr)));
+    SerialUI::printDspDiagnostics(
+        dsp_blocks_processed.load(),
+        dsp_deadline_misses.load(),
+        dsp_max_processing_us.load(),
+        audio_block_duration_us(sample_rate, window_size),
+        dsp_i2s_read_failures.load(),
+        display_queue_drops.load(),
+        network_queue_drops.load(),
+        uxTaskGetStackHighWaterMark(nullptr));
 }
 
 static void initialize_task_watchdog() {
@@ -620,7 +547,7 @@ void init_sensors_and_display() {
         if (!bme_initialized) {
             Serial.printf("BME280 senzor ni bil najden! Uporabljam privzeto c=%.1f m/s\n",
                           DEFAULT_SOUND_SPEED_MPS);
-            log_i2c_devices();
+            SerialUI::printI2cScan();
         }
     }
 
@@ -683,8 +610,7 @@ void sensor_display_task(void *param) {
             float pressure = current_pressure.load();
             const float calibrated_db = event.rms_db + db_spl_offset.load();
 
-            Serial.printf("Zaznan kot: %.1f deg, R: %.2f, dB: %.1f\n",
-                          event.angle_deg, event.confidence, calibrated_db);
+            SerialUI::printDoaEvent(event.angle_deg, event.confidence, calibrated_db);
 
             if (radar_display.isInitialized()) {
                 last_server_available = server_available.load();
