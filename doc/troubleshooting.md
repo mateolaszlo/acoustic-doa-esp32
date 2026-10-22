@@ -49,8 +49,8 @@ The device retries Wi-Fi connection in the network task and logs HTTP failures, 
 - **Power supply & Jumper J1**: If powering VCC with 3.3V, check the `J1` zero-ohm jumper on the back of the KMR-1.8 board. Unbridged J1 drops voltage through the onboard LDO; bridge J1 with solder for 3.3V input, or power VCC from the 5V rail (VIN).
 
 ### Inverted colors (e.g., white background instead of black)
-- Different ST7735 revisions use different color inversion standards. In `src/main.cpp`, change `#define TFT_INVERT_COLORS false` to `true`.
-- If a 1–2 pixel border or static noise is visible at screen edges, change `display.initR(INITR_BLACKTAB)` in `init_sensors_and_display()` to `INITR_GREENTAB` or `INITR_18BLACKTAB`.
+- Different ST7735 revisions use different color inversion standards. In `src/config/app_config.h`, change `constexpr bool TFT_INVERT_COLORS = false;` to `true`.
+- If a 1–2 pixel border or static noise is visible at screen edges, change `display.initR(INITR_BLACKTAB)` in `RadarDisplay::init()` to `INITR_GREENTAB` or `INITR_18BLACKTAB`.
 
 ## BME280 is not detected
 
@@ -88,7 +88,7 @@ If forward sounds point to a non-zero angle (e.g. `+7.0°`) and the needle reach
   1. Measure the exact acoustic port hole-to-hole distance (default is `0.082 m` / 82 mm).
   2. Hold the BOOT button on startup to open the Captive Portal (`192.168.4.1`).
   3. Enter the observed forward angle into `Zero angle offset (deg)` (e.g. `7.0`).
-  4. Save and reboot. The firmware subtracts the offset in the time domain before $\arcsin$, restoring balanced, symmetric $[-90^\circ, +90^\circ]$ tracking.
+  4. Save and reboot. The firmware applies the angular offset trim on the circular manifold $\phi_{\text{cal}} = \text{wrap}_{180}(\phi_{\text{raw}} - \text{angle\_offset\_deg})$, restoring accurate, symmetric full $360^\circ$ $[-180^\circ, +180^\circ]$ tracking.
 
 ## API returns 401 or 403
 

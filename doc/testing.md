@@ -30,7 +30,7 @@ When running off-target, the tests link against lightweight, bit-exact mocks loc
 
 ## 3. Test Suites Overview
 
-The test harness in [`test/test_adaptive_and_smoothing.cpp`](../test/test_adaptive_and_smoothing.cpp) covers 11 specialized test suites:
+The test harness in [`test/test_adaptive_and_smoothing.cpp`](../test/test_adaptive_and_smoothing.cpp) covers 12 specialized test suites:
 
 1. **`test_gcc_phat_adaptive_noise_floor`**:
    - Verifies the asymmetric attack/decay tracking ($3\text{ dB/s}$ upward creep vs. $30\text{ dB/s}$ fast downward recovery).
@@ -62,6 +62,10 @@ The test harness in [`test/test_adaptive_and_smoothing.cpp`](../test/test_adapti
     - Verifies circular geodesic smoothing on the unit circle $S^1$.
     - Tests smooth crossing across the $\pm 180^\circ$ back boundary ($+175^\circ \leftrightarrow -175^\circ$) without swinging through $0^\circ$.
     - Confirms 2-frame outlier candidate rejection across the boundary.
+12. **`test_rest_binary_batch_serialization`**:
+    - Verifies 12-byte header Little-Endian byte packing (version `1`, measurement count, base timestamp, and clock flags).
+    - Verifies 20-byte per-record Little-Endian float encoding (`angle_deg`, `delay_us`, calibrated dB, and confidence).
+    - Validates buffer overflow protection, homogeneous clock flag validation, and timestamp sequence constraints.
 
 ---
 

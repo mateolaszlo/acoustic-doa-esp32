@@ -5,7 +5,7 @@
 - Windows, macOS, or Linux with PlatformIO.
 - ESP32-S3-DevKitC-1-N16R8 (16 MB flash, 8 MB OPI PSRAM).
 - USB data cable.
-- Two compatible I2S microphones.
+- Four compatible I2S microphones (configured in a planar square array).
 - 1.8" SPI TFT display (ST7735 / KMR-1.8 128x160).
 - BME280 I2C sensor.
 - A backend reachable from the ESP32 over the configured network.
@@ -51,7 +51,7 @@ GPIO 0 is also an ESP32-S3 boot strap pin. Do **not** hold GPIO 0 low while pres
 With the current firmware:
 
 1. Boot or reset the board normally with GPIO 0 (BOOT button) released.
-2. The TFT display turns on immediately and shows a 3-second countdown with the message: **"Press BOOT button to enter Setup"**.
+2. The TFT display turns on immediately and shows a 3-second countdown with the message: **"Hold BOOT for Setup"** alongside the boot POST checklist.
 3. Press and hold the BOOT button (GPIO 0) during this window.
 4. The display switches to **SETUP MODE**, showing the Wi-Fi AP name (`Acoustic-Locator-Setup`), password (`configure123`), and portal URL (`http://192.168.4.1`).
 5. Connect your phone or computer to the AP and visit `http://192.168.4.1`.
@@ -68,7 +68,7 @@ The setup form contains:
 - Microphone distance in meters (default 0.082 m / 82 mm).
 - dB SPL offset.
 - Fixed sound level threshold (dB SPL).
-- Zero angle offset in degrees (-45.0 to +45.0 deg, default 0.0 deg). Compensates for hardware/sampling channel delay skew and mounting depth differences.
+- Zero angle offset in degrees (-180.0 to +180.0 deg, default 0.0 deg). Compensates for hardware/sampling channel delay skew and mounting depth differences.
 - Enable adaptive noise floor threshold (checkbox). When enabled, sound triggers when rising above the ambient noise floor by the configured SNR margin instead of relying solely on a fixed threshold.
 - SNR margin (dB). Configurable SNR margin above ambient noise floor (default 8.0 dB).
 

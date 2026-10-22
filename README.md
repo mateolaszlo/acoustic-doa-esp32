@@ -1,6 +1,6 @@
 # Acoustic DOA ESP32 Firmware
 
-This directory documents the current ESP32-S3 firmware for a two-microphone acoustic direction-of-arrival (DOA) locator.
+This directory documents the current ESP32-S3 firmware for a four-microphone planar square array acoustic direction-of-arrival (DOA) locator.
 
 ## Documentation
 
@@ -33,7 +33,7 @@ The backend, database, and web dashboard are separate systems. See [REST API int
 The project includes an automated off-target host unit test suite for rapid feature verification and regression prevention without physical ESP32 hardware:
 
 ```bash
-# Run all 11 unit test suites with AddressSanitizer and UndefinedBehaviorSanitizer
+# Run all 12 unit test suites with AddressSanitizer and UndefinedBehaviorSanitizer
 make test
 
 # Or run the shell script
