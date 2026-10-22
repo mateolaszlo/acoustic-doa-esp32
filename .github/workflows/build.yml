@@ -7,10 +7,20 @@ on:
     branches: [ main, 'feature/**' ]
   workflow_dispatch:
 
+# Enforce strict read-only token permissions across all jobs
+permissions:
+  contents: read
+
+# Cancel in-flight runs on the same branch when new commits are pushed
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Host Unit Tests (ASAN & UBSAN)
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
       - name: Checkout repository
@@ -24,6 +34,7 @@ jobs:
     name: PlatformIO Firmware Build
     needs: test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
