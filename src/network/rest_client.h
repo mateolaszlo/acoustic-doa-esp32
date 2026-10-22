@@ -3,8 +3,8 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <atomic>
-#include "rest_protocol.h"
-#include "device_config.h"
+#include "network/rest_protocol.h"
+#include "config/device_config.h"
 
 class GccPhat;
 

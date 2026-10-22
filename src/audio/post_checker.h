@@ -3,7 +3,7 @@
 
 #include <cstdint>
 #include <cstddef>
-#include "app_config.h"
+#include "config/app_config.h"
 
 /**
  * @brief Results of statistical heuristic evaluation of stereo or quad digital microphones.

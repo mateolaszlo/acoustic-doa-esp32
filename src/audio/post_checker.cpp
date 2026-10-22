@@ -1,5 +1,5 @@
-#include "post_checker.h"
-#include "app_config.h"
+#include "audio/post_checker.h"
+#include "config/app_config.h"
 #include <cmath>
 
 static void init_health_result(MicrophoneHealthResult& result) {

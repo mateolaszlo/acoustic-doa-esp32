@@ -8,17 +8,17 @@
 #include <cstring>
 #include <sys/time.h>
 
-#include "app_config.h"
-#include "device_config.h"
-#include "config_store.h"
-#include "post_checker.h"
-#include "radar_ui.h"
-#include "setup_portal.h"
-#include "rest_protocol.h"
-#include "rest_client.h"
-#include "gcc_phat.h"
-#include "i2s_sampler.h"
-#include "display_filter.h"
+#include "config/app_config.h"
+#include "config/device_config.h"
+#include "config/config_store.h"
+#include "audio/post_checker.h"
+#include "ui/radar_ui.h"
+#include "network/setup_portal.h"
+#include "network/rest_protocol.h"
+#include "network/rest_client.h"
+#include "audio/gcc_phat.h"
+#include "audio/i2s_sampler.h"
+#include "ui/display_filter.h"
 
 // Globalne periferne enote
 static Adafruit_BME280 bme;

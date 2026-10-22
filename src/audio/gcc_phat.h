@@ -2,7 +2,7 @@
 #include <esp_dsp.h>
 #include <cmath>
 #include <cstddef>
-#include "app_config.h"
+#include "config/app_config.h"
 
 #define N_SAMPLES AUDIO_DEFAULT_WINDOW_SIZE // Število vzorcev (potenca 2 za FFT)
 

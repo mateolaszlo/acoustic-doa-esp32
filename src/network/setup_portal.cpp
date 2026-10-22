@@ -1,4 +1,4 @@
-#include "setup_portal.h"
+#include "network/setup_portal.h"
 
 String SetupPortal::generateHtmlPage(const DeviceConfig &config) {
     String page;

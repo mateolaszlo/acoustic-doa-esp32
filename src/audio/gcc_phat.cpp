@@ -1,4 +1,4 @@
-#include "gcc_phat.h"
+#include "audio/gcc_phat.h"
 #include <esp_log.h>
 #include <esp_heap_caps.h>
 #include <climits>

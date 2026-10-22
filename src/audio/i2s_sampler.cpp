@@ -1,11 +1,11 @@
-#include "i2s_sampler.h"
+#include "audio/i2s_sampler.h"
 #include <Arduino.h>
 #include <driver/i2s.h>
 #include <driver/gpio.h>
 #include <soc/gpio_sig_map.h>
 #include <esp_rom_gpio.h>
 #include <esp_log.h>
-#include "app_config.h"
+#include "config/app_config.h"
 
 #define I2S_MASTER_PORT (static_cast<i2s_port_t>(I2S_MASTER_PORT_NUM))
 #define I2S_SLAVE_PORT  (static_cast<i2s_port_t>(I2S_SLAVE_PORT_NUM))

@@ -28,7 +28,7 @@ The project includes a custom PlatformIO board definition at [boards/esp32-s3-de
 > [!CAUTION]
 > **OPI PSRAM Pin Restrictions:** On the ESP32-S3-DevKitC-1-N16R8, GPIO 33, 34, 35, 36, and 37 are internally dedicated to the 8-bit Octal SPI PSRAM. Never connect display or sensor signals to these pins, as doing so causes instant memory corruption or kernel panics.
 
-GPIO numbers and peripheral setup are defined in [app_config.h](../src/app_config.h), [main.cpp](../src/main.cpp), and [i2s_sampler.cpp](../src/i2s_sampler.cpp).
+GPIO numbers and peripheral setup are defined in [app_config.h](../src/config/app_config.h), [main.cpp](../src/main.cpp), and [i2s_sampler.cpp](../src/audio/i2s_sampler.cpp).
 
 ## Four-microphone 2D square array I2S wiring
 

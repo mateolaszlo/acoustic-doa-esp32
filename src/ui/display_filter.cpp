@@ -1,4 +1,4 @@
-#include "display_filter.h"
+#include "ui/display_filter.h"
 #include <cmath>
 
 constexpr float DisplaySmoothingFilter::DEFAULT_EMA_ALPHA;

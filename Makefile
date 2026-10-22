@@ -5,9 +5,9 @@ CXX ?= g++
 CXXFLAGS ?= -std=gnu++11 -O2 -Wall -Wextra -Werror -fsanitize=address,undefined
 INCLUDES = -I test/mock_esp -I src
 SRCS = test/test_adaptive_and_smoothing.cpp \
-       src/gcc_phat.cpp \
-       src/display_filter.cpp \
-       src/post_checker.cpp
+       src/audio/gcc_phat.cpp \
+       src/ui/display_filter.cpp \
+       src/audio/post_checker.cpp
 BIN_DIR = bin
 TARGET = $(BIN_DIR)/test_host
 

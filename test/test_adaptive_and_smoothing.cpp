@@ -108,11 +108,11 @@ extern "C" {
     }
 }
 
-#include "../src/gcc_phat.h"
-#include "../src/display_filter.h"
-#include "../src/post_checker.h"
-#include "../src/i2s_sampler.h"
-#include "../src/rest_protocol.h"
+#include "audio/gcc_phat.h"
+#include "ui/display_filter.h"
+#include "audio/post_checker.h"
+#include "audio/i2s_sampler.h"
+#include "network/rest_protocol.h"
 
 // Test 1: GccPhat adaptive noise floor tracking
 void test_gcc_phat_adaptive_noise_floor() {

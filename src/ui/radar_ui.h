@@ -3,8 +3,8 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7735.h>
 #include <SPI.h>
-#include "app_config.h"
-#include "post_checker.h"
+#include "config/app_config.h"
+#include "audio/post_checker.h"
 
 struct BootSelfTestResult {
     bool psram_ok = false;

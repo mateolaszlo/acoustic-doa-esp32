@@ -3,8 +3,8 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <DNSServer.h>
-#include "device_config.h"
-#include "radar_ui.h"
+#include "config/device_config.h"
+#include "ui/radar_ui.h"
 
 class SetupPortal {
 public:

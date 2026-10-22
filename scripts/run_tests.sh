@@ -15,9 +15,9 @@ echo "=== [1/2] Compiling Host Unit Tests with ASAN/UBSAN ==="
 g++ -std=gnu++11 -O2 -Wall -Wextra -Werror -fsanitize=address,undefined \
     -I test/mock_esp -I src \
     test/test_adaptive_and_smoothing.cpp \
-    src/gcc_phat.cpp \
-    src/display_filter.cpp \
-    src/post_checker.cpp \
+    src/audio/gcc_phat.cpp \
+    src/ui/display_filter.cpp \
+    src/audio/post_checker.cpp \
     -o bin/test_host
 
 echo "=== [2/2] Executing Unit Test Suites ==="

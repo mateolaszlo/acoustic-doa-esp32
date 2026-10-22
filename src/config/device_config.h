@@ -1,6 +1,6 @@
 #pragma once
 #include <Arduino.h>
-#include "app_config.h"
+#include "config/app_config.h"
 
 static constexpr char DEFAULT_WIFI_SSID[]     = "";
 static constexpr char DEFAULT_WIFI_PASSWORD[] = "";

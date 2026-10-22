@@ -2,7 +2,7 @@
 #define DISPLAY_FILTER_H
 
 #include <cstdint>
-#include "app_config.h"
+#include "config/app_config.h"
 
 /**
  * @brief Circular S^1 angle smoothing filter for the 360-degree radar needle on the ST7735 TFT.
