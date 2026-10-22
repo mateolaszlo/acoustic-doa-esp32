@@ -21,25 +21,14 @@ DisplaySmoothingFilter::DisplaySmoothingFilter(float alpha,
       has_smoothed_angle(false) {}
 
 float DisplaySmoothingFilter::wrapAngle180(float deg) {
-    if (!std::isfinite(deg)) {
-        return 0.0f;
-    }
-    float wrapped = fmodf(deg + 180.0f, 360.0f);
-    if (wrapped < 0.0f) {
-        wrapped += 360.0f;
-    }
-    wrapped -= 180.0f;
-    if (wrapped == -180.0f && deg > 0.0f) {
-        return 180.0f;
-    }
-    return wrapped;
+    return wrap_angle_180(deg);
 }
 
 float DisplaySmoothingFilter::shortestAngularDiff(float target, float current) {
     if (!std::isfinite(target) || !std::isfinite(current)) {
         return 0.0f;
     }
-    return wrapAngle180(target - current);
+    return shortest_angular_diff(target, current);
 }
 
 float DisplaySmoothingFilter::update(float raw_angle, uint32_t now_ms) {

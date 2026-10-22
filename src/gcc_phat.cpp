@@ -34,21 +34,6 @@ constexpr MicPairDescriptor MIC_PAIRS[AUDIO_NUM_PAIRS] = {
     {0, 2, true,  -1.0f,  1.0f, 0, 1}  // Pair 5: Diagonal RB -> LF (-X, +Y), 300-1450 Hz
 };
 
-float wrap_angle_180(float angle_deg) {
-    if (!std::isfinite(angle_deg)) {
-        return 0.0f;
-    }
-    float wrapped = fmodf(angle_deg + 180.0f, 360.0f);
-    if (wrapped < 0.0f) {
-        wrapped += 360.0f;
-    }
-    wrapped -= 180.0f;
-    if (wrapped == -180.0f && angle_deg > 0.0f) {
-        return 180.0f;
-    }
-    return wrapped;
-}
-
 } // namespace
 
 float GccPhat::computeBandWeight(float frequency_hz, float min_hz,
@@ -406,135 +391,8 @@ void GccPhat::computePairCrossCorrelationIfft(size_t mic_i, size_t mic_j, const 
 }
 
 DoaResult GccPhat::process(const int32_t* left_channel, const int32_t* right_channel) {
-    DoaResult result = {0.0f, 0.0f, 0.0f, -100.0f, false};
-    if (left_channel == nullptr || right_channel == nullptr || fft_size == 0 ||
-        window == nullptr || band_weight_edge == nullptr ||
-        fft_ch[0] == nullptr || fft_ch[1] == nullptr || ccorr == nullptr) {
-        return result;
-    }
-
-    int64_t left_sum = 0;
-    int64_t right_sum = 0;
-    for (size_t i = 0; i < fft_size; i++) {
-        left_sum += static_cast<int64_t>(left_channel[i]);
-        right_sum += static_cast<int64_t>(right_channel[i]);
-    }
-    const int64_t fft_size_i64 = static_cast<int64_t>(fft_size);
-    const float inv_fft_size = 1.0f / static_cast<float>(fft_size);
-    const int64_t left_mean_int = left_sum / fft_size_i64;
-    const int64_t right_mean_int = right_sum / fft_size_i64;
-    const float left_mean_rem =
-        static_cast<float>(left_sum - left_mean_int * fft_size_i64) * inv_fft_size;
-    const float right_mean_rem =
-        static_cast<float>(right_sum - right_mean_int * fft_size_i64) * inv_fft_size;
-    const float inv_scale = 1.0f / PCM_INT32_TO_FLOAT_SCALE;
-
-    float energy_sum = 0.0f;
-
-    // 1. Odstranitev DC odmika, normalizacija in Hannovo oknenje
-    for (size_t i = 0; i < fft_size; i++) {
-        const float raw_s1 =
-            (static_cast<float>(static_cast<int64_t>(left_channel[i]) - left_mean_int) -
-             left_mean_rem) * inv_scale;
-        const float raw_s2 =
-            (static_cast<float>(static_cast<int64_t>(right_channel[i]) - right_mean_int) -
-             right_mean_rem) * inv_scale;
-
-        // Izračun neoknjene stereo energije obeh kanalov za simetrično zaznavo
-        energy_sum += 0.5f * (raw_s1 * raw_s1 + raw_s2 * raw_s2);
-
-        const float w = window[i];
-        // Komponente v kompleksni obliki [Real, Imag]
-        fft_ch[0][2 * i]     = raw_s1 * w;
-        fft_ch[0][2 * i + 1] = 0.0f;
-        fft_ch[1][2 * i]     = raw_s2 * w;
-        fft_ch[1][2 * i + 1] = 0.0f;
-    }
-
-    // Izračun ravni glasnosti (dBFS)
-    float rms = sqrtf(energy_sum * inv_fft_size);
-    result.rms_db = (rms > 1e-5f) ? 20.0f * log10f(rms) : NOISE_FLOOR_INITIAL_DB;
-
-    // 1b. Določitev praga zaznave (prilagodljivi šum okolice ali fiksni prag)
-    if (!updateNoiseFloorAndCheckGate(result.rms_db)) {
-        return result;
-    }
-
-    // 2. Izvedba FFT za oba kanala
-    dsps_fft2r_fc32(fft_ch[0], static_cast<int>(fft_size));
-    dsps_fft2r_fc32(fft_ch[1], static_cast<int>(fft_size));
-    dsps_bit_rev_fc32(fft_ch[0], static_cast<int>(fft_size));
-    dsps_bit_rev_fc32(fft_ch[1], static_cast<int>(fft_size));
-
-    // 3. Navzkrižni spekter moči z GCC-PHAT normalizacijo + 4. IFFT
-    computePairCrossCorrelationIfft(0, 1, band_weight_edge);
-
-    // 5. Iskanje vrha korelacije znotraj fizično mogočih zakasnitev
-    // Maksimalna možna zakasnitev (zvok prepotuje razdaljo d): tau_max = (d / c) * fs
-    int max_lag = (int)ceilf((d / c_sound) * fs) + 1;
-    if (max_lag >= static_cast<int>(fft_size)) {
-        max_lag = static_cast<int>(fft_size) - 1;
-    }
-
-    int best_idx = 0;
-    float best_peak = -1.0f;
-    const float norm_factor =
-        (weight_sum_edge > 1e-6f) ? weight_sum_edge : static_cast<float>(fft_size);
-
-    for (int lag = -max_lag; lag <= max_lag; lag++) {
-        int idx = (lag < 0) ? (static_cast<int>(fft_size) + lag) : lag;
-        float val = ccorr[2 * idx] / norm_factor; // Realni del po IFFT normaliziran na [0, 1]
-
-        if (val > best_peak) {
-            best_peak = val;
-            best_idx = lag;
-        }
-    }
-
-    result.confidence = (best_peak > 1.0f) ? 1.0f : (best_peak < 0.0f ? 0.0f : best_peak);
-
-    if (best_peak < correlation_threshold) {
-        return result; // Ni dovolj jasnega vrha (odmev ali šum)
-    }
-
-    // 6. Podvzorčna parabolična interpolacija (za višjo natančnost od 1 vzorca)
-    const int fft_size_int = static_cast<int>(fft_size);
-    const int idx_m1 = wrap_correlation_index(best_idx - 1, fft_size_int);
-    const int idx_p1 = wrap_correlation_index(best_idx + 1, fft_size_int);
-
-    float alpha = ccorr[2 * idx_m1] / norm_factor;
-    float beta  = best_peak;
-    float gamma = ccorr[2 * idx_p1] / norm_factor;
-
-    float p = 0.0f;
-    float denom = (alpha - 2.0f * beta + gamma);
-    if (fabsf(denom) > 1e-6f) {
-        p = 0.5f * (alpha - gamma) / denom;
-    }
-
-    float delta_samples = (float)best_idx + p;
-    float delta_t = delta_samples / fs; // Zakasnitev v sekundah
-
-    // Kompenzacija statičnega časovnega zamika med kanaloma (I2S/hardware bias):
-    // delta_t_offset = (d * sin(angle_offset)) / c
-    if (angle_offset_deg != 0.0f && std::isfinite(angle_offset_deg)) {
-        const float offset_rad = angle_offset_deg * (static_cast<float>(M_PI) / 180.0f);
-        const float delta_t_offset = (d * sinf(offset_rad)) / c_sound;
-        delta_t -= delta_t_offset;
-    }
-
-    // 7. Izračun vpadnega kota: theta = arcsin((c * delta_t) / d)
-    float ratio = (c_sound * delta_t) / d;
-
-    // Zaščita pred numeričnimi napakami zunaj [-1, 1]
-    if (ratio > 1.0f)  ratio = 1.0f;
-    if (ratio < -1.0f) ratio = -1.0f;
-
-    result.angle_deg = asinf(ratio) * (180.0f / M_PI);
-    result.delay_us = delta_t * 1e6f;
-    result.valid = true;
-
-    return result;
+    // 2-channel compatibility wrapper: delegates to quad array processing by mirroring stereo channels
+    return process(left_channel, right_channel, left_channel, right_channel);
 }
 
 DoaResult GccPhat::process(const int32_t* ch0, const int32_t* ch1,

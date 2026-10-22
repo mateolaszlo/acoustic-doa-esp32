@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <cstddef>
+#include <cmath>
 
 // ==============================================================================
 // 1. HARDWARE PINOUT & BUS SPEEDS
@@ -153,3 +154,25 @@ constexpr uint32_t SETUP_BOOT_DELAY_MS  = 3000;
 #define SETUP_AP_NAME                   "Acoustic-Locator-Setup"
 #define SETUP_AP_PASSWORD               "configure123"
 #define SETUP_AP_DEFAULT_IP_STR         "192.168.4.1"
+
+// ==============================================================================
+// 8. ANGULAR MATHEMATICS (CIRCULAR S^1 MANIFOLD)
+// ==============================================================================
+inline float wrap_angle_180(float angle_deg) {
+    if (!std::isfinite(angle_deg)) {
+        return 0.0f;
+    }
+    float wrapped = fmodf(angle_deg + 180.0f, 360.0f);
+    if (wrapped < 0.0f) {
+        wrapped += 360.0f;
+    }
+    wrapped -= 180.0f;
+    if (wrapped == -180.0f && angle_deg > 0.0f) {
+        wrapped = 180.0f;
+    }
+    return wrapped;
+}
+
+inline float shortest_angular_diff(float target_deg, float current_deg) {
+    return wrap_angle_180(target_deg - current_deg);
+}
