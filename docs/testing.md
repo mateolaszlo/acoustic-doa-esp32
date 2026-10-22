@@ -108,6 +108,21 @@ g++ -std=gnu++11 -O2 -Wall -Wextra -Werror -fsanitize=address,undefined \
 
 | Task | Tool / Command | Purpose |
 |---|---|---|
-| **Off-Target Feature Verification & Regression Prevention** | `make test` or `./scripts/run_tests.sh` | Fast ($<100\text{ ms}$), hardware-free verification of DSP algorithms, WLS solver, health checks, and circular smoothing with ASAN/UBSAN memory guarantees. |
-| **Target Firmware Compilation & Link Verification** | `pio run` | Compiles the full embedded firmware (`src/main.cpp`, Arduino core, FreeRTOS tasks, Octal PSRAM configuration, TFT/BME280 libraries) for the physical ESP32-S3 SoC. |
+| **Off-Target Feature Verification & Regression Prevention** | `make test` or `./scripts/run_tests.sh` | Fast ($<100\text{ ms}$), hardware-free verification of DSP algorithms, WLS solver, health checks, and circular smoothing with ASAN/UBSAN memory guarantees. Runs automatically in CI on every push and PR. |
+| **Target Firmware Compilation & Link Verification** | `pio run` | Compiles the full embedded firmware (`src/main.cpp`, Arduino core, FreeRTOS tasks, Octal PSRAM configuration, TFT/BME280 libraries) for the physical ESP32-S3 SoC. Runs in CI after unit tests pass. |
 | **Flashing & Live Hardware Debugging** | `pio run -t upload && pio device monitor` | Flashes the firmware to a connected ESP32-S3 board and opens the 115200 baud serial monitor with exception decoding. |
+
+---
+
+## 6. Continuous Integration (CI)
+
+The GitHub Actions workflow in [`.github/workflows/build.yml`](../.github/workflows/build.yml) implements a two-stage automated pipeline triggered on all pushes and pull requests to `main` and `feature/**` branches:
+
+1. **Host Unit Tests (`test` job)**:
+   - Executes `make test` under `ubuntu-latest`.
+   - Validates all 12 unit test suites with AddressSanitizer and UndefinedBehaviorSanitizer enabled.
+   - Fails fast in $<2\text{ s}$ if algorithmic regressions, memory corruption, or boundary violations occur.
+2. **PlatformIO Firmware Build (`build` job)**:
+   - Depends on the `test` job (`needs: test`).
+   - Caches pip and PlatformIO dependencies.
+   - Runs `pio run` to verify that the cross-compilation for the `esp32-s3-devkitc-1-n16r8` board links and packages without errors.

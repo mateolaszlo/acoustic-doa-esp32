@@ -1,15 +1,28 @@
-name: Build Firmware
+name: CI / Build & Test
 
 on:
   push:
-    branches: [ main, oled-ssd1306 ]
+    branches: [ main, 'feature/**', oled-ssd1306 ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, 'feature/**' ]
   workflow_dispatch:
 
 jobs:
+  test:
+    name: Host Unit Tests (ASAN & UBSAN)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Host Unit Tests
+        run: |
+          make test
+
   build:
-    name: PlatformIO Build
+    name: PlatformIO Firmware Build
+    needs: test
     runs-on: ubuntu-latest
 
     steps:
