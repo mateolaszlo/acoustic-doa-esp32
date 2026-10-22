@@ -112,6 +112,7 @@ extern "C" {
 #include "../src/display_filter.h"
 #include "../src/post_checker.h"
 #include "../src/i2s_sampler.h"
+#include "../src/rest_protocol.h"
 
 // Test 1: GccPhat adaptive noise floor tracking
 void test_gcc_phat_adaptive_noise_floor() {
@@ -1286,6 +1287,96 @@ static void test_display_circular_smoothing_and_outliers() {
     printf("  [PASS] test_display_circular_smoothing_and_outliers passed.\n");
 }
 
+static void test_rest_binary_batch_serialization() {
+    printf("[TEST] Running test_rest_binary_batch_serialization...\n");
+
+    assert(MEASUREMENT_BATCH_VERSION == 1);
+    assert(MEASUREMENT_BATCH_HEADER_SIZE == 12);
+    assert(MEASUREMENT_RECORD_SIZE == 20);
+
+    uint8_t buffer[256];
+    std::memset(buffer, 0, sizeof(buffer));
+
+    NetworkMeasurement batch[2];
+    batch[0].result = {45.0f, 168.59f, 0.85f, -20.0f, true};
+    batch[0].timestamp_ms = 1704067200000ULL;
+    batch[0].clock_flags = CLOCK_FLAG_UTC_SYNCHRONIZED;
+
+    batch[1].result = {-90.0f, -238.43f, 0.92f, -15.0f, true};
+    batch[1].timestamp_ms = 1704067200023ULL; // +23 ms
+    batch[1].clock_flags = CLOCK_FLAG_UTC_SYNCHRONIZED;
+
+    const float db_spl_offset = 96.5f;
+
+    // 1. Nominal batch of 2 records: 12 + 2 * 20 = 52 bytes
+    const size_t bytes = serialize_measurement_batch(batch, 2, buffer, sizeof(buffer), db_spl_offset);
+    assert(bytes == 52);
+
+    // Verify 12-byte header
+    assert(buffer[0] == 1); // Format version
+    assert(buffer[1] == 2); // Measurement count
+    uint16_t flags_read = static_cast<uint16_t>(buffer[2]) | (static_cast<uint16_t>(buffer[3]) << 8);
+    assert(flags_read == CLOCK_FLAG_UTC_SYNCHRONIZED);
+
+    uint64_t base_time_read = 0;
+    for (size_t b = 0; b < 8; ++b) {
+        base_time_read |= (static_cast<uint64_t>(buffer[4 + b]) << (b * 8));
+    }
+    assert(base_time_read == 1704067200000ULL);
+
+    // Verify Record 0 (offset 12)
+    uint32_t delta0_read = 0;
+    for (size_t b = 0; b < 4; ++b) delta0_read |= (static_cast<uint32_t>(buffer[12 + b]) << (b * 8));
+    assert(delta0_read == 0);
+
+    float angle0_read = 0.0f;
+    uint32_t bits = 0;
+    for (size_t b = 0; b < 4; ++b) bits |= (static_cast<uint32_t>(buffer[16 + b]) << (b * 8));
+    std::memcpy(&angle0_read, &bits, sizeof(bits));
+    assert(fabsf(angle0_read - 45.0f) < 1e-4f);
+
+    float spl0_read = 0.0f;
+    bits = 0;
+    for (size_t b = 0; b < 4; ++b) bits |= (static_cast<uint32_t>(buffer[24 + b]) << (b * 8));
+    std::memcpy(&spl0_read, &bits, sizeof(bits));
+    assert(fabsf(spl0_read - (-20.0f + 96.5f)) < 1e-4f);
+
+    float conf0_read = 0.0f;
+    bits = 0;
+    for (size_t b = 0; b < 4; ++b) bits |= (static_cast<uint32_t>(buffer[28 + b]) << (b * 8));
+    std::memcpy(&conf0_read, &bits, sizeof(bits));
+    assert(fabsf(conf0_read - 0.85f) < 1e-4f);
+
+    // Verify Record 1 (offset 32)
+    uint32_t delta1_read = 0;
+    for (size_t b = 0; b < 4; ++b) delta1_read |= (static_cast<uint32_t>(buffer[32 + b]) << (b * 8));
+    assert(delta1_read == 23);
+
+    float angle1_read = 0.0f;
+    bits = 0;
+    for (size_t b = 0; b < 4; ++b) bits |= (static_cast<uint32_t>(buffer[36 + b]) << (b * 8));
+    std::memcpy(&angle1_read, &bits, sizeof(bits));
+    assert(fabsf(angle1_read - (-90.0f)) < 1e-4f);
+
+    // 2. Error handling: buffer too small
+    assert(serialize_measurement_batch(batch, 2, buffer, 51, db_spl_offset) == 0);
+    // 3. Error handling: nullptr
+    assert(serialize_measurement_batch(nullptr, 2, buffer, sizeof(buffer), db_spl_offset) == 0);
+    assert(serialize_measurement_batch(batch, 2, nullptr, sizeof(buffer), db_spl_offset) == 0);
+    // 4. Error handling: count = 0 or count > 8
+    assert(serialize_measurement_batch(batch, 0, buffer, sizeof(buffer), db_spl_offset) == 0);
+    assert(serialize_measurement_batch(batch, 9, buffer, sizeof(buffer), db_spl_offset) == 0);
+    // 5. Error handling: mismatched clock flags
+    batch[1].clock_flags = CLOCK_FLAG_MONOTONIC_UPTIME;
+    assert(serialize_measurement_batch(batch, 2, buffer, sizeof(buffer), db_spl_offset) == 0);
+    // 6. Error handling: non-monotonic timestamps (clock backwards)
+    batch[1].clock_flags = CLOCK_FLAG_UTC_SYNCHRONIZED;
+    batch[1].timestamp_ms = 1704067199999ULL; // -1 ms
+    assert(serialize_measurement_batch(batch, 2, buffer, sizeof(buffer), db_spl_offset) == 0);
+
+    printf("  [PASS] test_rest_binary_batch_serialization passed.\n");
+}
+
 int main() {
     test_gcc_phat_adaptive_noise_floor();
     test_display_smoothing_filter();
@@ -1298,6 +1389,7 @@ int main() {
     test_gcc_phat_quad_wls_all_quadrants();
     test_gcc_phat_loop_closure_multipath_rejection();
     test_display_circular_smoothing_and_outliers();
+    test_rest_binary_batch_serialization();
     printf("\nAll unit tests passed successfully!\n");
     return 0;
 }
