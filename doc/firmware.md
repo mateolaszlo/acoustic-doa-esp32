@@ -5,7 +5,13 @@
 | File | Responsibility |
 |---|---|
 | `src/app_config.h` | Central hardware pinout, 4-mic topology, dual-band DSP cutoffs, FreeRTOS task, and radar UI constants |
-| `src/main.cpp` | Setup portal, NVS configuration, Wi-Fi/API, 360° TFT radar & BME280, FreeRTOS tasks |
+| `src/main.cpp` | FreeRTOS tasks orchestration (`dsp_task`, `sensor_display_task`, `network_task`), peripheral setup, and system initialization |
+| `src/device_config.h` | Device configuration data structures, network settings, acoustic threshold parameters, and calibration values |
+| `src/config_store.h` / `src/config_store.cpp` | Persistent NVS storage load/save routines via ESP32 `Preferences` API |
+| `src/radar_ui.h` / `src/radar_ui.cpp` | 360° circular radar scope rendering, polar needle visualization, POST checklist prompt, degraded screen, and setup portal UI on ST7735 TFT |
+| `src/setup_portal.h` / `src/setup_portal.cpp` | SoftAP captive portal and embedded HTTP web server for device Wi-Fi and calibration provisioning |
+| `src/rest_protocol.h` | Hardware-independent 12-byte header / 20-byte record binary batch serialization format and little-endian packing |
+| `src/rest_client.h` / `src/rest_client.cpp` | HTTP keep-alive batch transmission (`POST /api/v1/meritve`) and remote calibration retrieval (`GET /api/v1/naprave/{id}/kalibracija`) |
 | `src/i2s_sampler.h` / `src/i2s_sampler.cpp` | Synchronized dual-I2S (`I2S0` Master RX + `I2S1` Slave RX via GPIO Matrix) driver installation and 4-channel quad DMA reads (`read_i2s_quad`) |
 | `src/display_filter.h` / `src/display_filter.cpp` | Circular $S^1$ EMA smoothing (`wrapAngle180`, `shortestAngularDiff`), outlier rejection across $\pm 180^\circ$, and radar needle angle calculation |
 | `src/post_checker.h` / `src/post_checker.cpp` | Power-On Self-Test (POST) 4-microphone health heuristics (`evaluate_quad_microphone_health`) and bus collision detection |
