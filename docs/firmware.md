@@ -36,9 +36,9 @@ The DSP task reads a synchronized 4-channel audio block via `read_i2s_quad()`. T
    - Compute full $360^\circ$ azimuth clockwise from North/Front ($+Y = 0^\circ$, $+X = +90^\circ$, $\pm 180^\circ = -Y$, $-X = -90^\circ$):
      $$\phi_{\text{raw}} = \text{atan2f}(\hat{u}_x, \hat{u}_y) \cdot \frac{180^\circ}{\pi} \in [-180^\circ, +180^\circ]$$
    - Apply rotational zero-angle offset compensation with circular wrap-around into $[-180^\circ, +180^\circ]$:
-     $$\phi_{\text{cal}} = \text{wrap}_{180}(\phi_{\text{raw}} - \text{angle\_offset\_deg})$$
-   - Report equivalent projected broadside delay along the X-axis baseline:
-     $$\text{delay\_us} = \left(\frac{d \cdot \sin(\phi_{\text{cal}} \cdot \pi / 180^\circ)}{c}\right) \times 10^6$$
+     $$\phi_{\text{cal}} = \text{wrap}_{180}(\phi_{\text{raw}} - \phi_{\text{offset}})$$
+   - Report equivalent projected broadside delay along the X-axis baseline (`delay_us`):
+     $$\tau_{\text{proj}} = \left(\frac{d \cdot \sin(\phi_{\text{cal}} \cdot \pi / 180^\circ)}{c}\right) \times 10^6 \quad [\mu\text{s}]$$
 
 ### Adaptive Noise Floor Tracking
 
@@ -46,11 +46,11 @@ The pipeline supports an adaptive noise floor tracker implemented as an asymmetr
 
 1. **Noise floor tracking**:
    - When the signal level drops below the current noise floor estimate, it tracks downward rapidly ($\alpha_{\text{down}} = 0.02$, $\tau \approx 1\text{ s}$ at $\sim 43\text{ Hz}$).
-   - When the signal is between the noise floor and the trigger threshold ($\text{noise\_floor} + \text{snr\_margin}$), it tracks upward slowly ($\alpha_{\text{up}} = 0.005$, $\tau \approx 5\text{ s}$).
+   - When the signal is between the noise floor and the trigger threshold ($P_{\text{noise}} + \text{SNR}_{\text{margin}}$), it tracks upward slowly ($\alpha_{\text{up}} = 0.005$, $\tau \approx 5\text{ s}$).
    - When an active sound event occurs (signal exceeds trigger threshold), adaptation drops to a very slow rate ($\alpha_{\text{event}} = 0.0005$) to prevent sustained speech or alarms from pulling up the noise floor and extinguishing detection.
    - The noise floor estimate is clamped to $[-85.0, -20.0]\text{ dBFS}$.
 2. **Threshold evaluation**:
-   - If adaptive thresholding is enabled, the effective threshold is $\text{noise\_floor} + \text{snr\_margin\_db}$.
+   - If adaptive thresholding is enabled, the effective threshold is $P_{\text{noise}} + \text{SNR}_{\text{margin}}$ (`noise_floor + snr_margin_db`).
    - If disabled, the fixed threshold `db_threshold` (derived from `sound_level_threshold_db_spl - db_spl_offset`) is used.
    - Signal blocks below the effective threshold bypass the compute-intensive FFT cross-correlation steps.
 

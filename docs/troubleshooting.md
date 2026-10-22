@@ -88,7 +88,7 @@ If forward sounds point to a non-zero angle (e.g. `+7.0°`) and the needle reach
   1. Measure the exact acoustic port hole-to-hole distance (default is `0.082 m` / 82 mm).
   2. Hold the BOOT button on startup to open the Captive Portal (`192.168.4.1`).
   3. Enter the observed forward angle into `Zero angle offset (deg)` (e.g. `7.0`).
-  4. Save and reboot. The firmware applies the angular offset trim on the circular manifold $\phi_{\text{cal}} = \text{wrap}_{180}(\phi_{\text{raw}} - \text{angle\_offset\_deg})$, restoring accurate, symmetric full $360^\circ$ $[-180^\circ, +180^\circ]$ tracking.
+  4. Save and reboot. The firmware applies the angular offset trim on the circular manifold $\phi_{\text{cal}} = \text{wrap}_{180}(\phi_{\text{raw}} - \phi_{\text{offset}})$ (where $\phi_{\text{offset}}$ is `angle_offset_deg`), restoring accurate, symmetric full $360^\circ$ $[-180^\circ, +180^\circ]$ tracking.
 
 ## API returns 401 or 403
 
