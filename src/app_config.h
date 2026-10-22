@@ -9,8 +9,8 @@
 constexpr int I2S_MASTER_PORT_NUM       = 0;
 constexpr int I2S_SLAVE_PORT_NUM        = 1;
 constexpr int I2S_PORT_NUM              = I2S_MASTER_PORT_NUM;
-constexpr int I2S_BCLK_PIN              = 4;
-constexpr int I2S_WS_PIN                = 5;
+constexpr int I2S_BCLK_PIN              = 5;
+constexpr int I2S_WS_PIN                = 4;
 constexpr int I2S_DIN0_PIN              = 6;
 constexpr int I2S_DIN1_PIN              = 7;
 constexpr int I2S_DIN_PIN               = I2S_DIN0_PIN;

@@ -4,7 +4,7 @@
 
 /**
  * @brief Initializes the synchronized dual-I2S 4-microphone capture subsystem:
- *        - I2S0 (Master RX) on BCLK (GPIO 4), WS (GPIO 5), DIN0 (GPIO 6) for Mics 0 & 1.
+ *        - I2S0 (Master RX) on BCLK (GPIO 5), WS (GPIO 4), DIN0 (GPIO 6) for Mics 0 & 1.
  *        - I2S1 (Slave RX) on DIN1 (GPIO 7) sharing BCLK/WS internally via the ESP32-S3
  *          GPIO Matrix for Mics 2 & 3, armed in Slave-before-Master startup order.
  */

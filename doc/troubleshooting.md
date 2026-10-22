@@ -67,9 +67,9 @@ If unavailable, the firmware retains its default temperature/sound-speed values 
 
 Check:
 
-- Both microphones share BCLK, WS, and DATA.
-- One microphone is in the left slot and the other in the right slot.
-- GPIO 4, 5, and 6 are wired correctly.
+- Microphones share BCLK (GPIO 5) and WS (GPIO 4).
+- Microphones are set to their designated L/R slots (GND for Left, VDD for Right).
+- BCLK (GPIO 5), WS (GPIO 4), and DATA lines (GPIO 6 for Bus 0, GPIO 7 for Bus 1) are wired correctly.
 - Microphone distance matches the configured physical spacing.
 - The signal is above the configured threshold.
 - The correlation threshold is not too high.

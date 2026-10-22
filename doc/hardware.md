@@ -12,8 +12,8 @@ The project includes a custom PlatformIO board definition at [boards/esp32-s3-de
 
 | Function | ESP32-S3 GPIO | Firmware definition |
 |---|---:|---|
-| I2S bit clock (BCLK/SCK, shared Bus 0 & Bus 1) | GPIO 4 | `I2S_BCLK_PIN` |
-| I2S word select (WS/LRCLK, shared Bus 0 & Bus 1) | GPIO 5 | `I2S_WS_PIN` |
+| I2S bit clock (BCLK/SCK, shared Bus 0 & Bus 1) | GPIO 5 | `I2S_BCLK_PIN` |
+| I2S word select (WS/LRCLK, shared Bus 0 & Bus 1) | GPIO 4 | `I2S_WS_PIN` |
 | I2S Bus 0 microphone data (Mic 0 & Mic 1) | GPIO 6 | `I2S_DIN0_PIN` (`I2S_DIN_PIN`) |
 | I2S Bus 1 microphone data (Mic 2 & Mic 3) | GPIO 7 | `I2S_DIN1_PIN` |
 | I2C SDA (BME280) | GPIO 8 | `I2C_SDA_PIN` |
@@ -34,11 +34,11 @@ GPIO numbers and peripheral setup are defined in [app_config.h](../src/app_confi
 
 The firmware uses four synchronized digital I2S microphones (e.g., INMP441) arranged in a horizontal 2D planar square of side length $d = 82\text{ mm}$ (`DEFAULT_MIC_DISTANCE_M = 0.082f`) to resolve full $360^\circ$ azimuth ($\phi \in [-180^\circ, +180^\circ]$, where $0^\circ = \text{Front/North/+Y}$, $+90^\circ = \text{Right/East/+X}$, $\pm 180^\circ = \text{Back/South/-Y}$, and $-90^\circ = \text{Left/West/-X}$):
 
-- **Shared Clock Bus**: All four microphones share `BCLK` (`GPIO 4`) and `WS/LRCLK` (`GPIO 5`).
+- **Shared Clock Bus**: All four microphones share `BCLK` (`GPIO 5`) and `WS/LRCLK` (`GPIO 4`).
 - **Dual ESP32-S3 I2S Controllers via GPIO Matrix**:
-  - `I2S0` (`I2S_MASTER_PORT_NUM = 0`) operates as Master RX, driving `BCLK` on `GPIO 4` and `WS` on `GPIO 5` while sampling stereo Pair A (`Mic 0` and `Mic 1`) on `GPIO 6` (`I2S_DIN0_PIN`).
+  - `I2S0` (`I2S_MASTER_PORT_NUM = 0`) operates as Master RX, driving `BCLK` on `GPIO 5` and `WS` on `GPIO 4` while sampling stereo Pair A (`Mic 0` and `Mic 1`) on `GPIO 6` (`I2S_DIN0_PIN`).
   - `I2S1` (`I2S_SLAVE_PORT_NUM = 1`) operates as Slave RX, sampling stereo Pair B (`Mic 2` and `Mic 3`) on `GPIO 7` (`I2S_DIN1_PIN`).
-  - `GPIO 4` and `GPIO 5` are configured in `GPIO_MODE_INPUT_OUTPUT` and routed internally through the ESP32-S3 GPIO Matrix (`I2S1I_BCK_IN_IDX` and `I2S1I_WS_IN_IDX`) so `I2S1` locks onto `I2S0`'s bit clock and frame sync without external loopback jumpers.
+  - `GPIO 5` and `GPIO 4` are configured in `GPIO_MODE_INPUT_OUTPUT` and routed internally through the ESP32-S3 GPIO Matrix (`I2S1I_BCK_IN_IDX` and `I2S1I_WS_IN_IDX`) so `I2S1` locks onto `I2S0`'s bit clock and frame sync without external loopback jumpers.
   - To guarantee zero inter-bus sample slip, `I2S1` (Slave) is armed via `i2s_start(I2S_NUM_1)` before `I2S0` (Master) starts outputting clocks via `i2s_start(I2S_NUM_0)`.
 
 | Microphone | Array Corner | Coordinates $(x, y)$ | I2S Peripheral | Data Pin | L/R Slot (`L/R` Pin) |
@@ -50,8 +50,8 @@ The firmware uses four synchronized digital I2S microphones (e.g., INMP441) arra
 
 | I2S signal | ESP32-S3 | Mic 0 (RB) | Mic 1 (RF) | Mic 2 (LF) | Mic 3 (LB) |
 |---|---:|---|---|---|---|
-| BCLK | GPIO 4 | BCLK/SCK | BCLK/SCK | BCLK/SCK | BCLK/SCK |
-| WS/LRCLK | GPIO 5 | WS/LRCLK | WS/LRCLK | WS/LRCLK | WS/LRCLK |
+| BCLK | GPIO 5 | BCLK/SCK | BCLK/SCK | BCLK/SCK | BCLK/SCK |
+| WS/LRCLK | GPIO 4 | WS/LRCLK | WS/LRCLK | WS/LRCLK | WS/LRCLK |
 | DATA Bus 0 | GPIO 6 | SD/data | SD/data | — | — |
 | DATA Bus 1 | GPIO 7 | — | — | SD/data | SD/data |
 | Channel select (`L/R`) | N/A | Left (`GND`) | Right (`VDD`) | Left (`GND`) | Right (`VDD`) |

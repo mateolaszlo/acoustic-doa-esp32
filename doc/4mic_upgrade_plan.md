@@ -16,8 +16,8 @@ Key capabilities introduced by this upgrade:
 
 > [!IMPORTANT]
 > **Pin Assignment for Second Stereo I2S Data Line (`I2S_DIN1_PIN`):**
-> - `I2S0` (Mic Pair A: Mic 0 Right-Back & Mic 1 Right-Front) uses existing `GPIO 4` (`BCLK`), `GPIO 5` (`WS`), and `GPIO 6` (`I2S_DIN0_PIN`).
-> - `I2S1` (Mic Pair B: Mic 2 Left-Front & Mic 3 Left-Back) shares `BCLK` (`GPIO 4`) and `WS` (`GPIO 5`) internally via the ESP32-S3 GPIO Matrix (`GPIO_MODE_INPUT_OUTPUT` + `esp_rom_gpio_connect_in_signal`) and uses **`GPIO 7` (`I2S_DIN1_PIN`)** for its stereo SD data line.
+> - `I2S0` (Mic Pair A: Mic 0 Right-Back & Mic 1 Right-Front) uses `GPIO 5` (`BCLK`), `GPIO 4` (`WS`), and `GPIO 6` (`I2S_DIN0_PIN`).
+> - `I2S1` (Mic Pair B: Mic 2 Left-Front & Mic 3 Left-Back) shares `BCLK` (`GPIO 5`) and `WS` (`GPIO 4`) internally via the ESP32-S3 GPIO Matrix (`GPIO_MODE_INPUT_OUTPUT` + `esp_rom_gpio_connect_in_signal`) and uses **`GPIO 7` (`I2S_DIN1_PIN`)** for its stereo SD data line.
 > - Confirm whether `GPIO 7` is convenient on your breadboard/PCB layout, or if you prefer a different free GPIO (e.g., `GPIO 15` or `GPIO 16`).
 
 > [!NOTE]
@@ -34,7 +34,7 @@ Key capabilities introduced by this upgrade:
 |---|---|---|
 | [`src/app_config.h`](../src/app_config.h) | **MODIFY** | - Add `AUDIO_NUM_CHANNELS = 4` and `AUDIO_NUM_PAIRS = 6`.<br/>- Add `I2S_SLAVE_PORT_NUM = 1` and `I2S_DIN1_PIN = 7` (keeping `I2S_DIN_PIN = 6` aliased to `I2S_DIN0_PIN`).<br/>- Add dual-band cutoff constants: `GCC_PHAT_MIN_HZ = 300.0f`, `GCC_PHAT_EDGE_MAX_HZ = 2200.0f`, `GCC_PHAT_DIAG_MAX_HZ = 1450.0f`, `GCC_PHAT_RAMP_HZ = 100.0f`.<br/>- Add loop-closure threshold `DOA_LOOP_CLOSURE_TOLERANCE_SAMPLES = 1.5f`.<br/>- Expand `ANGLE_OFFSET_MIN_DEG = -180.0f` and `ANGLE_OFFSET_MAX_DEG = 180.0f`.<br/>- Update radar center geometry constants for $360^\circ$ circular layout (`RADAR_CENTER_X = 64`, `RADAR_CENTER_Y = 44`, `RADAR_RADIUS = 34`). |
 | [`src/i2s_sampler.h`](../src/i2s_sampler.h) | **NEW** | - Declare `init_i2s_microphones(uint32_t sample_rate)`, `deinit_i2s_microphones()`, `read_i2s_quad(int32_t* ch0, int32_t* ch1, int32_t* ch2, int32_t* ch3, size_t count)`, and legacy wrapper `read_i2s_stereo(int32_t* left, int32_t* right, size_t count)`. |
-| [`src/i2s_sampler.cpp`](../src/i2s_sampler.cpp) | **MODIFY** | - Configure `I2S0` as Master RX (`I2S_MODE_MASTER \| I2S_MODE_RX`) and `I2S1` as Slave RX (`I2S_MODE_SLAVE \| I2S_MODE_RX`).<br/>- Route `GPIO 4` (`BCLK`) and `GPIO 5` (`WS`) to both `I2S0` output and `I2S1` input (`I2S1I_BCK_IN_IDX`, `I2S1I_WS_IN_IDX`) via `GPIO_MODE_INPUT_OUTPUT` and `esp_rom_gpio_connect_in_signal()`.<br/>- Enforce deterministic Slave-first startup (`i2s_start(I2S_NUM_1)` then `i2s_start(I2S_NUM_0)`) and synchronous 6-block warmup discard.<br/>- Implement `read_i2s_quad()` demuxing `I2S0` stereo DMA into `(ch0, ch1)` and `I2S1` stereo DMA into `(ch2, ch3)`. |
+| [`src/i2s_sampler.cpp`](../src/i2s_sampler.cpp) | **MODIFY** | - Configure `I2S0` as Master RX (`I2S_MODE_MASTER \| I2S_MODE_RX`) and `I2S1` as Slave RX (`I2S_MODE_SLAVE \| I2S_MODE_RX`).<br/>- Route `GPIO 5` (`BCLK`) and `GPIO 4` (`WS`) to both `I2S0` output and `I2S1` input (`I2S1I_BCK_IN_IDX`, `I2S1I_WS_IN_IDX`) via `GPIO_MODE_INPUT_OUTPUT` and `esp_rom_gpio_connect_in_signal()`.<br/>- Enforce deterministic Slave-first startup (`i2s_start(I2S_NUM_1)` then `i2s_start(I2S_NUM_0)`) and synchronous 6-block warmup discard.<br/>- Implement `read_i2s_quad()` demuxing `I2S0` stereo DMA into `(ch0, ch1)` and `I2S1` stereo DMA into `(ch2, ch3)`. |
 | [`src/post_checker.h`](../src/post_checker.h) | **MODIFY** | - Expand `MicrophoneHealthResult` (or add `QuadMicrophoneHealthResult` while keeping 2-mic fields/overload for compatibility) with per-channel health `ch_ok[4]`, `ch_rms_db[4]`, `ch_min[4]`, `ch_max[4]`, `bus0_distinct` (Mic 0 vs Mic 1), `bus1_distinct` (Mic 2 vs Mic 3), and `cross_bus_distinct` (Bus 0 vs Bus 1). |
 | [`src/post_checker.cpp`](../src/post_checker.cpp) | **MODIFY** | - Implement `evaluate_quad_microphone_health(const int32_t* const channels[4], size_t count)` validating variance, flatline (`<= -95 dBFS`), rail short (`>= -3 dBFS`), and pairwise collision (`< 85%` identical samples) across all 4 channels. |
 | [`src/gcc_phat.h`](../src/gcc_phat.h) | **MODIFY** | - Add 4-channel `DoaResult process(const int32_t* ch0, const int32_t* ch1, const int32_t* ch2, const int32_t* ch3)` alongside legacy 2-channel `process(left, right)`.<br/>- Extend `DoaResult` with optional diagnostic telemetry (`float pair_confidence_mean`, `float loop_residual_us`, `uint8_t active_pairs`).<br/>- Replace `fft_x1`, `fft_x2` pointers with `float* fft_ch[AUDIO_NUM_CHANNELS]`, plus precomputed weight buffers `float* band_weight_edge` and `float* band_weight_diag`. |
@@ -62,7 +62,7 @@ flowchart LR
         GM -->|"I2S1I_WS_IN_IDX"| I2S1
     end
 
-    GM ===|"GPIO 4 (BCLK)<br/>GPIO 5 (WS)"| BUS["Shared Clock Bus"]
+    GM ===|"GPIO 5 (BCLK)<br/>GPIO 4 (WS)"| BUS["Shared Clock Bus"]
     BUS --> PAIR_A["Mic Pair A (Right Edge)<br/>Mic 0 (L/GND): (+d/2, -d/2)<br/>Mic 1 (R/VDD): (+d/2, +d/2)"]
     BUS --> PAIR_B["Mic Pair B (Left Edge)<br/>Mic 2 (L/GND): (-d/2, +d/2)<br/>Mic 3 (R/VDD): (-d/2, -d/2)"]
 
@@ -76,7 +76,7 @@ flowchart LR
    - **Solution**:
      1. Call `i2s_set_pin(I2S_NUM_0, ...)` with `bck_io_num = 4`, `ws_io_num = 5`, `data_in_num = 6`.
      2. Call `i2s_set_pin(I2S_NUM_1, ...)` with `bck_io_num = I2S_PIN_NO_CHANGE`, `ws_io_num = I2S_PIN_NO_CHANGE`, `data_in_num = 7`.
-     3. Re-enable bidirectional pad mode on `GPIO 4` and `GPIO 5` (`gpio_set_direction(pin, GPIO_MODE_INPUT_OUTPUT)`) and bind `I2S0`'s output signals and `I2S1`'s slave input signals (`I2S1I_BCK_IN_IDX`, `I2S1I_WS_IN_IDX`) to `GPIO 4` and `GPIO 5` via `esp_rom_gpio_connect_in_signal()` and `esp_rom_gpio_connect_out_signal()`.
+     3. Re-enable bidirectional pad mode on `GPIO 5` and `GPIO 4` (`gpio_set_direction(pin, GPIO_MODE_INPUT_OUTPUT)`) and bind `I2S0`'s output signals and `I2S1`'s slave input signals (`I2S1I_BCK_IN_IDX`, `I2S1I_WS_IN_IDX`) to `GPIO 5` and `GPIO 4` via `esp_rom_gpio_connect_in_signal()` and `esp_rom_gpio_connect_out_signal()`.
 2. **Deterministic Slave-Before-Master Startup Sequence**:
    - After installing both drivers, explicitly pause both controllers (`i2s_stop(I2S_NUM_0)`, `i2s_stop(I2S_NUM_1)`).
    - Clear DMA descriptor rings on both (`i2s_zero_dma_buffer(I2S_NUM_1)`, `i2s_zero_dma_buffer(I2S_NUM_0)`).
@@ -213,8 +213,8 @@ Every task, sub-step, and verification gate is structured as an actionable `- [ 
 - [x] **Step 1.1 — Update Hardware & Audio Constants in [`src/app_config.h`](../src/app_config.h)**:
   - [x] Add `AUDIO_NUM_CHANNELS = 4`, `AUDIO_NUM_PAIRS = 6`, `I2S_MASTER_PORT_NUM = 0`, `I2S_SLAVE_PORT_NUM = 1`, `I2S_DIN0_PIN = 6`, and `I2S_DIN1_PIN = 7`.
 - [x] **Step 1.2 — Create [`src/i2s_sampler.h`](../src/i2s_sampler.h) & Upgrade [`src/i2s_sampler.cpp`](../src/i2s_sampler.cpp)**:
-  - [x] Configure `I2S_NUM_0` as Master RX (`GPIO 4` BCLK, `GPIO 5` WS, `GPIO 6` DIN0) and `I2S_NUM_1` as Slave RX (`GPIO 7` DIN1).
-  - [x] Bind `GPIO 4` and `GPIO 5` in `GPIO_MODE_INPUT_OUTPUT` through the ESP32-S3 GPIO Matrix (`esp_rom_gpio_connect_in_signal` to `I2S1I_BCK_IN_IDX` and `I2S1I_WS_IN_IDX`) so `I2S1` locks onto `I2S0`'s clock without extra external jumpers.
+  - [x] Configure `I2S_NUM_0` as Master RX (`GPIO 5` BCLK, `GPIO 4` WS, `GPIO 6` DIN0) and `I2S_NUM_1` as Slave RX (`GPIO 7` DIN1).
+  - [x] Bind `GPIO 5` and `GPIO 4` in `GPIO_MODE_INPUT_OUTPUT` through the ESP32-S3 GPIO Matrix (`esp_rom_gpio_connect_in_signal` to `I2S1I_BCK_IN_IDX` and `I2S1I_WS_IN_IDX`) so `I2S1` locks onto `I2S0`'s clock without extra external jumpers.
   - [x] Implement deterministic startup: `i2s_stop` both $\to$ `i2s_zero_dma_buffer` both $\to$ `i2s_start(I2S_NUM_1)` (Slave first) $\to$ `i2s_start(I2S_NUM_0)` (Master second) $\to$ discard `POST_WARMUP_BLOCKS` (6 blocks) from both ports.
   - [x] Implement `read_i2s_quad(int32_t* ch0, int32_t* ch1, int32_t* ch2, int32_t* ch3, size_t count)` and keep `read_i2s_stereo()` as a 2-channel wrapper.
 - [x] **Step 1.3 — Upgrade 4-Mic Health Heuristics in [`src/post_checker.h`](../src/post_checker.h) & [`src/post_checker.cpp`](../src/post_checker.cpp)**:

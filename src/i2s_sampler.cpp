@@ -40,7 +40,7 @@ bool init_i2s_microphones(uint32_t sample_rate) {
     };
 
     // Pass I2S_PIN_NO_CHANGE for BCLK/WS on Slave so i2s_set_pin() does not
-    // reconfigure GPIO 4/5 as input-only and disable I2S0's clock output drivers.
+    // reconfigure GPIO 5/4 as input-only and disable I2S0's clock output drivers.
     i2s_pin_config_t slave_pins = {
         .mck_io_num = I2S_PIN_NO_CHANGE,
         .bck_io_num = I2S_PIN_NO_CHANGE,
@@ -76,7 +76,7 @@ bool init_i2s_microphones(uint32_t sample_rate) {
         return false;
     }
 
-    // Route GPIO 4 (BCLK) and GPIO 5 (WS) bidirectionally through the ESP32-S3
+    // Route GPIO 5 (BCLK) and GPIO 4 (WS) bidirectionally through the ESP32-S3
     // GPIO Matrix so I2S0 drives the external clock pads while I2S1 receives
     // the exact same BCLK/WS edges internally without external jumper wires.
     gpio_set_direction(static_cast<gpio_num_t>(I2S_BCLK_PIN), GPIO_MODE_INPUT_OUTPUT);

@@ -621,6 +621,8 @@ static void test_app_config_consistency() {
     assert(I2S_MASTER_PORT_NUM == 0);
     assert(I2S_SLAVE_PORT_NUM == 1);
     assert(I2S_PORT_NUM == I2S_MASTER_PORT_NUM);
+    assert(I2S_BCLK_PIN == 5);
+    assert(I2S_WS_PIN == 4);
     assert(I2S_DIN0_PIN == 6);
     assert(I2S_DIN1_PIN == 7);
     assert(I2S_DIN_PIN == I2S_DIN0_PIN);
