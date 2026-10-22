@@ -1,7 +1,6 @@
 #include "rest_client.h"
 #include <WiFi.h>
-
-static constexpr time_t MIN_VALID_EPOCH = 1704067200; // 2024-01-01 UTC
+#include <atomic>
 
 RestClient::RestClient() : http_initialized(false) {}
 

@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <atomic>
 #include "rest_protocol.h"
 #include "device_config.h"
 
