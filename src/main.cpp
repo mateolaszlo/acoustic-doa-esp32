@@ -401,79 +401,116 @@ static void show_boot_prompt(uint32_t remaining_ms, uint32_t total_ms, const Boo
     canvas.println("ACOUSTIC LOCATOR");
     canvas.drawFastHLine(8, 16, 112, COLOR_MUTED_GRAY);
 
-    // POST Checklist
-    // PSRAM
+    const uint32_t elapsed_ms = (total_ms >= remaining_ms) ? (total_ms - remaining_ms) : total_ms;
+
+    // POST Checklist (staggered display for user experience)
+    // PSRAM (revealed at >= 200 ms)
     canvas.setTextColor(ST77XX_WHITE);
     canvas.setCursor(8, 21);
     canvas.print("PSRAM :");
     canvas.setCursor(54, 21);
-    if (post.psram_ok) {
-        canvas.setTextColor(ST77XX_GREEN);
-        canvas.printf("[OK] %uMB", static_cast<unsigned>(post.psram_bytes / (1024 * 1024)));
+    if (elapsed_ms >= 200) {
+        if (post.psram_ok) {
+            canvas.setTextColor(ST77XX_GREEN);
+            canvas.printf("[OK] %uMB", static_cast<unsigned>(post.psram_bytes / (1024 * 1024)));
+        } else {
+            canvas.setTextColor(ST77XX_RED);
+            canvas.print("[FAIL]");
+        }
     } else {
-        canvas.setTextColor(ST77XX_RED);
-        canvas.print("[FAIL]");
+        canvas.setTextColor(COLOR_MUTED_GRAY);
+        canvas.print("[..]");
     }
 
-    // BME280
+    // BME280 (revealed at >= 400 ms)
     canvas.setTextColor(ST77XX_WHITE);
     canvas.setCursor(8, 32);
     canvas.print("BME280:");
     canvas.setCursor(54, 32);
-    if (post.bme_ok) {
-        canvas.setTextColor(ST77XX_GREEN);
-        canvas.printf("[OK] %.0fC", post.bme_temp_c);
+    if (elapsed_ms >= 400) {
+        if (post.bme_ok) {
+            canvas.setTextColor(ST77XX_GREEN);
+            canvas.printf("[OK] %.0fC", post.bme_temp_c);
+        } else {
+            canvas.setTextColor(COLOR_MUTED_GRAY);
+            canvas.print("[--] Default");
+        }
     } else {
         canvas.setTextColor(COLOR_MUTED_GRAY);
-        canvas.print("[--] Default");
+        canvas.print("[..]");
     }
 
-    // M0 & M1 (Bus 0: GPIO 6)
+    // M0 & M1 (Bus 0: GPIO 6, revealed at >= 600 ms and >= 800 ms)
     canvas.setTextColor(ST77XX_WHITE);
     canvas.setCursor(8, 43);
     canvas.print("M0:");
-    canvas.setTextColor(post.mic_health.ch_ok[0] ? ST77XX_GREEN : ST77XX_RED);
-    canvas.print(post.mic_health.ch_ok[0] ? "[OK]" : "[ER]");
+    if (elapsed_ms >= 600) {
+        canvas.setTextColor(post.mic_health.ch_ok[0] ? ST77XX_GREEN : ST77XX_RED);
+        canvas.print(post.mic_health.ch_ok[0] ? "[OK]" : "[ER]");
+    } else {
+        canvas.setTextColor(COLOR_MUTED_GRAY);
+        canvas.print("[..]");
+    }
 
     canvas.setTextColor(ST77XX_WHITE);
     canvas.setCursor(68, 43);
     canvas.print("M1:");
-    canvas.setTextColor(post.mic_health.ch_ok[1] ? ST77XX_GREEN : ST77XX_RED);
-    canvas.print(post.mic_health.ch_ok[1] ? "[OK]" : "[ER]");
+    if (elapsed_ms >= 800) {
+        canvas.setTextColor(post.mic_health.ch_ok[1] ? ST77XX_GREEN : ST77XX_RED);
+        canvas.print(post.mic_health.ch_ok[1] ? "[OK]" : "[ER]");
+    } else {
+        canvas.setTextColor(COLOR_MUTED_GRAY);
+        canvas.print("[..]");
+    }
 
-    // M2 & M3 (Bus 1: GPIO 7)
+    // M2 & M3 (Bus 1: GPIO 7, revealed at >= 1000 ms and >= 1200 ms)
     canvas.setTextColor(ST77XX_WHITE);
     canvas.setCursor(8, 54);
     canvas.print("M2:");
-    canvas.setTextColor(post.mic_health.ch_ok[2] ? ST77XX_GREEN : ST77XX_RED);
-    canvas.print(post.mic_health.ch_ok[2] ? "[OK]" : "[ER]");
+    if (elapsed_ms >= 1000) {
+        canvas.setTextColor(post.mic_health.ch_ok[2] ? ST77XX_GREEN : ST77XX_RED);
+        canvas.print(post.mic_health.ch_ok[2] ? "[OK]" : "[ER]");
+    } else {
+        canvas.setTextColor(COLOR_MUTED_GRAY);
+        canvas.print("[..]");
+    }
 
     canvas.setTextColor(ST77XX_WHITE);
     canvas.setCursor(68, 54);
     canvas.print("M3:");
-    canvas.setTextColor(post.mic_health.ch_ok[3] ? ST77XX_GREEN : ST77XX_RED);
-    canvas.print(post.mic_health.ch_ok[3] ? "[OK]" : "[ER]");
+    if (elapsed_ms >= 1200) {
+        canvas.setTextColor(post.mic_health.ch_ok[3] ? ST77XX_GREEN : ST77XX_RED);
+        canvas.print(post.mic_health.ch_ok[3] ? "[OK]" : "[ER]");
+    } else {
+        canvas.setTextColor(COLOR_MUTED_GRAY);
+        canvas.print("[..]");
+    }
 
-    // Dual-I2S Bus Synchronization & Channel Independence
+    // Dual-I2S Bus Synchronization & Channel Independence (revealed at >= 1400 ms)
     canvas.setTextColor(ST77XX_WHITE);
     canvas.setCursor(8, 65);
     canvas.print("SYNC  :");
     canvas.setCursor(54, 65);
-    if (post.i2s_driver_ok &&
-        post.mic_health.bus0_distinct &&
-        post.mic_health.bus1_distinct &&
-        post.mic_health.cross_bus_distinct) {
-        canvas.setTextColor(ST77XX_GREEN);
-        canvas.print("[OK] Quad");
-    } else if (!post.i2s_driver_ok) {
-        canvas.setTextColor(ST77XX_RED);
-        canvas.print("[FAIL] I2S");
-    } else if (!post.mic_health.bus0_distinct || !post.mic_health.bus1_distinct) {
-        canvas.setTextColor(ST77XX_RED);
-        canvas.print("[FAIL] BusLR");
+    if (elapsed_ms >= 1400) {
+        if (post.i2s_driver_ok &&
+            post.mic_health.bus0_distinct &&
+            post.mic_health.bus1_distinct &&
+            post.mic_health.cross_bus_distinct) {
+            canvas.setTextColor(ST77XX_GREEN);
+            canvas.print("[OK] Quad");
+        } else if (!post.i2s_driver_ok) {
+            canvas.setTextColor(ST77XX_RED);
+            canvas.print("[FAIL] I2S");
+        } else if (!post.mic_health.bus0_distinct || !post.mic_health.bus1_distinct) {
+            canvas.setTextColor(ST77XX_RED);
+            canvas.print("[FAIL] BusLR");
+        } else {
+            canvas.setTextColor(ST77XX_RED);
+            canvas.print("[FAIL] XBus");
+        }
     } else {
-        canvas.setTextColor(ST77XX_RED);
-        canvas.print("[FAIL] XBus");
+        canvas.setTextColor(COLOR_MUTED_GRAY);
+        canvas.print("[..]");
     }
 
     canvas.drawFastHLine(8, 78, 112, COLOR_MUTED_GRAY);
@@ -500,9 +537,12 @@ static void show_boot_prompt(uint32_t remaining_ms, uint32_t total_ms, const Boo
     int sec = (remaining_ms + 999) / 1000;
     canvas.printf("Starting in %d s...", sec);
 
-    // Status celote
+    // Status celote (revealed at >= 1600 ms, otherwise shows TESTING...)
     canvas.setCursor(8, 136);
-    if (post.all_nominal) {
+    if (elapsed_ms < 1600) {
+        canvas.setTextColor(ST77XX_CYAN);
+        canvas.print("STATUS: TESTING...");
+    } else if (post.all_nominal) {
         canvas.setTextColor(ST77XX_GREEN);
         canvas.print("STATUS: ALL NOMINAL");
     } else {
@@ -583,6 +623,108 @@ static void enter_setup_mode() {
     }
 }
 
+static void show_hardware_degraded_screen(const BootSelfTestResult &post) {
+    if (!display_initialized) return;
+    canvas.fillScreen(ST77XX_BLACK);
+
+    // Red Header Banner
+    canvas.fillRect(0, 0, TFT_WIDTH, 18, ST77XX_RED);
+    canvas.setTextSize(1);
+    canvas.setTextColor(ST77XX_WHITE);
+    canvas.setCursor(13, 5);
+    canvas.println("HARDWARE DEGRADED");
+
+    // Failure checklist
+    canvas.setCursor(8, 24);
+    if (!post.psram_ok) {
+        canvas.setTextColor(ST77XX_RED);
+        canvas.println("PSRAM : [FAIL]");
+    } else {
+        canvas.setTextColor(COLOR_MUTED_GRAY);
+        canvas.printf("PSRAM : [OK] %uMB\n", static_cast<unsigned>(post.psram_bytes / (1024 * 1024)));
+    }
+
+    // M0..M3
+    static const char* const mic_names[AUDIO_NUM_CHANNELS] = {"M0", "M1", "M2", "M3"};
+    for (size_t c = 0; c < AUDIO_NUM_CHANNELS; ++c) {
+        const int y = 36 + static_cast<int>(c) * 11;
+        canvas.setCursor(8, y);
+        if (!post.mic_health.ch_ok[c]) {
+            const char* reason = (post.mic_health.ch_min[c] == post.mic_health.ch_max[c]) ? "FLATLINE" : "RAIL SHORT";
+            canvas.setTextColor(ST77XX_RED);
+            canvas.printf("%s    : [FAIL] %s", mic_names[c], reason);
+        } else {
+            canvas.setTextColor(ST77XX_GREEN);
+            canvas.printf("%s    : [OK]", mic_names[c]);
+        }
+    }
+
+    // Bus Sync
+    canvas.setCursor(8, 80);
+    if (!post.i2s_driver_ok) {
+        canvas.setTextColor(ST77XX_RED);
+        canvas.println("SYNC  : [FAIL] Driver");
+    } else if (!post.mic_health.bus0_distinct) {
+        canvas.setTextColor(ST77XX_RED);
+        canvas.println("SYNC  : [FAIL] Bus0 LR");
+    } else if (!post.mic_health.bus1_distinct) {
+        canvas.setTextColor(ST77XX_RED);
+        canvas.println("SYNC  : [FAIL] Bus1 LR");
+    } else if (!post.mic_health.cross_bus_distinct) {
+        canvas.setTextColor(ST77XX_RED);
+        canvas.println("SYNC  : [FAIL] X-Bus");
+    } else {
+        canvas.setTextColor(ST77XX_GREEN);
+        canvas.println("SYNC  : [OK] Quad Synced");
+    }
+
+    // Divider
+    canvas.drawFastHLine(8, 96, 112, COLOR_MUTED_GRAY);
+
+    // User Guidance
+    canvas.setTextColor(ST77XX_YELLOW);
+    canvas.setCursor(8, 104);
+    canvas.println("Fix wiring & reboot.");
+    canvas.setCursor(8, 116);
+    canvas.println("Operation halted.");
+
+    canvas.setTextColor(ST77XX_CYAN);
+    canvas.setCursor(8, 134);
+    canvas.println("Hold BOOT (GPIO 0)");
+    canvas.setCursor(8, 146);
+    canvas.println("for Setup Portal.");
+
+    display.drawRGBBitmap(0, 0, canvas.getBuffer(), TFT_WIDTH, TFT_HEIGHT);
+}
+
+static void handle_hardware_degraded(const BootSelfTestResult &post) {
+    Serial.println("\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+    Serial.println("  CRITICAL: BOOT SELF-TEST FAILED - HALTING!");
+    Serial.println("  Real-time DOA processing and network streaming");
+    Serial.println("  are suspended to prevent corrupt measurements.");
+    Serial.println("  Fix hardware wiring and press RST to reboot,");
+    Serial.println("  or hold BOOT (GPIO 0) to enter setup mode.");
+    Serial.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+
+    show_hardware_degraded_screen(post);
+
+    uint32_t press_start_ms = 0;
+    while (true) {
+        if (digitalRead(SETUP_BUTTON_PIN) == LOW) {
+            if (press_start_ms == 0) {
+                press_start_ms = millis();
+            } else if (millis() - press_start_ms >= 100) {
+                enter_setup_mode();
+                show_hardware_degraded_screen(post);
+                press_start_ms = 0;
+            }
+        } else {
+            press_start_ms = 0;
+        }
+        delay(20);
+    }
+}
+
 static void check_setup_button(const BootSelfTestResult &post_result) {
     pinMode(SETUP_BUTTON_PIN, INPUT_PULLUP);
     const uint32_t total_ms = SETUP_BOOT_DELAY_MS;
@@ -608,6 +750,11 @@ static void check_setup_button(const BootSelfTestResult &post_result) {
 
     if (button_pressed) {
         enter_setup_mode();
+    }
+
+    // If hardware is degraded, halt operation and hold the diagnostic screen
+    if (!post_result.all_nominal) {
+        handle_hardware_degraded(post_result);
     }
 }
 

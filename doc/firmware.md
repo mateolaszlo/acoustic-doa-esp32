@@ -83,10 +83,11 @@ During startup (`SETUP_BOOT_DELAY_MS = 3000`), the firmware executes an automate
    - **Flatline Detection**: Rejects any channel (`M0..M3`) where $\text{min} == \text{max}$ or AC $\text{RMS} \le -95\text{ dBFS}$ (disconnected, unpowered, or floating line).
    - **Rail Saturation**: Rejects any channel with total or AC $\text{RMS} \ge -3\text{ dBFS}$ (DC short to rail or severe clipping).
    - **Intra-Bus & Cross-Bus Collision**: Checks pairwise identical sample counts ($< 85\%$) on Bus 0 (`M0` vs `M1`), Bus 1 (`M2` vs `M3`), and across buses (Bus 0 `GPIO 6` vs Bus 1 `GPIO 7`) to detect L/R slot miswiring or shorted data lines.
-4. **Dual Reporting**:
+4. **Dual Reporting & Hardware Degraded Fault Halt**:
    - Outputs a comprehensive ASCII diagnostic table to Serial at 115200 baud.
-   - Renders a compact color-coded checklist (`PSRAM`, `BME280`, `M0..M3`, `SYNC`) on the ST7735 TFT alongside the countdown progress bar.
-   - Holding GPIO 0 during this screen enters Setup Mode as usual.
+   - Renders a sequential, staggered color-coded checklist (`PSRAM`, `BME280`, `M0..M3`, `SYNC`) on the ST7735 TFT alongside the countdown progress bar.
+   - **Degraded Operation Halt**: If critical hardware fails (PSRAM missing, I2S driver failure, or any microphone flatlined, rail-shorted, or colliding), the firmware halts after the boot countdown, holding a dedicated red `HARDWARE DEGRADED` diagnostic screen on the TFT that specifies the exact failure reason (e.g. `M0 [FAIL] FLATLINE`, `SYNC [FAIL] Bus0 LR`) and instructs the user to fix wiring and reboot. Real-time DSP and network streaming tasks are suspended to prevent corrupted DOA data from reaching the REST backend.
+   - Holding GPIO 0 (BOOT button) during both the boot checklist and the degraded halt screen enters Setup Mode (SoftAP captive portal) as usual.
 
 ## Dual-core task layout
 
