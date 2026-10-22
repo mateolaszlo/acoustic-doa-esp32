@@ -8,22 +8,39 @@ This directory documents the current ESP32-S3 firmware for a two-microphone acou
 - [Firmware architecture](doc/firmware.md)
 - [Build, provisioning, and setup](doc/setup.md)
 - [REST API integration](doc/rest-api.md)
+- [Testing & verification](doc/testing.md)
 - [Troubleshooting](doc/troubleshooting.md)
 
 ## Project scope
 
 The firmware:
 
-- Captures two synchronized I2S microphone channels.
-- Estimates time difference of arrival with GCC-PHAT.
-- Converts the delay into an angle from -90 to +90 degrees.
+- Captures four synchronized I2S microphone channels in a planar square array.
+- Estimates 6-pair time differences of arrival with dual-band GCC-PHAT.
+- Suppresses multipath wall reflections via closed-triangle loop-closure consistency.
+- Computes full 360-degree acoustic azimuth (-180 to +180 degrees) via regularized 2D WLS solver.
 - Uses local BME280 temperature, relative humidity, and barometric pressure readings for thermodynamic moist-air speed-of-sound compensation.
-- Displays a real-time radar UI, sound-reactive color needle, and live telemetry on a 1.8" SPI TFT (ST7735 / KMR-1.8 128x160).
+- Displays a real-time 360-degree radar UI, sound-reactive color needle, and live telemetry on a 1.8" SPI TFT (ST7735 / KMR-1.8 128x160).
+- Applies circular S^1 display smoothing across the +/-180 degree back boundary.
 - Sends accepted events to a REST API over Wi-Fi.
 - Stores device credentials and calibration settings in ESP32 NVS flash.
 - Provides a button-triggered setup access point with a DNS-based captive portal.
 
 The backend, database, and web dashboard are separate systems. See [REST API integration](doc/rest-api.md) for the firmware-side contract.
+
+## Testing
+
+The project includes an automated off-target host unit test suite for rapid feature verification and regression prevention without physical ESP32 hardware:
+
+```bash
+# Run all 11 unit test suites with AddressSanitizer and UndefinedBehaviorSanitizer
+make test
+
+# Or run the shell script
+./scripts/run_tests.sh
+```
+
+See [Testing documentation](doc/testing.md) for mock details and full suite descriptions.
 
 ## Current target
 
