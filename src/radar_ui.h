@@ -1,0 +1,37 @@
+#pragma once
+#include <cstdint>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ST7735.h>
+#include <SPI.h>
+#include "app_config.h"
+#include "post_checker.h"
+
+struct BootSelfTestResult {
+    bool psram_ok = false;
+    size_t psram_bytes = 0;
+    bool bme_ok = false;
+    float bme_temp_c = 0.0f;
+    float bme_pres_hpa = 0.0f;
+    bool i2s_driver_ok = false;
+    MicrophoneHealthResult mic_health{};
+    bool all_nominal = false;
+};
+
+class RadarDisplay {
+public:
+    RadarDisplay();
+
+    bool init();
+    void drawRadar(float angle_deg, float temp_c, float hum, float pres, float c_sound,
+                   float db_spl, bool api_available, bool adaptive_active = false);
+    void drawBootPrompt(uint32_t remaining_ms, uint32_t total_ms, const BootSelfTestResult &post);
+    void drawHardwareDegraded(const BootSelfTestResult &post);
+    void drawSetupPortal();
+    bool isInitialized() const { return initialized; }
+
+private:
+    SPIClass tft_spi;
+    Adafruit_ST7735 display;
+    GFXcanvas16 canvas;
+    bool initialized;
+};
