@@ -99,7 +99,7 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
             const float angle = angles_deg[s];
             bool duplicate = false;
             for (size_t b = 0; b < MAX_DECAY_BLIPS; ++b) {
-                if (hit_blips[b].active && (now_ms - hit_blips[b].timestamp_ms < 250)) {
+                if (hit_blips[b].active && (now_ms - hit_blips[b].timestamp_ms < 150)) {
                     float diff = fabsf(hit_blips[b].angle_deg - angle);
                     if (diff > 180.0f) diff = 360.0f - diff;
                     if (diff < 8.0f) {
@@ -116,21 +116,21 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
         }
     }
 
-    // Izris fosfornih sledi z visokokontrastno P31 zeleno barvno lestvico
+    // Izris fosfornih sledi z visokokontrastno P31 zeleno barvno lestvico (hitro 500ms praznjenje)
     for (size_t b = 0; b < MAX_DECAY_BLIPS; ++b) {
         if (!hit_blips[b].active) continue;
         const uint32_t age_ms = now_ms - hit_blips[b].timestamp_ms;
-        if (age_ms > 1200) {
+        if (age_ms > PHOSPHOR_DECAY_DURATION_MS) {
             hit_blips[b].active = false;
             continue;
         }
 
         uint16_t fade_color;
-        if (age_ms < 250) {
+        if (age_ms < 120) {
             fade_color = 0x57EA; // Svetla neonska fosforno zelena
-        } else if (age_ms < 550) {
+        } else if (age_ms < 250) {
             fade_color = 0x2DE4; // Srednje svetla fosforno zelena
-        } else if (age_ms < 850) {
+        } else if (age_ms < 380) {
             fade_color = 0x0BE0; // Zmerna smaragdna fosforna
         } else {
             fade_color = 0x0980; // Zatemnjena fosforno zelena
@@ -286,7 +286,7 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
 
 bool RadarDisplay::hasActiveDecayBlips(uint32_t now_ms) const {
     for (size_t b = 0; b < MAX_DECAY_BLIPS; ++b) {
-        if (hit_blips[b].active && (now_ms - hit_blips[b].timestamp_ms <= 1200)) {
+        if (hit_blips[b].active && (now_ms - hit_blips[b].timestamp_ms <= PHOSPHOR_DECAY_DURATION_MS)) {
             return true;
         }
     }

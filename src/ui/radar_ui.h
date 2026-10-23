@@ -37,6 +37,7 @@ public:
 
 private:
     static constexpr size_t MAX_DECAY_BLIPS = 16;
+    static constexpr uint32_t PHOSPHOR_DECAY_DURATION_MS = 500;
     struct RadarHitBlip {
         float angle_deg;
         uint32_t timestamp_ms;
