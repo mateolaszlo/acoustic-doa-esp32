@@ -58,6 +58,19 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
     canvas.drawLine(cx - r, cy, cx + r, cy, COLOR_RADAR_GRID);
     canvas.drawLine(cx, cy - r, cx, cy + r, COLOR_RADAR_GRID);
 
+    // 30-stopinjske kompasne oznake po obodu radarja
+    for (int deg = 30; deg < 360; deg += 30) {
+        if (deg % 90 == 0) continue; // Kardinalne osi že imajo polne križne črte
+        const float tick_rad = static_cast<float>(deg - 90) * (static_cast<float>(M_PI) / 180.0f);
+        const float cos_t = cosf(tick_rad);
+        const float sin_t = sinf(tick_rad);
+        const int x1 = cx + static_cast<int>(roundf((r - 2) * cos_t));
+        const int y1 = cy + static_cast<int>(roundf((r - 2) * sin_t));
+        const int x2 = cx + static_cast<int>(roundf(r * cos_t));
+        const int y2 = cy + static_cast<int>(roundf(r * sin_t));
+        canvas.drawLine(x1, y1, x2, y2, COLOR_RADAR_GRID);
+    }
+
     // Kardinalne oznake azimuta (0, +90, 180, -90)
     canvas.setTextSize(1);
     canvas.setTextColor(ST77XX_WHITE);
