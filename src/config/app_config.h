@@ -58,7 +58,7 @@ inline bool is_supported_audio_config(uint32_t sample_rate, uint32_t window_size
 // 3. ACOUSTIC & CALIBRATION DEFAULTS
 // ==============================================================================
 constexpr float DEFAULT_MIC_DISTANCE_M               = 0.082f; // 82 mm physical spacing
-constexpr float DEFAULT_CORRELATION_THRESHOLD        = 0.35f;
+constexpr float DEFAULT_CORRELATION_THRESHOLD        = 0.45f;
 constexpr float DEFAULT_SOUND_LEVEL_THRESHOLD_DB_SPL = 55.0f;
 constexpr float DEFAULT_DB_SPL_OFFSET                = 100.0f; // INMP441 dBFS-to-dB SPL offset
 constexpr float DEFAULT_SNR_MARGIN_DB                = 8.0f;

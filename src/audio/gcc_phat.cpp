@@ -955,6 +955,16 @@ DoaResult GccPhat::solveWlsAzimuth(const float pair_lags_samples[AUDIO_NUM_PAIRS
         return result;
     }
 
+    // Zavrnitev skupnega / difuznega šuma: v ravninski 2D postavitvi zvok v vodoravni
+    // ravnini ne more hkrati prispeti na vse 4 mikrofone z ničelno zakasnitvijo.
+    // Če imata obe pravokotni osi zakasnitve blizu 0 (|dn| < 0.35 vzorcev), gre za vertikalni
+    // vpad, skupni šum napajanja/ure ali difuzni odmev, ki bi se sicer zrušil v fiktivni kot 0.0°.
+    const bool zero_lag_y = (fabsf(dn0) < 0.35f) && (fabsf(dn2) < 0.35f);
+    const bool zero_lag_x = (fabsf(dn1) < 0.35f) && (fabsf(dn3) < 0.35f);
+    if (zero_lag_y && zero_lag_x) {
+        return result;
+    }
+
     // 3. Sestava in rešitev 2x2 WLS normalnih enačb: A * u = g
     float s_xx = 0.0f;
     float s_xy = 0.0f;
@@ -1005,7 +1015,9 @@ DoaResult GccPhat::solveWlsAzimuth(const float pair_lags_samples[AUDIO_NUM_PAIRS
     const float u_y = (a_xx * g_y - s_xy * g_x) / det;
     const float u_norm = sqrtf(u_x * u_x + u_y * u_y);
 
-    if (!std::isfinite(u_norm) || u_norm <= 0.05f || u_norm > 1.35f) {
+    constexpr float MIN_U_NORM = 0.25f;
+    constexpr float MAX_U_NORM = 1.35f;
+    if (!std::isfinite(u_norm) || u_norm < MIN_U_NORM || u_norm > MAX_U_NORM) {
         return result;
     }
 

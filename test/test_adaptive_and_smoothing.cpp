@@ -1173,6 +1173,11 @@ static void test_gcc_phat_loop_closure_multipath_rejection() {
     assert(!doa.solveWlsAzimuth(nullptr, low_confs, -30.0f).valid);
     assert(!doa.solveWlsAzimuth(bad_lags, nullptr, -30.0f).valid);
 
+    // Verify diffuse zero-lag common-mode noise across all microphones is rejected
+    const float zero_lags[AUDIO_NUM_PAIRS] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+    const float high_confs[AUDIO_NUM_PAIRS] = { 0.80f, 0.80f, 0.80f, 0.80f, 0.80f, 0.80f };
+    assert(!doa.solveWlsAzimuth(zero_lags, high_confs, -30.0f).valid);
+
     // Verify diagnostic arrays are cleared when process() gates out a silent frame
     std::vector<int32_t> silent(n, 0);
     DoaResult silent_res = doa.process(silent.data(), silent.data(), silent.data(), silent.data());
