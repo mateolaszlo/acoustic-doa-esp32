@@ -5,7 +5,12 @@ RadarDisplay::RadarDisplay()
     : tft_spi(FSPI),
       display(&tft_spi, TFT_CS_PIN, TFT_DC_PIN, TFT_RST_PIN),
       canvas(TFT_WIDTH, TFT_HEIGHT),
-      initialized(false) {}
+      initialized(false),
+      hit_blip_head(0) {
+    for (size_t b = 0; b < MAX_DECAY_BLIPS; ++b) {
+        hit_blips[b] = {0.0f, 0, false};
+    }
+}
 
 bool RadarDisplay::init() {
     tft_spi.begin(TFT_SCLK_PIN, -1, TFT_MOSI_PIN, -1);
@@ -83,7 +88,33 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
     canvas.setCursor(cx + 3, cy + r - 9);
     canvas.print("180");
 
-    // 2. Izris radarskih igel (do DOA_MAX_SOURCES = 3 zvočnih virov)
+    // 2. Izris razpadajočih fosfornih sledi (phosphor decay trail za hipne zvoke)
+    const uint32_t now_ms = millis();
+    for (size_t s = 0; s < num_needles; ++s) {
+        if (angles_deg != nullptr) {
+            hit_blips[hit_blip_head] = { angles_deg[s], now_ms, true };
+            hit_blip_head = (hit_blip_head + 1) % MAX_DECAY_BLIPS;
+        }
+    }
+
+    for (size_t b = 0; b < MAX_DECAY_BLIPS; ++b) {
+        if (!hit_blips[b].active) continue;
+        const uint32_t age_ms = now_ms - hit_blips[b].timestamp_ms;
+        if (age_ms > 1200) {
+            hit_blips[b].active = false;
+            continue;
+        }
+        if (age_ms < 60) continue; // Trenutni okvir že riše živo iglo
+
+        uint16_t fade_color = (age_ms < 400) ? COLOR_MUTED_GRAY :
+                              ((age_ms < 800) ? 0x39E7 : 0x18C3);
+        const float b_rad = (hit_blips[b].angle_deg - 90.0f) * (static_cast<float>(M_PI) / 180.0f);
+        const int bx = cx + static_cast<int>(roundf(r * cosf(b_rad)));
+        const int by = cy + static_cast<int>(roundf(r * sinf(b_rad)));
+        canvas.fillCircle(bx, by, 1, fade_color);
+    }
+
+    // 3. Izris radarskih igel (do DOA_MAX_SOURCES = 3 zvočnih virov)
     const size_t num_needles = (count > DOA_MAX_SOURCES) ? DOA_MAX_SOURCES : count;
     canvas.fillCircle(cx, cy, 2, COLOR_MUTED_GRAY);
 

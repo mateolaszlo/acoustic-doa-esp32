@@ -33,8 +33,17 @@ public:
     bool isInitialized() const { return initialized; }
 
 private:
+    static constexpr size_t MAX_DECAY_BLIPS = 6;
+    struct RadarHitBlip {
+        float angle_deg;
+        uint32_t timestamp_ms;
+        bool active;
+    };
+
     SPIClass tft_spi;
     Adafruit_ST7735 display;
     GFXcanvas16 canvas;
     bool initialized;
+    RadarHitBlip hit_blips[MAX_DECAY_BLIPS];
+    size_t hit_blip_head;
 };
