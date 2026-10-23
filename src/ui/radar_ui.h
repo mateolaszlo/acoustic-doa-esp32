@@ -24,6 +24,9 @@ public:
     bool init();
     void drawRadar(float angle_deg, float temp_c, float hum, float pres, float c_sound,
                    float db_spl, bool api_available, bool adaptive_active = false);
+    void drawRadarMulti(const float* angles_deg, const float* confidences, size_t count,
+                        float temp_c, float hum, float pres, float c_sound,
+                        float db_spl, bool api_available, bool adaptive_active = false);
     void drawBootPrompt(uint32_t remaining_ms, uint32_t total_ms, const BootSelfTestResult &post);
     void drawHardwareDegraded(const BootSelfTestResult &post);
     void drawSetupPortal();

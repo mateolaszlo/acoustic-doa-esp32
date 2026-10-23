@@ -1576,6 +1576,49 @@ static void test_gcc_phat_clean_multisource() {
     printf("  [PASS] test_gcc_phat_clean_multisource passed.\n");
 }
 
+static void test_multi_target_display_tracker() {
+    printf("[TEST] Running test_multi_target_display_tracker...\n");
+
+    MultiTargetDisplayTracker tracker;
+    TrackedTarget targets[DOA_MAX_SOURCES];
+
+    // 1. Initial multi-target detection at t = 1000 ms: two sources at 0.0 deg and 90.0 deg
+    float raw1[2] = {0.0f, 90.0f};
+    float conf1[2] = {0.95f, 0.85f};
+    tracker.update(raw1, conf1, 2, 1000);
+
+    size_t active_count = tracker.getActiveTracks(targets, DOA_MAX_SOURCES);
+    assert(active_count == 2);
+    assert(fabsf(targets[0].smoothed_angle_deg - 0.0f) < 1e-4f);
+    assert(fabsf(targets[1].smoothed_angle_deg - 90.0f) < 1e-4f);
+
+    // 2. Next block at t = 1023 ms with order inverted in raw input: [86.0 deg, 4.0 deg]
+    // Nearest-neighbor association must match 4.0 deg -> Track 0 (0.0 deg) and 86.0 deg -> Track 1 (90.0 deg)
+    float raw2[2] = {86.0f, 4.0f};
+    float conf2[2] = {0.87f, 0.93f};
+    tracker.update(raw2, conf2, 2, 1023);
+
+    active_count = tracker.getActiveTracks(targets, DOA_MAX_SOURCES);
+    assert(active_count == 2);
+
+    // Track 0 was at 0 deg, updated with 4 deg (EMA alpha=0.25 -> 0 + 0.25 * 4 = 1.0 deg)
+    assert(fabsf(targets[0].smoothed_angle_deg - 1.0f) < 0.1f);
+    // Track 1 was at 90 deg, updated with 86 deg (EMA alpha=0.25 -> 90 + 0.25 * -4 = 89.0 deg)
+    assert(fabsf(targets[1].smoothed_angle_deg - 89.0f) < 0.1f);
+
+    // 3. Test silence timeout: skip 2000 ms (> reset_silence_ms = 1500 ms)
+    // New single source at -150.0 deg should reset previous tracks
+    float raw3[1] = {-150.0f};
+    float conf3[1] = {0.90f};
+    tracker.update(raw3, conf3, 1, 3023);
+
+    active_count = tracker.getActiveTracks(targets, DOA_MAX_SOURCES);
+    assert(active_count == 1);
+    assert(fabsf(targets[0].smoothed_angle_deg - (-150.0f)) < 1e-4f);
+
+    printf("  [PASS] test_multi_target_display_tracker passed.\n");
+}
+
 int main() {
     test_gcc_phat_adaptive_noise_floor();
     test_display_smoothing_filter();
@@ -1591,6 +1634,7 @@ int main() {
     test_rest_binary_batch_serialization();
     test_gcc_phat_srp_phat_coarse_grid();
     test_gcc_phat_clean_multisource();
+    test_multi_target_display_tracker();
     printf("\nAll unit tests passed successfully!\n");
     return 0;
 }

@@ -93,3 +93,118 @@ void DisplaySmoothingFilter::reset() {
     consecutive_outliers = 0;
     last_event_time_ms = 0;
 }
+
+MultiTargetDisplayTracker::MultiTargetDisplayTracker() {
+    reset();
+}
+
+void MultiTargetDisplayTracker::reset() {
+    for (size_t i = 0; i < DOA_MAX_SOURCES; ++i) {
+        filters[i].reset();
+        last_confidence[i] = 0.0f;
+        last_update_ms[i] = 0;
+        track_active[i] = false;
+    }
+}
+
+void MultiTargetDisplayTracker::update(const MultiDoaResult& multi_res, uint32_t now_ms) {
+    if (!multi_res.valid || multi_res.count == 0) {
+        return;
+    }
+    float angles[DOA_MAX_SOURCES];
+    float confs[DOA_MAX_SOURCES];
+    const size_t cnt = (multi_res.count > DOA_MAX_SOURCES) ? DOA_MAX_SOURCES : multi_res.count;
+    for (size_t s = 0; s < cnt; ++s) {
+        angles[s] = multi_res.sources[s].angle_deg;
+        confs[s] = multi_res.sources[s].confidence;
+    }
+    update(angles, confs, cnt, now_ms);
+}
+
+void MultiTargetDisplayTracker::update(const float* raw_angles, const float* confidences,
+                                      size_t count, uint32_t now_ms) {
+    if (raw_angles == nullptr || confidences == nullptr || count == 0) {
+        return;
+    }
+
+    constexpr uint32_t track_timeout_ms = DisplaySmoothingFilter::DEFAULT_RESET_SILENCE_MS;
+
+    // 1. Preveri potek neaktivnih sledi
+    for (size_t i = 0; i < DOA_MAX_SOURCES; ++i) {
+        if (track_active[i] && (now_ms - last_update_ms[i] > track_timeout_ms)) {
+            track_active[i] = false;
+            filters[i].reset();
+        }
+    }
+
+    const size_t num_dets = (count > DOA_MAX_SOURCES) ? DOA_MAX_SOURCES : count;
+    bool det_assigned[DOA_MAX_SOURCES] = {false};
+    bool track_assigned[DOA_MAX_SOURCES] = {false};
+
+    // 2. Požrešno prirejanje najbližjega soseda znotraj kota 45 stopinj
+    constexpr float association_gate_deg = 45.0f;
+    for (size_t pass = 0; pass < num_dets; ++pass) {
+        float min_dist = 1e9f;
+        int best_det = -1;
+        int best_track = -1;
+
+        for (size_t d = 0; d < num_dets; ++d) {
+            if (det_assigned[d]) continue;
+            for (size_t t = 0; t < DOA_MAX_SOURCES; ++t) {
+                if (!track_active[t] || track_assigned[t]) continue;
+                const float dist = std::fabs(
+                    DisplaySmoothingFilter::shortestAngularDiff(raw_angles[d], filters[t].getSmoothedAngle()));
+                if (dist < min_dist) {
+                    min_dist = dist;
+                    best_det = static_cast<int>(d);
+                    best_track = static_cast<int>(t);
+                }
+            }
+        }
+
+        if (best_det >= 0 && best_track >= 0 && min_dist <= association_gate_deg) {
+            filters[best_track].update(raw_angles[best_det], now_ms);
+            last_confidence[best_track] = confidences[best_det];
+            last_update_ms[best_track] = now_ms;
+            det_assigned[best_det] = true;
+            track_assigned[best_track] = true;
+        } else {
+            break;
+        }
+    }
+
+    // 3. Za neprirejene zaznave poišči prosto sled ali inicializiraj novo
+    for (size_t d = 0; d < num_dets; ++d) {
+        if (det_assigned[d]) continue;
+
+        for (size_t t = 0; t < DOA_MAX_SOURCES; ++t) {
+            if (!track_active[t]) {
+                filters[t].reset();
+                filters[t].update(raw_angles[d], now_ms);
+                last_confidence[t] = confidences[d];
+                last_update_ms[t] = now_ms;
+                track_active[t] = true;
+                det_assigned[d] = true;
+                break;
+            }
+        }
+    }
+}
+
+size_t MultiTargetDisplayTracker::getActiveTracks(TrackedTarget* out_targets, size_t max_targets) const {
+    if (out_targets == nullptr || max_targets == 0) {
+        return 0;
+    }
+
+    size_t count = 0;
+    for (size_t i = 0; i < DOA_MAX_SOURCES && count < max_targets; ++i) {
+        if (track_active[i]) {
+            out_targets[count].smoothed_angle_deg = filters[i].getSmoothedAngle();
+            out_targets[count].confidence = last_confidence[i];
+            out_targets[count].active = true;
+            count++;
+        }
+    }
+
+    return count;
+}

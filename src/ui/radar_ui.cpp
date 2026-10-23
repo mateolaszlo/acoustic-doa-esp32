@@ -21,6 +21,14 @@ bool RadarDisplay::init() {
 
 void RadarDisplay::drawRadar(float angle_deg, float temp_c, float hum, float pres, float c_sound,
                             float db_spl, bool api_available, bool adaptive_active) {
+    const float angles[1] = { angle_deg };
+    const float confs[1] = { 1.0f };
+    drawRadarMulti(angles, confs, 1, temp_c, hum, pres, c_sound, db_spl, api_available, adaptive_active);
+}
+
+void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confidences, size_t count,
+                                 float temp_c, float hum, float pres, float c_sound,
+                                 float db_spl, bool api_available, bool adaptive_active) {
     if (!initialized) return;
     canvas.fillScreen(ST77XX_BLACK);
 
@@ -62,24 +70,43 @@ void RadarDisplay::drawRadar(float angle_deg, float temp_c, float hum, float pre
     canvas.setCursor(cx + 3, cy + r - 9);
     canvas.print("180");
 
-    // 2. Izris 360-stopinjske polarne igle (barva glede na glasnost)
-    uint16_t needle_color = (db_spl > NEEDLE_HIGH_SPL_THRESHOLD) ? ST77XX_RED :
-                            ((db_spl > NEEDLE_MED_SPL_THRESHOLD) ? ST77XX_YELLOW : ST77XX_GREEN);
-    const float rad = (angle_deg - 90.0f) * (static_cast<float>(M_PI) / 180.0f);
-    const int target_x = cx + static_cast<int>(roundf(r * cosf(rad)));
-    const int target_y = cy + static_cast<int>(roundf(r * sinf(rad)));
-
+    // 2. Izris radarskih igel (do DOA_MAX_SOURCES = 3 zvočnih virov)
+    const size_t num_needles = (count > DOA_MAX_SOURCES) ? DOA_MAX_SOURCES : count;
     canvas.fillCircle(cx, cy, 2, COLOR_MUTED_GRAY);
-    canvas.drawLine(cx, cy, target_x, target_y, needle_color);
-    canvas.fillCircle(target_x, target_y, 3, needle_color);
+
+    for (size_t s = 0; s < num_needles; ++s) {
+        const float angle = (angles_deg != nullptr) ? angles_deg[s] : 0.0f;
+        const float rad = (angle - 90.0f) * (static_cast<float>(M_PI) / 180.0f);
+        const int target_x = cx + static_cast<int>(roundf(r * cosf(rad)));
+        const int target_y = cy + static_cast<int>(roundf(r * sinf(rad)));
+
+        uint16_t needle_color;
+        int tip_radius = 2;
+        if (s == 0) {
+            // Primarni vir: barva glede na glasnost (rdeča/rumena/zelena), večja konica
+            needle_color = (db_spl > NEEDLE_HIGH_SPL_THRESHOLD) ? ST77XX_RED :
+                           ((db_spl > NEEDLE_MED_SPL_THRESHOLD) ? ST77XX_YELLOW : ST77XX_GREEN);
+            tip_radius = 3;
+        } else if (s == 1) {
+            // Sekundarni vir: cian
+            needle_color = ST77XX_CYAN;
+        } else {
+            // Terciarni vir: magenta
+            needle_color = ST77XX_MAGENTA;
+        }
+
+        canvas.drawLine(cx, cy, target_x, target_y, needle_color);
+        canvas.fillCircle(target_x, target_y, tip_radius, needle_color);
+    }
 
     // 3. Spodnja nadzorna plošča s telemetrijo (y = 84..159)
     canvas.drawFastHLine(0, 82, TFT_WIDTH, COLOR_MUTED_GRAY);
 
+    const float primary_angle = (angles_deg != nullptr && num_needles > 0) ? angles_deg[0] : 0.0f;
     canvas.setTextSize(2);
     canvas.setTextColor(ST77XX_CYAN);
     canvas.setCursor(4, 84);
-    canvas.printf("%+6.1f deg", angle_deg);
+    canvas.printf("%+6.1f deg", primary_angle);
 
     canvas.setTextSize(1);
     canvas.setTextColor(ST77XX_YELLOW);

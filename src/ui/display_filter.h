@@ -2,7 +2,9 @@
 #define DISPLAY_FILTER_H
 
 #include <cstdint>
+#include <cstddef>
 #include "config/app_config.h"
+#include "audio/gcc_phat.h"
 
 /**
  * @brief Circular S^1 angle smoothing filter for the 360-degree radar needle on the ST7735 TFT.
@@ -49,6 +51,33 @@ private:
     uint32_t last_event_time_ms;
     uint8_t consecutive_outliers;
     bool has_smoothed_angle;
+};
+
+struct TrackedTarget {
+    float smoothed_angle_deg;
+    float confidence;
+    bool active;
+};
+
+/**
+ * @brief Multi-target display tracker associating up to DOA_MAX_SOURCES simultaneous
+ * acoustic detections to independent circular smoothing filters via nearest-neighbor gating.
+ */
+class MultiTargetDisplayTracker {
+public:
+    MultiTargetDisplayTracker();
+
+    void update(const float* raw_angles, const float* confidences, size_t count, uint32_t now_ms);
+    void update(const MultiDoaResult& multi_res, uint32_t now_ms);
+
+    size_t getActiveTracks(TrackedTarget* out_targets, size_t max_targets) const;
+    void reset();
+
+private:
+    DisplaySmoothingFilter filters[DOA_MAX_SOURCES];
+    float last_confidence[DOA_MAX_SOURCES];
+    uint32_t last_update_ms[DOA_MAX_SOURCES];
+    bool track_active[DOA_MAX_SOURCES];
 };
 
 inline float wrapAngle180(float deg) {

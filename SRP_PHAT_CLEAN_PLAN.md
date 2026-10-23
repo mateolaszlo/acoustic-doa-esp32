@@ -133,20 +133,20 @@ Following the `/incremental-implementation` guidelines, each slice is self-conta
 
 ---
 
-### [ ] Slice 6: Multi-Target Radar UI & Tracker Association
+### [x] Slice 6: Multi-Target Radar UI & Tracker Association
 - **Objective**: Render multiple simultaneous radar needles on the ST7735 display with independent $S^1$ smoothing filters.
 - **Changes**:
   - `src/ui/display_filter.h` / `src/ui/display_filter.cpp`:
-    - Add multi-source filter bank: `DisplaySmoothingFilter filters[DOA_MAX_SOURCES]`.
-    - Implement nearest-neighbor angle association using `shortestAngularDiff()`.
+    - Added `struct TrackedTarget` and `class MultiTargetDisplayTracker` managing a bank of `DOA_MAX_SOURCES` independent `DisplaySmoothingFilter` instances.
+    - Implemented nearest-neighbor angle association with a $45^\circ$ gate, continuity tracking across block boundaries, and 1500 ms silence timeout.
   - `src/ui/radar_ui.h` / `src/ui/radar_ui.cpp`:
-    - Update `drawRadar()` to accept up to 3 angles/confidences and draw primary (solid bright), secondary, and tertiary (dimmed/stippled) needles.
-  - `src/main.cpp`:
-    - Update `sensor_display_task` to receive `MultiDoaResult` from `display_queue` and update the filter bank.
+    - Implemented `drawRadarMulti()` rendering up to 3 needles simultaneously (Primary: solid color by SPL with 3px tip; Secondary: cyan with 2px tip; Tertiary: magenta with 2px tip).
+    - Preserved `drawRadar()` as backwards-compatible single-target wrapper.
+  - `test/test_adaptive_and_smoothing.cpp`:
+    - Added `test_multi_target_display_tracker()` verifying multi-target association, tracking stability, inverted detection order resilience, and silence timeout.
 - **Verification**:
-  - Unit test verifying multi-filter tracking and association (independent tracking of $0^\circ$ and $90^\circ$ without cross-interference).
-  - `make test` passes.
-- **Completion Target**: UI capable of rendering 1, 2, or 3 needles concurrently with stable smoothing.
+  - `make test`: All 15 unit test suites pass under ASAN/UBSAN with zero errors.
+- **Completion Target**: Multi-target display tracking and rendering implemented and verified in host tests.
 
 ---
 
@@ -175,6 +175,6 @@ Following the `/incremental-implementation` guidelines, each slice is self-conta
 | **Slice 2** | Wideband Weight Tables & Autocorrelation Kernels | [x] Completed | `a18ef55` |
 | **Slice 3** | Lag Window Preservation & 72-Point SRP-PHAT Grid Search | [x] Completed | `0e63c9b` |
 | **Slice 4** | CLEAN Deconvolution Loop & Multi-Source Parabolic WLS | [x] Completed | `706b132` |
-| **Slice 5** | Binary REST Batch Capacity & Protocol Verification | [x] Completed | In progress |
-| **Slice 6** | Multi-Target Radar UI & Filter Bank Association | [ ] Pending | — |
+| **Slice 5** | Binary REST Batch Capacity & Protocol Verification | [x] Completed | `ec2f152` |
+| **Slice 6** | Multi-Target Radar UI & Filter Bank Association | [x] Completed | In progress |
 | **Slice 7** | System Integration, Documentation & CI Verification | [ ] Pending | — |
