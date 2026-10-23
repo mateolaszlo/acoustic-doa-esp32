@@ -221,7 +221,7 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
     // 3.3 Barometrični tlak in konfiguracija vzorčenja (y = 130)
     canvas.setTextColor(COLOR_MUTED_GRAY);
     canvas.setCursor(4, 130);
-    canvas.printf("P:%4.0fhPa  44.1k/1024", pres / 100.0f);
+    canvas.printf("P:%4.0fhPa  44k/1024", pres / 100.0f);
 
     // 3.4 API status (y = 145..155)
     int status_y = 148;
