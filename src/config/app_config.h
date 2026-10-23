@@ -74,8 +74,8 @@ constexpr size_t CLEAN_KERNEL_RADIUS_SAMPLES         = 16;
 
 // Dual-Band GCC-PHAT Raised-Cosine Spectral Weighting Cutoffs
 constexpr float GCC_PHAT_MIN_HZ      = 300.0f;
-constexpr float GCC_PHAT_EDGE_MAX_HZ = 2200.0f;
-constexpr float GCC_PHAT_DIAG_MAX_HZ = 1450.0f;
+constexpr float GCC_PHAT_EDGE_MAX_HZ = 5000.0f;
+constexpr float GCC_PHAT_DIAG_MAX_HZ = 4500.0f;
 constexpr float GCC_PHAT_MAX_HZ      = GCC_PHAT_EDGE_MAX_HZ;
 constexpr float GCC_PHAT_RAMP_HZ     = 100.0f;
 constexpr float DOA_LOOP_CLOSURE_TOLERANCE_SAMPLES = 1.5f;

@@ -2,6 +2,7 @@
 #include <esp_dsp.h>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include "config/app_config.h"
 
 #define N_SAMPLES AUDIO_DEFAULT_WINDOW_SIZE // Število vzorcev (potenca 2 za FFT)
@@ -78,6 +79,8 @@ public:
     const float* getDiagBandWeights() const { return band_weight_diag; }
     float getEdgeWeightSum() const { return weight_sum_edge; }
     float getDiagWeightSum() const { return weight_sum_diag; }
+    const float* getCleanKernelEdge() const { return clean_kernel_edge; }
+    const float* getCleanKernelDiag() const { return clean_kernel_diag; }
     const float* getLastPairLagsSamples() const { return last_pair_lags_samples; }
     const float* getLastPairConfidences() const { return last_pair_confidences; }
     const float* getLastPairLoopWeights() const { return last_pair_psi; }
@@ -110,7 +113,11 @@ private:
     float last_pair_psi[AUDIO_NUM_PAIRS];
     float last_pair_weights[AUDIO_NUM_PAIRS];
 
+    float clean_kernel_edge[2 * CLEAN_KERNEL_RADIUS_SAMPLES + 1];
+    float clean_kernel_diag[2 * CLEAN_KERNEL_RADIUS_SAMPLES + 1];
+
     bool updateNoiseFloorAndCheckGate(float rms_db);
     void computePairCrossCorrelationIfft(size_t mic_i, size_t mic_j, const float* weights);
+    void precomputeCleanKernels();
     void releaseBuffers();
 };

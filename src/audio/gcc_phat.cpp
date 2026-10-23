@@ -83,6 +83,8 @@ GccPhat::GccPhat(float sample_rate, float mic_distance_m, float temp_c,
       last_pair_confidences{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
       last_pair_psi{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
       last_pair_weights{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f} {
+    std::memset(clean_kernel_edge, 0, sizeof(clean_kernel_edge));
+    std::memset(clean_kernel_diag, 0, sizeof(clean_kernel_diag));
     c_sound = calculateSoundSpeed(temp_c, humidity_pct, pressure_pa);
 }
 
@@ -100,6 +102,8 @@ GccPhat::GccPhat(float sample_rate, float mic_distance_m, float temp_c,
       last_pair_confidences{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
       last_pair_psi{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
       last_pair_weights{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f} {
+    std::memset(clean_kernel_edge, 0, sizeof(clean_kernel_edge));
+    std::memset(clean_kernel_diag, 0, sizeof(clean_kernel_diag));
     c_sound = calculateSoundSpeed(temp_c, humidity_pct, pressure_pa);
     fft_size = window_size;
 }
@@ -304,8 +308,56 @@ bool GccPhat::configure(float sample_rate, size_t window_size) {
         weight_sum_diag += w_diag;
     }
 
+    precomputeCleanKernels();
+
     resetNoiseFloor(-100.0f);
     return true;
+}
+
+void GccPhat::precomputeCleanKernels() {
+    const int fft_size_int = static_cast<int>(fft_size);
+    if (ccorr == nullptr || fft_size_int <= 0 ||
+        band_weight_edge == nullptr || band_weight_diag == nullptr) {
+        return;
+    }
+
+    // 1. Robni par (Edge): 300 - 5000 Hz
+    for (size_t i = 0; i < fft_size; ++i) {
+        ccorr[2 * i]     = band_weight_edge[i];
+        ccorr[2 * i + 1] = 0.0f;
+    }
+    for (size_t i = 0; i < fft_size; ++i) {
+        ccorr[2 * i + 1] = -ccorr[2 * i + 1];
+    }
+    dsps_fft2r_fc32(ccorr, fft_size_int);
+    dsps_bit_rev_fc32(ccorr, fft_size_int);
+
+    const float peak_edge = (ccorr[0] > 1e-6f) ? ccorr[0] : 1.0f;
+    for (int lag = -static_cast<int>(CLEAN_KERNEL_RADIUS_SAMPLES);
+         lag <= static_cast<int>(CLEAN_KERNEL_RADIUS_SAMPLES); ++lag) {
+        const int idx = (lag < 0) ? (fft_size_int + lag) : lag;
+        const size_t k = static_cast<size_t>(lag + static_cast<int>(CLEAN_KERNEL_RADIUS_SAMPLES));
+        clean_kernel_edge[k] = ccorr[2 * idx] / peak_edge;
+    }
+
+    // 2. Diagonalni par (Diag): 300 - 4500 Hz
+    for (size_t i = 0; i < fft_size; ++i) {
+        ccorr[2 * i]     = band_weight_diag[i];
+        ccorr[2 * i + 1] = 0.0f;
+    }
+    for (size_t i = 0; i < fft_size; ++i) {
+        ccorr[2 * i + 1] = -ccorr[2 * i + 1];
+    }
+    dsps_fft2r_fc32(ccorr, fft_size_int);
+    dsps_bit_rev_fc32(ccorr, fft_size_int);
+
+    const float peak_diag = (ccorr[0] > 1e-6f) ? ccorr[0] : 1.0f;
+    for (int lag = -static_cast<int>(CLEAN_KERNEL_RADIUS_SAMPLES);
+         lag <= static_cast<int>(CLEAN_KERNEL_RADIUS_SAMPLES); ++lag) {
+        const int idx = (lag < 0) ? (fft_size_int + lag) : lag;
+        const size_t k = static_cast<size_t>(lag + static_cast<int>(CLEAN_KERNEL_RADIUS_SAMPLES));
+        clean_kernel_diag[k] = ccorr[2 * idx] / peak_diag;
+    }
 }
 
 bool GccPhat::updateNoiseFloorAndCheckGate(float rms_db) {

@@ -672,9 +672,23 @@ static void test_app_config_consistency() {
     assert(std::fabs(doa_default.getSnrMarginDb() - DEFAULT_SNR_MARGIN_DB) < 1e-4f);
     assert(std::fabs(doa_default.getSoundSpeed() - DEFAULT_SOUND_SPEED_MPS) < 0.5f);
     assert(std::fabs(GCC_PHAT_MIN_HZ - 300.0f) < 1e-4f);
-    assert(std::fabs(GCC_PHAT_EDGE_MAX_HZ - 2200.0f) < 1e-4f);
-    assert(std::fabs(GCC_PHAT_DIAG_MAX_HZ - 1450.0f) < 1e-4f);
+    assert(std::fabs(GCC_PHAT_EDGE_MAX_HZ - 5000.0f) < 1e-4f);
+    assert(std::fabs(GCC_PHAT_DIAG_MAX_HZ - 4500.0f) < 1e-4f);
     assert(std::fabs(GCC_PHAT_RAMP_HZ - 100.0f) < 1e-4f);
+
+    // Verify precomputed CLEAN autocorrelation kernels (Slice 2)
+    assert(doa_default.init());
+    const float* kernel_edge = doa_default.getCleanKernelEdge();
+    const float* kernel_diag = doa_default.getCleanKernelDiag();
+    const size_t center = CLEAN_KERNEL_RADIUS_SAMPLES;
+    assert(std::fabs(kernel_edge[center] - 1.0f) < 1e-4f);
+    assert(std::fabs(kernel_diag[center] - 1.0f) < 1e-4f);
+    for (size_t l = 1; l <= CLEAN_KERNEL_RADIUS_SAMPLES; ++l) {
+        assert(std::fabs(kernel_edge[center + l] - kernel_edge[center - l]) < 1e-4f);
+        assert(std::fabs(kernel_diag[center + l] - kernel_diag[center - l]) < 1e-4f);
+    }
+    assert(kernel_edge[center + 10] < 0.40f);
+    assert(kernel_diag[center + 10] < 0.40f);
 
     // Verify updateCalibration accepts full [-180, +180] angle offset range
     doa_default.updateCalibration(DEFAULT_MIC_DISTANCE_M, 20.0f, 0.35f, -45.0f, true, 8.0f, 135.0f);
@@ -688,31 +702,30 @@ static void test_app_config_consistency() {
 static void test_gcc_phat_dual_band_weights() {
     printf("[TEST] Running test_gcc_phat_dual_band_weights...\n");
 
-    // 1. Direct evaluation of computeBandWeight for edge (300-2200 Hz, 100 Hz ramp)
-    // and diagonal (300-1450 Hz, 100 Hz ramp) bands
+    // 1. Direct evaluation of computeBandWeight for edge (300-5000 Hz, 100 Hz ramp)
+    // and diagonal (300-4500 Hz, 100 Hz ramp) bands
     assert(GccPhat::computeBandWeight(0.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) == 0.0f);
     assert(GccPhat::computeBandWeight(150.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) == 0.0f);
     assert(GccPhat::computeBandWeight(200.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) == 0.0f);
     assert(fabsf(GccPhat::computeBandWeight(250.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) - 0.5f) < 1e-6f);
     assert(GccPhat::computeBandWeight(300.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) == 1.0f);
     assert(GccPhat::computeBandWeight(1000.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) == 1.0f);
-    assert(GccPhat::computeBandWeight(1450.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) == 1.0f);
-    assert(GccPhat::computeBandWeight(1800.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) == 1.0f);
     assert(GccPhat::computeBandWeight(2200.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) == 1.0f);
-    assert(fabsf(GccPhat::computeBandWeight(2250.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) - 0.5f) < 1e-6f);
-    assert(GccPhat::computeBandWeight(2300.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) == 0.0f);
-    assert(GccPhat::computeBandWeight(5000.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) == 0.0f);
+    assert(GccPhat::computeBandWeight(4500.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) == 1.0f);
+    assert(GccPhat::computeBandWeight(5000.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) == 1.0f);
+    assert(fabsf(GccPhat::computeBandWeight(5050.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) - 0.5f) < 1e-6f);
+    assert(GccPhat::computeBandWeight(5100.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) == 0.0f);
+    assert(GccPhat::computeBandWeight(6000.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) == 0.0f);
 
-    // Diagonal band (300-1450 Hz, 100 Hz ramp)
+    // Diagonal band (300-4500 Hz, 100 Hz ramp)
     assert(GccPhat::computeBandWeight(200.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_DIAG_MAX_HZ) == 0.0f);
     assert(fabsf(GccPhat::computeBandWeight(250.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_DIAG_MAX_HZ) - 0.5f) < 1e-6f);
     assert(GccPhat::computeBandWeight(300.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_DIAG_MAX_HZ) == 1.0f);
     assert(GccPhat::computeBandWeight(1000.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_DIAG_MAX_HZ) == 1.0f);
-    assert(GccPhat::computeBandWeight(1450.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_DIAG_MAX_HZ) == 1.0f);
-    assert(fabsf(GccPhat::computeBandWeight(1500.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_DIAG_MAX_HZ) - 0.5f) < 1e-6f);
-    assert(GccPhat::computeBandWeight(1550.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_DIAG_MAX_HZ) == 0.0f);
-    assert(GccPhat::computeBandWeight(1800.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_DIAG_MAX_HZ) == 0.0f);
-    assert(GccPhat::computeBandWeight(2200.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_DIAG_MAX_HZ) == 0.0f);
+    assert(GccPhat::computeBandWeight(4500.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_DIAG_MAX_HZ) == 1.0f);
+    assert(fabsf(GccPhat::computeBandWeight(4550.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_DIAG_MAX_HZ) - 0.5f) < 1e-6f);
+    assert(GccPhat::computeBandWeight(4600.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_DIAG_MAX_HZ) == 0.0f);
+    assert(GccPhat::computeBandWeight(5000.0f, GCC_PHAT_MIN_HZ, GCC_PHAT_DIAG_MAX_HZ) == 0.0f);
 
     // Invalid parameter guards
     assert(GccPhat::computeBandWeight(NAN, GCC_PHAT_MIN_HZ, GCC_PHAT_EDGE_MAX_HZ) == 0.0f);
@@ -758,14 +771,14 @@ static void test_gcc_phat_dual_band_weights() {
 
                 const size_t mirrored_bin = (i <= n / 2) ? i : (n - i);
                 const float freq = static_cast<float>(mirrored_bin) * bin_hz;
-                if (freq >= 300.0f && freq <= 1450.0f) {
+                if (freq >= 300.0f && freq <= 4500.0f) {
                     assert(fabsf(w_edge[i] - 1.0f) < 1e-6f);
                     assert(fabsf(w_diag[i] - 1.0f) < 1e-6f);
-                } else if (freq >= 1550.0f && freq <= 2200.0f) {
+                } else if (freq >= 4600.0f && freq <= 5000.0f) {
                     assert(fabsf(w_edge[i] - 1.0f) < 1e-6f);
                     assert(w_diag[i] == 0.0f);
                     edge_only_bins++;
-                } else if (freq <= 200.0f || freq >= 2300.0f) {
+                } else if (freq <= 200.0f || freq >= 5100.0f) {
                     assert(w_edge[i] == 0.0f);
                     assert(w_diag[i] == 0.0f);
                 }
@@ -957,10 +970,10 @@ static void synthesize_quad_wavefront(float azimuth_deg, float fs, float d, floa
         t_arrival[m] = -(r_x[m] * u_x + r_y[m] * u_y) / c_sound;
     }
 
-    // Broadband Schroeder-phase multitone spanning 250 Hz .. 2250 Hz
-    const int num_tones = 64;
+    // Broadband Schroeder-phase multitone spanning 250 Hz .. 4950 Hz (covering wideband bandpass)
+    const int num_tones = 128;
     const float f_start = 260.0f;
-    const float f_end = 2220.0f;
+    const float f_end = 4900.0f;
     const float f_step = (f_end - f_start) / static_cast<float>(num_tones - 1);
     const float amp = 21474836.0f / 8.0f; // Strong signal well above -45 dBFS threshold
 
