@@ -89,6 +89,7 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
     canvas.print("180");
 
     // 2. Izris razpadajočih fosfornih sledi (phosphor decay trail za hipne zvoke)
+    const size_t num_needles = (count > DOA_MAX_SOURCES) ? DOA_MAX_SOURCES : count;
     const uint32_t now_ms = millis();
     for (size_t s = 0; s < num_needles; ++s) {
         if (angles_deg != nullptr) {
@@ -115,7 +116,6 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
     }
 
     // 3. Izris radarskih igel (do DOA_MAX_SOURCES = 3 zvočnih virov)
-    const size_t num_needles = (count > DOA_MAX_SOURCES) ? DOA_MAX_SOURCES : count;
     canvas.fillCircle(cx, cy, 2, COLOR_MUTED_GRAY);
 
     for (size_t s = 0; s < num_needles; ++s) {
