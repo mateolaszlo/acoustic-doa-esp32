@@ -256,12 +256,14 @@ void dsp_task(void *param) {
     while (true) {
         uint32_t window_size;
         uint32_t sample_rate;
+        float min_spl_threshold;
         if (xSemaphoreTake(config_mutex, pdMS_TO_TICKS(CONFIG_MUTEX_FAST_TIMEOUT_MS)) != pdTRUE) {
             esp_task_wdt_reset();
             continue;
         }
         sample_rate = device_config.sample_rate;
         window_size = device_config.window_size;
+        min_spl_threshold = device_config.sound_level_threshold_db_spl;
         xSemaphoreGive(config_mutex);
 
         bool read_ok = false;
@@ -291,7 +293,8 @@ void dsp_task(void *param) {
                 dsp_deadline_misses.fetch_add(1);
             }
 
-            if (multi_res.valid && multi_res.count > 0) {
+            const float sound_spl = multi_res.rms_db + db_spl_offset.load();
+            if (multi_res.valid && multi_res.count > 0 && sound_spl >= min_spl_threshold) {
                 enqueue_latest(display_queue, multi_res, display_queue_drops);
 
                 // Enqueue each detected source from this block with identical timestamp
@@ -319,7 +322,9 @@ static bool apply_dsp_calibration(float temperature_c,
     }
 
     const float microphone_distance_m = device_config.microphone_distance_m;
-    const float correlation_threshold = device_config.correlation_threshold;
+    const float correlation_threshold = (device_config.correlation_threshold < DEFAULT_CORRELATION_THRESHOLD)
+                                            ? DEFAULT_CORRELATION_THRESHOLD
+                                            : device_config.correlation_threshold;
     const float sound_level_threshold_db_spl = device_config.sound_level_threshold_db_spl;
     const float configured_offset = device_config.db_spl_offset;
     const float angle_offset = device_config.angle_offset_deg;

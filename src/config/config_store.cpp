@@ -22,6 +22,9 @@ bool load_device_config(DeviceConfig &config) {
     config.device_id = preferences.getUInt("device_id", config.device_id);
     config.microphone_distance_m = get_preference_float("mic_distance", config.microphone_distance_m);
     config.correlation_threshold = get_preference_float("corr_threshold", config.correlation_threshold);
+    if (!std::isfinite(config.correlation_threshold) || config.correlation_threshold < DEFAULT_CORRELATION_THRESHOLD) {
+        config.correlation_threshold = DEFAULT_CORRELATION_THRESHOLD;
+    }
     config.sound_level_threshold_db_spl = get_preference_float("spl_threshold", config.sound_level_threshold_db_spl);
     config.db_spl_offset = get_preference_float("spl_offset", config.db_spl_offset);
     config.angle_offset_deg = get_preference_float("ang_offset", config.angle_offset_deg);
