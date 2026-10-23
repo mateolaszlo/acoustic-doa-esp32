@@ -239,7 +239,13 @@ processing that is too slow even when the task continues to run.
 
 The 128x160 color SPI TFT (ST7735 / KMR-1.8) shows a full $360^\circ$ circular radar scope (`cx = 64, cy = 44, r = 34`) with the latest valid sound azimuth in $[-180^\circ, +180^\circ]$. Rendering is double-buffered in RAM via a 40 KB `GFXcanvas16` framebuffer to eliminate screen flicker, then transferred over 27 MHz SPI via `drawRGBBitmap`.
 
-- The upper scope (`y = 0..82`) displays outer ($r = 34$) and inner ($r = 17$) concentric range rings, N/E/S/W crosshair axes, and cardinal degree labels (`0`, `+90`, `180`, `-90`).
-- The $360^\circ$ polar radar needle is color-coded by calibrated sound pressure level ($> 75\text{ dB SPL}$ red, $> 60\text{ dB SPL}$ yellow, otherwise green).
-- The lower telemetry dashboard (`y = 84..159`) displays detected azimuth (`%+6.1f deg`), calibrated volume in dB SPL, moist air sound speed, BME280 temperature, relative humidity, barometric pressure, and live API connectivity status (`API ONLINE` / `API OFFLINE`).
+- The upper scope (`y = 0..82`) displays outer ($r = 34$) and inner ($r = 17$) concentric range rings, precision $30^\circ$ inward compass tick marks, N/E/S/W crosshair axes, and cardinal degree labels (`0`, `+90`, `180`, `-90`).
+- The $360^\circ$ polar radar needle is color-coded by calibrated sound pressure level ($> 75\text{ dB SPL}$ red, $> 60\text{ dB SPL}$ yellow, otherwise green). Up to 3 simultaneous needles are displayed (Primary: SPL color; Secondary: cyan; Tertiary: magenta).
+- Acoustic phosphor decay trail: Fleeting acoustic impulses leave decaying phosphor dots on the outer perimeter ring that fade gracefully over 1200 ms, ensuring transient events (hand claps, impacts) remain clearly visible.
+- The lower telemetry dashboard (`y = 84..159`):
+  - Heading Row ($y = 85$): Displays large `%+6.1f deg` when tracking a single source, or compact color-coded target chips (`1:+36°`, `2:-64°`, `3:+120°`) matching needle colors when multiple sources are active.
+  - Sound Level & Dynamic Bar ($y = 104$): Displays digital sound level in dB SPL alongside a 72-pixel mini horizontal dynamic range bar with a mid-SPL reference tick.
+  - Environmental Compensation ($y = 117$): Consolidated live moist air sound speed, ambient temperature, and relative humidity (`c:%.1fm/s %.0fC %.0f%%`).
+  - System Telemetry ($y = 130$): Barometric pressure and audio block configuration (`P:%.0fhPa 44.1k/1024`).
+  - Connectivity ($y = 145$): Color-coded status indicator and live API state (`API ONLINE` in green / `API OFFLINE` in red).
 - The display is updated when a valid event arrives from `display_queue` or when backend reachability state changes.

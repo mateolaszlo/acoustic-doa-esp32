@@ -182,29 +182,59 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
         }
     }
 
+    // 3.1 Nivo zvoka in dinamični VU/SNR stolpec (y = 104..112)
     canvas.setTextSize(1);
     canvas.setTextColor(ST77XX_YELLOW);
-    canvas.setCursor(13, 108);
-    canvas.printf("%.1fdB   %.2fm/s", db_spl, c_sound);
+    canvas.setCursor(4, 104);
+    canvas.printf("%4.1fdB", db_spl);
 
+    // Mini horizontalni merilnik dinamike zvoka (x = 52, y = 104, w = 72, h = 7)
+    constexpr int bar_x = 52;
+    constexpr int bar_y = 104;
+    constexpr int bar_w = 72;
+    constexpr int bar_h = 7;
+    canvas.drawRect(bar_x, bar_y, bar_w, bar_h, COLOR_MUTED_GRAY);
+
+    // Pretvorba dB SPL v širino stolpca (območje 30..95 dB SPL)
+    constexpr float min_bar_db = 30.0f;
+    constexpr float max_bar_db = 95.0f;
+    float norm_level = (db_spl - min_bar_db) / (max_bar_db - min_bar_db);
+    if (norm_level < 0.0f) norm_level = 0.0f;
+    if (norm_level > 1.0f) norm_level = 1.0f;
+    const int fill_w = static_cast<int>(roundf(norm_level * (bar_w - 2)));
+
+    if (fill_w > 0) {
+        uint16_t bar_color = (db_spl > NEEDLE_HIGH_SPL_THRESHOLD) ? ST77XX_RED :
+                             ((db_spl > NEEDLE_MED_SPL_THRESHOLD) ? ST77XX_YELLOW : ST77XX_GREEN);
+        canvas.fillRect(bar_x + 1, bar_y + 1, fill_w, bar_h - 2, bar_color);
+    }
+
+    // Oznaka praga srednje glasnosti na merilniku
+    const int med_tick_x = bar_x + static_cast<int>(roundf(((NEEDLE_MED_SPL_THRESHOLD - min_bar_db) / (max_bar_db - min_bar_db)) * bar_w));
+    canvas.drawFastVLine(med_tick_x, bar_y - 1, bar_h + 2, COLOR_MUTED_GRAY);
+
+    // 3.2 Združena vrstica okoljske kompenzacije: hitrost zvoka in temperatura/vlaga (y = 117)
     canvas.setTextColor(ST77XX_WHITE);
-    canvas.setCursor(6, 123);
-    canvas.printf("T: %.1fC   RH: %.0f%%", temp_c, hum);
+    canvas.setCursor(4, 117);
+    canvas.printf("c:%4.1fm/s  %2.0fC %2.0f%%", c_sound, temp_c, hum);
 
-    canvas.setCursor(6, 137);
-    canvas.printf("P: %.1f hPa", pres / 100.0f);
+    // 3.3 Barometrični tlak in konfiguracija vzorčenja (y = 130)
+    canvas.setTextColor(COLOR_MUTED_GRAY);
+    canvas.setCursor(4, 130);
+    canvas.printf("P:%4.0fhPa  44.1k/1024", pres / 100.0f);
 
-    int status_y = 151;
+    // 3.4 API status (y = 145..155)
+    int status_y = 148;
 
     if (api_available) {
         canvas.fillCircle(8, status_y, 3, ST77XX_GREEN);
         canvas.setTextColor(ST77XX_GREEN);
-        canvas.setCursor(16, 148);
+        canvas.setCursor(18, 145);
         canvas.print("API ONLINE");
     } else {
         canvas.drawCircle(8, status_y, 3, ST77XX_RED);
         canvas.setTextColor(ST77XX_RED);
-        canvas.setCursor(16, 148);
+        canvas.setCursor(18, 145);
         canvas.print("API OFFLINE");
     }
 
