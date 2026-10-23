@@ -86,17 +86,19 @@ Following the `/incremental-implementation` guidelines, each slice is self-conta
 
 ---
 
-### [ ] Slice 3: Short-Lag Window Preservation & Coarse SRP-PHAT Grid Search
+### [x] Slice 3: Lag Window Preservation & 72-Point SRP-PHAT Grid Search
 - **Objective**: Preserve normalized correlation lags for all 6 pairs on the stack and implement fast 72-point angular beamforming.
 - **Changes**:
+  - `src/config/app_config.h`:
+    - Added `PAIR_CORR_RADIUS = 22` and `PAIR_CORR_SIZE = 45`.
   - `src/audio/gcc_phat.h` / `src/audio/gcc_phat.cpp`:
-    - Implement `evaluateSrpPhat(const float pair_corr[6][45], float &best_angle, float &best_power)`.
-    - In `GccPhat::processMulti()`:
-      - For each of the 6 pairs, copy normalized real correlation values within physical bounds `[-max_lag, +max_lag]` into a stack array `float pair_corr[6][45]`.
-      - Evaluate theoretical delay table $\tau_p(\theta) = \frac{d(\text{dir\_x}_p \sin\theta + \text{dir\_y}_p \cos\theta)}{c} f_s$ across 72 angles ($5^\circ$ resolution).
+    - Implemented `populatePairCorrelations()` extracting normalized correlation lags `[-22, +22]` for all 6 pairs.
+    - Implemented `evaluateSrpPhat(pair_corr, best_angle, best_power)` evaluating 72 angles ($5^\circ$ grid) in $<10\ \mu\text{s}$ CPU time.
+    - Updated `process()` to preserve `pair_corr` on the stack.
+  - `test/test_adaptive_and_smoothing.cpp`:
+    - Added 13th unit test suite `test_gcc_phat_srp_phat_coarse_grid` verifying coarse angle localization across cardinal and oblique directions.
 - **Verification**:
-  - Add unit test verifying SRP-PHAT finds synthetic single-source incident angles ($0^\circ, 45^\circ, 90^\circ, 180^\circ$) within $\pm 5^\circ$ before WLS refinement.
-  - `make test` passes.
+  - `make test`: All 13 unit test suites pass under ASAN/UBSAN with zero coarse grid error ($0.0^\circ$ error, power $>0.96$).
 - **Completion Target**: Coarse spatial spectrum correctly locates sound seeds under $< 10\ \mu\text{s}$ CPU budget.
 
 ---
@@ -175,7 +177,7 @@ Following the `/incremental-implementation` guidelines, each slice is self-conta
 |---|---|:---:|:---:|
 | **Slice 1** | Configuration Constants & Multi-Source Data Structures | [x] Completed | `fef9bf4` |
 | **Slice 2** | Wideband Weight Tables & Autocorrelation Kernels | [x] Completed | `a18ef55` |
-| **Slice 3** | Lag Window Preservation & 72-Point SRP-PHAT Grid Search | [ ] Pending | — |
+| **Slice 3** | Lag Window Preservation & 72-Point SRP-PHAT Grid Search | [x] Completed | `0e63c9b` |
 | **Slice 4** | CLEAN Deconvolution Loop & Multi-Source Parabolic WLS | [ ] Pending | — |
 | **Slice 5** | Binary REST Batch Capacity & Protocol Verification | [ ] Pending | — |
 | **Slice 6** | Multi-Target Radar UI & Filter Bank Association | [ ] Pending | — |

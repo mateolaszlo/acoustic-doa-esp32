@@ -442,6 +442,88 @@ void GccPhat::computePairCrossCorrelationIfft(size_t mic_i, size_t mic_j, const 
     dsps_bit_rev_fc32(ccorr, static_cast<int>(fft_size));
 }
 
+void GccPhat::populatePairCorrelations(float pair_corr[AUDIO_NUM_PAIRS][PAIR_CORR_SIZE]) {
+    if (pair_corr == nullptr || ccorr == nullptr || fft_size == 0) {
+        return;
+    }
+    const int fft_size_int = static_cast<int>(fft_size);
+
+    for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) {
+        const MicPairDescriptor& pair = MIC_PAIRS[p];
+        const float* weights = pair.is_diagonal ? band_weight_diag : band_weight_edge;
+        const float weight_sum = pair.is_diagonal ? weight_sum_diag : weight_sum_edge;
+        const float norm_factor =
+            (weight_sum > 1e-6f) ? weight_sum : static_cast<float>(fft_size);
+
+        computePairCrossCorrelationIfft(pair.mic_i, pair.mic_j, weights);
+
+        for (int lag = -PAIR_CORR_RADIUS; lag <= PAIR_CORR_RADIUS; ++lag) {
+            const int idx = (lag < 0) ? (fft_size_int + lag) : lag;
+            const size_t k = static_cast<size_t>(lag + PAIR_CORR_RADIUS);
+            pair_corr[p][k] = ccorr[2 * idx] / norm_factor;
+        }
+    }
+}
+
+float GccPhat::evaluateSrpPhat(const float pair_corr[AUDIO_NUM_PAIRS][PAIR_CORR_SIZE],
+                              float &best_angle_deg, float &best_power) const {
+    best_angle_deg = 0.0f;
+    best_power = -1.0f;
+
+    if (pair_corr == nullptr || c_sound <= 0.0f || fs <= 0.0f || d <= 0.0f) {
+        return 0.0f;
+    }
+
+    const float scale = (d / c_sound) * fs;
+    const float deg_to_rad = static_cast<float>(M_PI) / 180.0f;
+
+    for (size_t i = 0; i < SRP_GRID_ANGLES; ++i) {
+        const float angle_deg = -180.0f + static_cast<float>(i) * SRP_GRID_STEP_DEG;
+        const float theta_rad = angle_deg * deg_to_rad;
+        const float u_x = sinf(theta_rad);
+        const float u_y = cosf(theta_rad);
+
+        const float t_x = u_x * scale;
+        const float t_y = u_y * scale;
+
+        // Theoretical sample lags for the 6 pairs:
+        // Pair 0: Right Edge (+Y)            -> +t_y
+        // Pair 1: Front Edge (-X)            -> -t_x
+        // Pair 2: Left Edge (+Y)             -> +t_y
+        // Pair 3: Back Edge (-X)             -> -t_x
+        // Pair 4: Diagonal LB -> RF (+X, +Y) -> +(t_x + t_y)
+        // Pair 5: Diagonal RB -> LF (-X, +Y) -> +(-t_x + t_y)
+        const float lags[AUDIO_NUM_PAIRS] = {
+            t_y,
+            -t_x,
+            t_y,
+            -t_x,
+            t_x + t_y,
+            -t_x + t_y
+        };
+
+        float p_sum = 0.0f;
+        for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) {
+            int round_lag = static_cast<int>(roundf(lags[p]));
+            if (round_lag < -PAIR_CORR_RADIUS) {
+                round_lag = -PAIR_CORR_RADIUS;
+            } else if (round_lag > PAIR_CORR_RADIUS) {
+                round_lag = PAIR_CORR_RADIUS;
+            }
+            const size_t k = static_cast<size_t>(round_lag + PAIR_CORR_RADIUS);
+            p_sum += pair_corr[p][k];
+        }
+
+        const float avg_power = p_sum * (1.0f / static_cast<float>(AUDIO_NUM_PAIRS));
+        if (avg_power > best_power) {
+            best_power = avg_power;
+            best_angle_deg = angle_deg;
+        }
+    }
+
+    return best_power;
+}
+
 DoaResult GccPhat::process(const int32_t* left_channel, const int32_t* right_channel) {
     // 2-channel compatibility wrapper: delegates to quad array processing by mirroring stereo channels
     return process(left_channel, right_channel, left_channel, right_channel);
@@ -530,6 +612,7 @@ DoaResult GccPhat::process(const int32_t* ch0, const int32_t* ch1,
     // 5. Dvopasovno uteženi navzkrižni spektri moči, IFFT in parabolična interpolacija vrha za vseh 6 parov
     float pair_lags_samples[AUDIO_NUM_PAIRS];
     float pair_confidences[AUDIO_NUM_PAIRS];
+    float pair_corr[AUDIO_NUM_PAIRS][PAIR_CORR_SIZE];
     const int fft_size_int = static_cast<int>(fft_size);
 
     for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) {
@@ -540,6 +623,14 @@ DoaResult GccPhat::process(const int32_t* ch0, const int32_t* ch1,
             (weight_sum > 1e-6f) ? weight_sum : static_cast<float>(fft_size);
 
         computePairCrossCorrelationIfft(pair.mic_i, pair.mic_j, weights);
+
+        // Shrani normalizirana okna zakasnitev [-PAIR_CORR_RADIUS, +PAIR_CORR_RADIUS] na sklad za SRP/CLEAN
+        for (int lag = -PAIR_CORR_RADIUS; lag <= PAIR_CORR_RADIUS; ++lag) {
+            const int idx = (lag < 0) ? (fft_size_int + lag) : lag;
+            const size_t k = static_cast<size_t>(lag + PAIR_CORR_RADIUS);
+            pair_corr[p][k] = ccorr[2 * idx] / norm_factor;
+        }
+        (void)pair_corr;
 
         const float baseline_len = pair.is_diagonal ? (d * static_cast<float>(M_SQRT2)) : d;
         int max_lag = static_cast<int>(ceilf((baseline_len / c_sound) * fs)) + 1;

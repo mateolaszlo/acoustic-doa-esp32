@@ -71,6 +71,8 @@ constexpr float  DOA_MIN_SOURCE_SEPARATION_DEG       = 25.0f;
 constexpr size_t SRP_GRID_ANGLES                     = 72;
 constexpr float  SRP_GRID_STEP_DEG                   = 5.0f;
 constexpr size_t CLEAN_KERNEL_RADIUS_SAMPLES         = 16;
+constexpr int    PAIR_CORR_RADIUS                    = 22;
+constexpr size_t PAIR_CORR_SIZE                      = 2 * PAIR_CORR_RADIUS + 1; // 45 lags [-22, +22]
 
 // Dual-Band GCC-PHAT Raised-Cosine Spectral Weighting Cutoffs
 constexpr float GCC_PHAT_MIN_HZ      = 300.0f;

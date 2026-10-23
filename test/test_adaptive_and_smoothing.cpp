@@ -1404,6 +1404,52 @@ static void test_rest_binary_batch_serialization() {
     printf("  [PASS] test_rest_binary_batch_serialization passed.\n");
 }
 
+static void test_gcc_phat_srp_phat_coarse_grid() {
+    printf("[TEST] Running test_gcc_phat_srp_phat_coarse_grid...\n");
+
+    const size_t n = 1024;
+    const float fs = 44100.0f;
+    const float d = DEFAULT_MIC_DISTANCE_M; // 0.082 m
+    GccPhat doa(fs, d, 20.0f);
+    assert(doa.init(n));
+    const float c_sound = doa.getSoundSpeed();
+
+    const float test_angles_deg[] = {
+        0.0f, 45.0f, 90.0f, 135.0f, 180.0f, -135.0f, -90.0f, -45.0f, 30.0f, -60.0f
+    };
+    const size_t num_angles = sizeof(test_angles_deg) / sizeof(test_angles_deg[0]);
+
+    std::vector<int32_t> ch0, ch1, ch2, ch3;
+    float pair_corr[AUDIO_NUM_PAIRS][PAIR_CORR_SIZE];
+
+    for (size_t a = 0; a < num_angles; ++a) {
+        const float target_deg = test_angles_deg[a];
+        synthesize_quad_wavefront(target_deg, fs, d, c_sound, n, ch0, ch1, ch2, ch3);
+
+        // Process through GccPhat to compute FFT and populate lag windows
+        DoaResult res = doa.process(ch0.data(), ch1.data(), ch2.data(), ch3.data());
+        assert(res.valid);
+
+        // Populate pair correlations from the processed frame
+        doa.populatePairCorrelations(pair_corr);
+
+        float best_angle = 0.0f;
+        float best_power = 0.0f;
+        doa.evaluateSrpPhat(pair_corr, best_angle, best_power);
+
+        const float err_deg = fabsf(circular_angle_diff_deg(best_angle, target_deg));
+        printf("  Target: %+6.1f deg -> Coarse SRP Angle: %+6.1f deg (err: %.1f deg, power: %.3f)\n",
+               target_deg, best_angle, err_deg, best_power);
+
+        // With 5-degree grid resolution, error must be <= 5.0 deg
+        assert(err_deg <= 5.0f);
+        // Power must be strong on clean synthetic wave (> 0.70)
+        assert(best_power > 0.70f);
+    }
+
+    printf("  [PASS] test_gcc_phat_srp_phat_coarse_grid passed.\n");
+}
+
 int main() {
     test_gcc_phat_adaptive_noise_floor();
     test_display_smoothing_filter();
@@ -1417,6 +1463,7 @@ int main() {
     test_gcc_phat_loop_closure_multipath_rejection();
     test_display_circular_smoothing_and_outliers();
     test_rest_binary_batch_serialization();
+    test_gcc_phat_srp_phat_coarse_grid();
     printf("\nAll unit tests passed successfully!\n");
     return 0;
 }
