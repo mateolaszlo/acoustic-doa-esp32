@@ -119,16 +119,16 @@ Following the `/incremental-implementation` guidelines, each slice is self-conta
 
 ---
 
-### [ ] Slice 5: Binary REST Serialization Protocol (Option A)
+### [x] Slice 5: Binary REST Serialization Protocol (Option A)
 - **Objective**: Support simultaneous multi-target uploads sharing the same frame timestamp without breaking existing backend decoders.
 - **Changes**:
   - `src/network/rest_protocol.h`:
-    - Verify `serialize_measurement_batch()` handles batches of up to 24 measurements with identical `timestamp_ms` values ($\Delta t = 0$).
+    - Verified `serialize_measurement_batch()` handles batches of up to 24 measurements with identical `timestamp_ms` values ($\Delta t = 0$).
   - `test/test_adaptive_and_smoothing.cpp`:
-    - Add unit test creating a 3-source simultaneous measurement batch (all with identical timestamps).
-    - Confirm serializer accepts them, packages valid 20-byte records, and decodes with identical `delta_ms = 0`.
+    - Added unit test creating a 24-record simultaneous multi-source batch (8 frames * 3 simultaneous sources).
+    - Confirmed serializer accepts them, packages valid 20-byte records, and decodes with identical `delta_ms = 0` for simultaneous detections in the same frame.
 - **Verification**:
-  - `make test` passes.
+  - `make test`: All 14 unit test suites pass under ASAN/UBSAN with zero errors.
 - **Completion Target**: Protocol validated for multi-target batches without bumping version number or modifying decoder contract.
 
 ---
@@ -174,7 +174,7 @@ Following the `/incremental-implementation` guidelines, each slice is self-conta
 | **Slice 1** | Configuration Constants & Multi-Source Data Structures | [x] Completed | `fef9bf4` |
 | **Slice 2** | Wideband Weight Tables & Autocorrelation Kernels | [x] Completed | `a18ef55` |
 | **Slice 3** | Lag Window Preservation & 72-Point SRP-PHAT Grid Search | [x] Completed | `0e63c9b` |
-| **Slice 4** | CLEAN Deconvolution Loop & Multi-Source Parabolic WLS | [x] Completed | In progress |
-| **Slice 5** | Binary REST Batch Capacity & Protocol Verification | [ ] Pending | — |
+| **Slice 4** | CLEAN Deconvolution Loop & Multi-Source Parabolic WLS | [x] Completed | `706b132` |
+| **Slice 5** | Binary REST Batch Capacity & Protocol Verification | [x] Completed | In progress |
 | **Slice 6** | Multi-Target Radar UI & Filter Bank Association | [ ] Pending | — |
 | **Slice 7** | System Integration, Documentation & CI Verification | [ ] Pending | — |

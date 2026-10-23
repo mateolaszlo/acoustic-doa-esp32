@@ -1425,6 +1425,52 @@ static void test_rest_binary_batch_serialization() {
     batch[1].timestamp_ms = 1704067199999ULL; // -1 ms
     assert(serialize_measurement_batch(batch, 2, buffer, sizeof(buffer), db_spl_offset) == 0);
 
+    // 7. Multi-source simultaneous event serialization: 24-record batch (8 frames * 3 simultaneous sources)
+    // Frame 0 has 3 simultaneous sources sharing delta_ms = 0.
+    std::vector<NetworkMeasurement> multi_batch(NETWORK_BATCH_MAX_MEASUREMENTS);
+    const uint64_t multi_base_ms = 1704067200500ULL;
+    for (size_t f = 0; f < 8; ++f) {
+        const uint64_t frame_time = multi_base_ms + static_cast<uint64_t>(f * 23); // 23 ms audio block
+        for (size_t s = 0; s < DOA_MAX_SOURCES; ++s) {
+            const size_t idx = f * DOA_MAX_SOURCES + s;
+            const float angle = -150.0f + static_cast<float>(idx * 13);
+            multi_batch[idx].result = {angle, 100.0f, 0.80f + 0.05f * static_cast<float>(s), -25.0f, true};
+            multi_batch[idx].timestamp_ms = frame_time;
+            multi_batch[idx].clock_flags = CLOCK_FLAG_UTC_SYNCHRONIZED;
+        }
+    }
+
+    uint8_t large_buffer[MEASUREMENT_BATCH_HEADER_SIZE + NETWORK_BATCH_MAX_MEASUREMENTS * MEASUREMENT_RECORD_SIZE + 32];
+    const size_t multi_bytes = serialize_measurement_batch(
+        multi_batch.data(), multi_batch.size(), large_buffer, sizeof(large_buffer), db_spl_offset);
+    assert(multi_bytes == MEASUREMENT_BATCH_HEADER_SIZE + NETWORK_BATCH_MAX_MEASUREMENTS * MEASUREMENT_RECORD_SIZE);
+    assert(multi_bytes == 492); // 12 + 24 * 20 = 492 bytes
+
+    assert(large_buffer[0] == MEASUREMENT_BATCH_VERSION);
+    assert(large_buffer[1] == 24); // count
+
+    // Verify all 3 simultaneous sources in Frame 0 share delta_ms = 0
+    for (size_t s = 0; s < DOA_MAX_SOURCES; ++s) {
+        const size_t rec_offset = MEASUREMENT_BATCH_HEADER_SIZE + s * MEASUREMENT_RECORD_SIZE;
+        uint32_t delta_s = 0;
+        for (size_t b = 0; b < 4; ++b) delta_s |= (static_cast<uint32_t>(large_buffer[rec_offset + b]) << (b * 8));
+        assert(delta_s == 0); // Exact same timestamp for simultaneous sources
+
+        float angle_s = 0.0f;
+        uint32_t angle_bits = 0;
+        for (size_t b = 0; b < 4; ++b) angle_bits |= (static_cast<uint32_t>(large_buffer[rec_offset + 4 + b]) << (b * 8));
+        std::memcpy(&angle_s, &angle_bits, sizeof(angle_bits));
+        assert(fabsf(angle_s - (-150.0f + static_cast<float>(s * 13))) < 1e-4f);
+    }
+
+    // Verify Frame 1 sources share delta_ms = 23
+    for (size_t s = 0; s < DOA_MAX_SOURCES; ++s) {
+        const size_t rec_offset = MEASUREMENT_BATCH_HEADER_SIZE + (DOA_MAX_SOURCES + s) * MEASUREMENT_RECORD_SIZE;
+        uint32_t delta_s = 0;
+        for (size_t b = 0; b < 4; ++b) delta_s |= (static_cast<uint32_t>(large_buffer[rec_offset + b]) << (b * 8));
+        assert(delta_s == 23);
+    }
+
     printf("  [PASS] test_rest_binary_batch_serialization passed.\n");
 }
 
