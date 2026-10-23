@@ -151,13 +151,13 @@ static void check_setup_button(const BootSelfTestResult &post_result) {
     }
 }
 
-static bool enqueue_latest(QueueHandle_t queue, const DoaResult &result,
+static bool enqueue_latest(QueueHandle_t queue, const MultiDoaResult &result,
                            std::atomic<uint32_t> &drop_counter) {
     if (xQueueSend(queue, &result, 0) == pdPASS) {
         return true;
     }
 
-    DoaResult discarded;
+    MultiDoaResult discarded;
     if (xQueueReceive(queue, &discarded, 0) != pdPASS ||
         xQueueSend(queue, &result, 0) != pdPASS) {
         drop_counter.fetch_add(1);
@@ -275,7 +275,7 @@ void dsp_task(void *param) {
                 esp_task_wdt_reset();
                 continue;
             }
-            DoaResult res = doa.process(ch0_buf, ch1_buf, ch2_buf, ch3_buf);
+            MultiDoaResult multi_res = doa.processMulti(ch0_buf, ch1_buf, ch2_buf, ch3_buf);
             const float noise_floor = doa.getNoiseFloorDb();
             xSemaphoreGive(doa_mutex);
             current_noise_floor_db.store(noise_floor);
@@ -291,9 +291,16 @@ void dsp_task(void *param) {
                 dsp_deadline_misses.fetch_add(1);
             }
 
-            if (res.valid) {
-                enqueue_latest(display_queue, res, display_queue_drops);
-                enqueue_network_measurement(make_network_measurement(res));
+            if (multi_res.valid && multi_res.count > 0) {
+                enqueue_latest(display_queue, multi_res, display_queue_drops);
+
+                // Enqueue each detected source from this block with identical timestamp
+                NetworkMeasurement base_meas = make_network_measurement(multi_res.sources[0]);
+                for (uint8_t i = 0; i < multi_res.count; ++i) {
+                    NetworkMeasurement meas = base_meas;
+                    meas.result = multi_res.sources[i];
+                    enqueue_network_measurement(meas);
+                }
             }
         } else {
             dsp_i2s_read_failures.fetch_add(1);
@@ -591,10 +598,17 @@ void update_environmental_compensation() {
 }
 
 void sensor_display_task(void *param) {
-    DoaResult event;
-    DoaResult last_event = {0.0f, 0.0f, 0.0f, -100.0f, false};
+    MultiDoaResult event;
+    MultiDoaResult last_event;
+    last_event.valid = false;
+    last_event.count = 0;
+    last_event.rms_db = -100.0f;
+    for (size_t s = 0; s < DOA_MAX_SOURCES; ++s) {
+        last_event.sources[s] = {0.0f, 0.0f, 0.0f, -100.0f, false};
+    }
     bool last_server_available = server_available.load();
-    DisplaySmoothingFilter display_filter;
+    MultiTargetDisplayTracker tracker;
+    TrackedTarget tracked_targets[DOA_MAX_SOURCES];
 
     while (true) {
         update_environmental_compensation();
@@ -602,7 +616,15 @@ void sensor_display_task(void *param) {
         if (xQueueReceive(display_queue, &event, pdMS_TO_TICKS(DISPLAY_QUEUE_TIMEOUT_MS))) {
             last_event = event;
             const uint32_t now_ms = millis();
-            const float display_angle = display_filter.update(event.angle_deg, now_ms);
+            tracker.update(event, now_ms);
+
+            const size_t num_tracks = tracker.getActiveTracks(tracked_targets, DOA_MAX_SOURCES);
+            float angles[DOA_MAX_SOURCES];
+            float confs[DOA_MAX_SOURCES];
+            for (size_t i = 0; i < num_tracks; ++i) {
+                angles[i] = tracked_targets[i].smoothed_angle_deg;
+                confs[i] = tracked_targets[i].confidence;
+            }
 
             float temp = current_temperature.load();
             float speed = current_sound_speed.load();
@@ -610,13 +632,15 @@ void sensor_display_task(void *param) {
             float pressure = current_pressure.load();
             const float calibrated_db = event.rms_db + db_spl_offset.load();
 
-            SerialUI::printDoaEvent(event.angle_deg, event.confidence, calibrated_db);
+            for (uint8_t s = 0; s < event.count; ++s) {
+                SerialUI::printDoaEvent(event.sources[s].angle_deg, event.sources[s].confidence, calibrated_db);
+            }
 
             if (radar_display.isInitialized()) {
                 last_server_available = server_available.load();
-                radar_display.drawRadar(display_angle, temp, humidity, pressure, speed,
-                                        calibrated_db, last_server_available,
-                                        adaptive_threshold_active.load());
+                radar_display.drawRadarMulti(angles, confs, num_tracks, temp, humidity, pressure, speed,
+                                            calibrated_db, last_server_available,
+                                            adaptive_threshold_active.load());
             }
         }
 
@@ -625,11 +649,18 @@ void sensor_display_task(void *param) {
             current_server_available != last_server_available) {
             last_server_available = current_server_available;
             const float calibrated_db = last_event.rms_db + db_spl_offset.load();
-            radar_display.drawRadar(display_filter.isInitialized() ? display_filter.getSmoothedAngle() : last_event.angle_deg,
-                                    current_temperature.load(), current_humidity.load(),
-                                    current_pressure.load(), current_sound_speed.load(),
-                                    calibrated_db, last_server_available,
-                                    adaptive_threshold_active.load());
+            const size_t num_tracks = tracker.getActiveTracks(tracked_targets, DOA_MAX_SOURCES);
+            float angles[DOA_MAX_SOURCES];
+            float confs[DOA_MAX_SOURCES];
+            for (size_t i = 0; i < num_tracks; ++i) {
+                angles[i] = tracked_targets[i].smoothed_angle_deg;
+                confs[i] = tracked_targets[i].confidence;
+            }
+            radar_display.drawRadarMulti(angles, confs, num_tracks,
+                                        current_temperature.load(), current_humidity.load(),
+                                        current_pressure.load(), current_sound_speed.load(),
+                                        calibrated_db, last_server_available,
+                                        adaptive_threshold_active.load());
         }
         esp_task_wdt_reset();
     }
@@ -666,7 +697,7 @@ void setup() {
     }
 
     // Ustvari FreeRTOS objekte za prenos rezultatov in zaščito DSP konfiguracije
-    display_queue = xQueueCreate(DISPLAY_QUEUE_LENGTH, sizeof(DoaResult));
+    display_queue = xQueueCreate(DISPLAY_QUEUE_LENGTH, sizeof(MultiDoaResult));
     network_queue = xQueueCreate(NETWORK_QUEUE_LENGTH, sizeof(NetworkMeasurement));
     doa_mutex = xSemaphoreCreateMutex();
     config_mutex = xSemaphoreCreateMutex();

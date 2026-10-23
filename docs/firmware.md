@@ -40,6 +40,27 @@ The DSP task reads a synchronized 4-channel audio block via `read_i2s_quad()`. T
    - Report equivalent projected broadside delay along the X-axis baseline (`delay_us`):
      $$\tau_{\text{proj}} = \left(\frac{d \cdot \sin(\phi_{\text{cal}} \cdot \pi / 180^\circ)}{c}\right) \times 10^6 \quad [\mu\text{s}]$$
 
+### Multi-Source Estimation: SRP-PHAT + Deconvolving CLEAN
+
+To track up to `DOA_MAX_SOURCES = 3` concurrent acoustic events within a single 1024-sample audio block without spatial aliasing or destructive mutual interference, the firmware combines wideband Steered Response Power (SRP-PHAT) with iterative CLEAN deconvolution and 2D WLS refinement:
+
+1. **Wideband Correlation Kernels**:
+   - Edge pairs are filtered up to $5000\text{ Hz}$ (`GCC_PHAT_EDGE_MAX_HZ`) and diagonal pairs up to $4500\text{ Hz}$ (`GCC_PHAT_DIAG_MAX_HZ`).
+   - Increasing the bandwidth shrinks the time-domain correlation peak width ($\Delta\tau \approx \frac{f_s}{2f_{\max}}$) from $\sim 12\text{ samples}$ down to $\sim 3\text{ samples}$, enabling multiple distinct correlation lobes to coexist within the $\pm 16\text{ sample}$ array lag window.
+   - During `init()`, normalized autocorrelation kernels $K_{\text{edge}}[\tau]$ and $K_{\text{diag}}[\tau]$ are precomputed via IFFT of the bandpass weighting tables.
+2. **Lag Window Preservation**:
+   - The normalized cross-correlation lags for all 6 pairs are copied into a stack buffer `pair_corr[6][45]` (covering lag offsets $[-22, +22]$ samples) consuming only $\sim 1\text{ KB}$ of the 8 KB DSP stack.
+3. **Iterative Extraction Loop**:
+   - **Pass 0 (Dominant Source)**: Computes the primary sound azimuth via pairwise argmax and $2\times 2$ WLS solver. If valid, the primary source is stored in `MultiDoaResult.sources[0]`. The scaled acoustic imprint of the primary source ($A_p \cdot K_p[\tau - \hat{\tau}_p]$) is subtracted from `pair_corr[p]` for all 6 pairs.
+   - **Pass 1..2 (Secondary & Tertiary Sources)**:
+     - **Coarse SRP-PHAT Grid Search**: Sweeps 72 candidate azimuths $\theta \in [-180^\circ, +180^\circ)$ with $5^\circ$ resolution:
+       $$P(\theta) = \frac{1}{6} \sum_{p=0}^5 \text{pair\_corr}_p\big[\text{round}(\tau_p(\theta))\big]$$
+       Algebraically optimized to only 2 multiplications per angle, completing the entire 72-point beamforming search in $< 10\ \mu\text{s}$ CPU time.
+     - **Termination Gate**: If $P(\theta_{\text{seed}}) < \text{threshold}$, the iteration stops.
+     - **Local Parabolic WLS Refinement**: For each pair, searches within a narrow local window of $\pm 3\text{ samples}$ around $\tau_p(\theta_{\text{seed}})$, fits a 3-point parabolic peak, and solves the $2\times 2$ WLS normal equations with closed-triangle loop-closure validation.
+     - **Spatial Separation Constraint**: Requires candidate azimuths to maintain at least $25^\circ$ separation (`DOA_MIN_SOURCE_SEPARATION_DEG`) from all previously accepted sources to avoid reporting residual sidelobes.
+     - **CLEAN Subtraction**: The candidate's fitted imprint is subtracted from `pair_corr`, and the loop repeats.
+
 ### Adaptive Noise Floor Tracking
 
 The pipeline supports an adaptive noise floor tracker implemented as an asymmetric leaky integrator estimating ambient acoustic noise:
@@ -79,6 +100,17 @@ The internal result contains:
 | `valid` | Whether energy, loop-closure consistency, and correlation thresholds were satisfied |
 
 The internal `rms_db` value is not inherently dB SPL. The network and display paths add the configured dB SPL offset when presenting or transmitting it.
+
+## `MultiDoaResult`
+
+When running multi-source detection via `GccPhat::processMulti()`, results are packaged in a `MultiDoaResult` struct:
+
+| Field | Meaning |
+|---|---|
+| `sources` | Array of `DoaResult` records (up to `DOA_MAX_SOURCES = 3`), sorted by confidence descending |
+| `count` | Number of verified simultaneous acoustic sources detected in this frame (`0..3`) |
+| `rms_db` | Omnidirectional 4-channel digital RMS level in dBFS |
+| `valid` | True if at least one valid sound source was extracted (`count > 0`) |
 
 ## Power-On Self-Test (POST)
 

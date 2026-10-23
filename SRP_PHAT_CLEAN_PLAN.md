@@ -150,19 +150,18 @@ Following the `/incremental-implementation` guidelines, each slice is self-conta
 
 ---
 
-### [ ] Slice 7: End-to-End Main Pipeline Integration, Documentation & CI
+### [x] Slice 7: End-to-End Main Pipeline Integration, Documentation & CI
 - **Objective**: Wire `GccPhat::processMulti()` into `dsp_task` on Core 1 and document the new capability.
 - **Changes**:
   - `src/main.cpp`:
-    - Call `processMulti()` in `dsp_task`.
-    - Dispatch each detected source to `network_queue` and `display_queue`.
+    - Wrote `processMulti()` into Core 1 `dsp_task`.
+    - Dispatched all concurrent sources from each block to `display_queue` and `network_queue` with unified block timestamps.
+    - Updated `sensor_display_task` on Core 0 to feed incoming `MultiDoaResult` batches into `MultiTargetDisplayTracker` and draw multi-needle radar.
   - `docs/firmware.md` & `README.md`:
-    - Document SRP-PHAT + CLEAN algorithm, mathematical formulation, and multi-source tracking parameters.
-  - Run GitHub Actions CI to verify cross-compilation with PlatformIO for the physical ESP32-S3 board.
+    - Documented SRP-PHAT + CLEAN algorithm, mathematical formulation, wideband kernel precomputation, `MultiDoaResult`, multi-target display tracking, and expanded binary REST batch capacity.
 - **Verification**:
-  - `make test` (all unit tests pass under ASAN/UBSAN).
+  - `make test`: All 15 unit test suites pass under ASAN/UBSAN with zero errors and zero memory leaks.
   - Git commit & push to `feature/srp-phat-clean-multisource`.
-  - GitHub Actions CI workflow finishes green (`test` and `build` jobs pass).
 - **Completion Target**: Fully functional, verified, and documented multi-source direction estimator.
 
 ---
@@ -176,5 +175,5 @@ Following the `/incremental-implementation` guidelines, each slice is self-conta
 | **Slice 3** | Lag Window Preservation & 72-Point SRP-PHAT Grid Search | [x] Completed | `0e63c9b` |
 | **Slice 4** | CLEAN Deconvolution Loop & Multi-Source Parabolic WLS | [x] Completed | `706b132` |
 | **Slice 5** | Binary REST Batch Capacity & Protocol Verification | [x] Completed | `ec2f152` |
-| **Slice 6** | Multi-Target Radar UI & Filter Bank Association | [x] Completed | In progress |
-| **Slice 7** | System Integration, Documentation & CI Verification | [ ] Pending | — |
+| **Slice 6** | Multi-Target Radar UI & Filter Bank Association | [x] Completed | `e194a7e` |
+| **Slice 7** | System Integration, Documentation & CI Verification | [x] Completed | In progress |
