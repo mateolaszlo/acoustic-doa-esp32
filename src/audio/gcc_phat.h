@@ -44,12 +44,15 @@ public:
     DoaResult process(const int32_t* left_channel, const int32_t* right_channel);
     DoaResult process(const int32_t* ch0, const int32_t* ch1,
                       const int32_t* ch2, const int32_t* ch3);
+    MultiDoaResult processMulti(const int32_t* ch0, const int32_t* ch1,
+                                const int32_t* ch2, const int32_t* ch3);
     float evaluateSrpPhat(const float pair_corr[AUDIO_NUM_PAIRS][PAIR_CORR_SIZE],
                           float &best_angle_deg, float &best_power) const;
     void populatePairCorrelations(float pair_corr[AUDIO_NUM_PAIRS][PAIR_CORR_SIZE]);
     DoaResult solveWlsAzimuth(const float pair_lags_samples[AUDIO_NUM_PAIRS],
                               const float pair_confidences[AUDIO_NUM_PAIRS],
-                              float rms_db);
+                              float rms_db,
+                              float min_confidence = -1.0f);
     void updateCalibration(float distance_m, float temp_c, float humidity_pct,
                            float pressure_pa, float corr_thresh, float db_thresh,
                            bool adaptive_thresh = false,

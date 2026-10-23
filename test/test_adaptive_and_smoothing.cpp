@@ -948,7 +948,9 @@ static void synthesize_quad_wavefront(float azimuth_deg, float fs, float d, floa
                                       size_t n, std::vector<int32_t>& ch0,
                                       std::vector<int32_t>& ch1,
                                       std::vector<int32_t>& ch2,
-                                      std::vector<int32_t>& ch3) {
+                                      std::vector<int32_t>& ch3,
+                                      float tone_offset_hz = 0.0f,
+                                      float phase_offset = 0.0f) {
     ch0.assign(n, 0);
     ch1.assign(n, 0);
     ch2.assign(n, 0);
@@ -985,14 +987,36 @@ static void synthesize_quad_wavefront(float azimuth_deg, float fs, float d, floa
             const float t_wave = t_base - t_arrival[m];
             float sample_val = 0.0f;
             for (int k = 0; k < num_tones; ++k) {
-                const float freq = f_start + static_cast<float>(k) * f_step;
-                const float phase = static_cast<float>(M_PI) *
+                const float freq = f_start + tone_offset_hz + static_cast<float>(k) * f_step;
+                const float phase = phase_offset + static_cast<float>(M_PI) *
                                     static_cast<float>(k * (k + 1)) /
                                     static_cast<float>(num_tones);
                 sample_val += cosf(2.0f * static_cast<float>(M_PI) * freq * t_wave + phase);
             }
             (*ch_ptrs[m])[i] = static_cast<int32_t>(sample_val * amp);
         }
+    }
+}
+
+static void synthesize_two_quad_wavefronts(
+    float angle1_deg, float amp1,
+    float angle2_deg, float amp2,
+    float fs, float d, float c_sound, size_t n,
+    std::vector<int32_t>& ch0, std::vector<int32_t>& ch1,
+    std::vector<int32_t>& ch2, std::vector<int32_t>& ch3) {
+
+    std::vector<int32_t> a0, a1, a2, a3;
+    std::vector<int32_t> b0, b1, b2, b3;
+
+    synthesize_quad_wavefront(angle1_deg, fs, d, c_sound, n, a0, a1, a2, a3, 0.0f, 0.0f);
+    synthesize_quad_wavefront(angle2_deg, fs, d, c_sound, n, b0, b1, b2, b3, 18.0f, 1.234f);
+
+    ch0.resize(n); ch1.resize(n); ch2.resize(n); ch3.resize(n);
+    for (size_t i = 0; i < n; ++i) {
+        ch0[i] = static_cast<int32_t>(static_cast<float>(a0[i]) * amp1 + static_cast<float>(b0[i]) * amp2);
+        ch1[i] = static_cast<int32_t>(static_cast<float>(a1[i]) * amp1 + static_cast<float>(b1[i]) * amp2);
+        ch2[i] = static_cast<int32_t>(static_cast<float>(a2[i]) * amp1 + static_cast<float>(b2[i]) * amp2);
+        ch3[i] = static_cast<int32_t>(static_cast<float>(a3[i]) * amp1 + static_cast<float>(b3[i]) * amp2);
     }
 }
 
@@ -1450,6 +1474,62 @@ static void test_gcc_phat_srp_phat_coarse_grid() {
     printf("  [PASS] test_gcc_phat_srp_phat_coarse_grid passed.\n");
 }
 
+static void test_gcc_phat_clean_multisource() {
+    printf("[TEST] Running test_gcc_phat_clean_multisource...\n");
+
+    const size_t n = 1024;
+    const float fs = 44100.0f;
+    const float d = DEFAULT_MIC_DISTANCE_M; // 0.082 m
+    GccPhat doa(fs, d, 20.0f);
+    assert(doa.init(n));
+    const float c_sound = doa.getSoundSpeed();
+
+    std::vector<int32_t> ch0, ch1, ch2, ch3;
+
+    // 1. Single source test: processMulti must extract exactly 1 source matching process()
+    synthesize_quad_wavefront(45.0f, fs, d, c_sound, n, ch0, ch1, ch2, ch3);
+    MultiDoaResult single_res = doa.processMulti(ch0.data(), ch1.data(), ch2.data(), ch3.data());
+    assert(single_res.valid);
+    assert(single_res.count == 1);
+    assert(fabsf(circular_angle_diff_deg(single_res.sources[0].angle_deg, 45.0f)) < 0.5f);
+    assert(single_res.sources[0].confidence > 0.85f);
+
+    DoaResult legacy_res = doa.process(ch0.data(), ch1.data(), ch2.data(), ch3.data());
+    assert(legacy_res.valid);
+    assert(fabsf(legacy_res.angle_deg - single_res.sources[0].angle_deg) < 1e-4f);
+    printf("  Single Source: 45.0 deg -> Extracted count: %d, Angle: %.2f deg (conf: %.3f)\n",
+           single_res.count, single_res.sources[0].angle_deg, single_res.sources[0].confidence);
+
+    // 2. Two simultaneous sources: Source 1 at +30.0 deg, Source 2 at -60.0 deg (diff = 90 deg)
+    synthesize_two_quad_wavefronts(30.0f, 1.0f, -60.0f, 0.75f, fs, d, c_sound, n, ch0, ch1, ch2, ch3);
+    MultiDoaResult two_res = doa.processMulti(ch0.data(), ch1.data(), ch2.data(), ch3.data());
+    assert(two_res.valid);
+    assert(two_res.count == 2);
+
+    float angle_a = two_res.sources[0].angle_deg;
+    float angle_b = two_res.sources[1].angle_deg;
+    printf("  Two Sources: [+30.0, -60.0] deg -> Extracted count: %d, Src0: %.2f deg (conf: %.3f), Src1: %.2f deg (conf: %.3f)\n",
+           two_res.count, angle_a, two_res.sources[0].confidence, angle_b, two_res.sources[1].confidence);
+
+    // Check that one angle is near +30.0 deg and the other is near -60.0 deg
+    const float err_a30 = fabsf(circular_angle_diff_deg(angle_a, 30.0f));
+    const float err_a60 = fabsf(circular_angle_diff_deg(angle_a, -60.0f));
+    const float err_b30 = fabsf(circular_angle_diff_deg(angle_b, 30.0f));
+    const float err_b60 = fabsf(circular_angle_diff_deg(angle_b, -60.0f));
+
+    const bool match_direct = (err_a30 < 7.0f && err_b60 < 7.0f);
+    const bool match_reversed = (err_a60 < 7.0f && err_b30 < 7.0f);
+    assert(match_direct || match_reversed);
+    assert(two_res.sources[0].confidence > 0.40f);
+    assert(two_res.sources[1].confidence > 0.25f);
+
+    // Verify minimum spatial separation constraint
+    const float separation = fabsf(circular_angle_diff_deg(angle_a, angle_b));
+    assert(separation >= DOA_MIN_SOURCE_SEPARATION_DEG);
+
+    printf("  [PASS] test_gcc_phat_clean_multisource passed.\n");
+}
+
 int main() {
     test_gcc_phat_adaptive_noise_floor();
     test_display_smoothing_filter();
@@ -1464,6 +1544,7 @@ int main() {
     test_display_circular_smoothing_and_outliers();
     test_rest_binary_batch_serialization();
     test_gcc_phat_srp_phat_coarse_grid();
+    test_gcc_phat_clean_multisource();
     printf("\nAll unit tests passed successfully!\n");
     return 0;
 }
