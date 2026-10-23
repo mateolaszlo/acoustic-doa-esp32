@@ -113,7 +113,7 @@ constexpr uint32_t TASK_SENSOR_DISPLAY_STACK_SIZE = 4096;
 constexpr unsigned TASK_SENSOR_DISPLAY_PRIORITY   = 2;
 constexpr int TASK_SENSOR_DISPLAY_CORE            = 0;
 constexpr uint32_t DISPLAY_QUEUE_LENGTH           = 10;
-constexpr uint32_t DISPLAY_QUEUE_TIMEOUT_MS       = 100;
+constexpr uint32_t DISPLAY_QUEUE_TIMEOUT_MS       = 50;
 
 // Network Task (Core 0 - REST Client & Telemetry)
 constexpr uint32_t TASK_NETWORK_STACK_SIZE        = 8192;

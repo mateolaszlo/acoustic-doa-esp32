@@ -25,15 +25,18 @@ bool RadarDisplay::init() {
 }
 
 void RadarDisplay::drawRadar(float angle_deg, float temp_c, float hum, float pres, float c_sound,
-                            float db_spl, bool api_available, bool adaptive_active) {
+                            float db_spl, bool api_available, bool adaptive_active,
+                            float snr_db, float snr_margin_db) {
     const float angles[1] = { angle_deg };
     const float confs[1] = { 1.0f };
-    drawRadarMulti(angles, confs, 1, temp_c, hum, pres, c_sound, db_spl, api_available, adaptive_active);
+    drawRadarMulti(angles, confs, 1, temp_c, hum, pres, c_sound, db_spl, api_available, adaptive_active,
+                   snr_db, snr_margin_db);
 }
 
 void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confidences, size_t count,
                                  float temp_c, float hum, float pres, float c_sound,
-                                 float db_spl, bool api_available, bool adaptive_active) {
+                                 float db_spl, bool api_available, bool adaptive_active,
+                                 float snr_db, float snr_margin_db) {
     if (!initialized) return;
     canvas.fillScreen(ST77XX_BLACK);
 
@@ -91,13 +94,29 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
     // 2. Izris razpadajočih fosfornih sledi (phosphor decay trail za hipne zvoke)
     const size_t num_needles = (count > DOA_MAX_SOURCES) ? DOA_MAX_SOURCES : count;
     const uint32_t now_ms = millis();
-    for (size_t s = 0; s < num_needles; ++s) {
-        if (angles_deg != nullptr) {
-            hit_blips[hit_blip_head] = { angles_deg[s], now_ms, true };
-            hit_blip_head = (hit_blip_head + 1) % MAX_DECAY_BLIPS;
+    if (angles_deg != nullptr && count > 0) {
+        for (size_t s = 0; s < num_needles; ++s) {
+            const float angle = angles_deg[s];
+            bool duplicate = false;
+            for (size_t b = 0; b < MAX_DECAY_BLIPS; ++b) {
+                if (hit_blips[b].active && (now_ms - hit_blips[b].timestamp_ms < 250)) {
+                    float diff = fabsf(hit_blips[b].angle_deg - angle);
+                    if (diff > 180.0f) diff = 360.0f - diff;
+                    if (diff < 8.0f) {
+                        duplicate = true;
+                        hit_blips[b].timestamp_ms = now_ms; // Osveži trajanje dokler zvok traja
+                        break;
+                    }
+                }
+            }
+            if (!duplicate) {
+                hit_blips[hit_blip_head] = { angle, now_ms, true };
+                hit_blip_head = (hit_blip_head + 1) % MAX_DECAY_BLIPS;
+            }
         }
     }
 
+    // Izris fosfornih sledi z visokokontrastno P31 zeleno barvno lestvico
     for (size_t b = 0; b < MAX_DECAY_BLIPS; ++b) {
         if (!hit_blips[b].active) continue;
         const uint32_t age_ms = now_ms - hit_blips[b].timestamp_ms;
@@ -105,14 +124,24 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
             hit_blips[b].active = false;
             continue;
         }
-        if (age_ms < 60) continue; // Trenutni okvir že riše živo iglo
 
-        uint16_t fade_color = (age_ms < 400) ? COLOR_MUTED_GRAY :
-                              ((age_ms < 800) ? 0x39E7 : 0x18C3);
+        uint16_t fade_color;
+        if (age_ms < 250) {
+            fade_color = 0x57EA; // Svetla neonska fosforno zelena
+        } else if (age_ms < 550) {
+            fade_color = 0x2DE4; // Srednje svetla fosforno zelena
+        } else if (age_ms < 850) {
+            fade_color = 0x0BE0; // Zmerna smaragdna fosforna
+        } else {
+            fade_color = 0x0980; // Zatemnjena fosforno zelena
+        }
+
         const float b_rad = (hit_blips[b].angle_deg - 90.0f) * (static_cast<float>(M_PI) / 180.0f);
-        const int bx = cx + static_cast<int>(roundf(r * cosf(b_rad)));
-        const int by = cy + static_cast<int>(roundf(r * sinf(b_rad)));
-        canvas.fillCircle(bx, by, 1, fade_color);
+        // Blip je postavljen na r - 4, tik znotraj oboda radarja (r = 34)
+        const int blip_r = r - 4;
+        const int bx = cx + static_cast<int>(roundf(blip_r * cosf(b_rad)));
+        const int by = cy + static_cast<int>(roundf(blip_r * sinf(b_rad)));
+        canvas.fillCircle(bx, by, 2, fade_color);
     }
 
     // 3. Izris radarskih igel (do DOA_MAX_SOURCES = 3 zvočnih virov)
@@ -182,36 +211,50 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
         }
     }
 
-    // 3.1 Nivo zvoka in dinamični VU/SNR stolpec (y = 104..112)
+    // 3.1 Nivo zvoka in dinamični SNR/adaptivni prag stolpec (y = 104..112)
     canvas.setTextSize(1);
+    canvas.setCursor(2, 104);
     canvas.setTextColor(ST77XX_YELLOW);
-    canvas.setCursor(4, 104);
-    canvas.printf("%4.1fdB", db_spl);
+    canvas.printf("%2.0fdB", (db_spl > 0.0f) ? db_spl : 0.0f);
 
-    // Mini horizontalni merilnik dinamike zvoka (x = 52, y = 104, w = 72, h = 7)
-    constexpr int bar_x = 52;
+    // Numerični izpis SNR (+XX dB)
+    canvas.setCursor(28, 104);
+    if (snr_db >= snr_margin_db) {
+        canvas.setTextColor(ST77XX_GREEN);
+    } else {
+        canvas.setTextColor(COLOR_MUTED_GRAY);
+    }
+    canvas.printf("+%1.0f", (snr_db > 0.0f) ? snr_db : 0.0f);
+
+    // Mini horizontalni merilnik SNR z adaptivnim pragom (x = 50, y = 104, w = 74, h = 7)
+    constexpr int bar_x = 50;
     constexpr int bar_y = 104;
-    constexpr int bar_w = 72;
+    constexpr int bar_w = 74;
     constexpr int bar_h = 7;
     canvas.drawRect(bar_x, bar_y, bar_w, bar_h, COLOR_MUTED_GRAY);
 
-    // Pretvorba dB SPL v širino stolpca (območje 30..95 dB SPL)
-    constexpr float min_bar_db = 30.0f;
-    constexpr float max_bar_db = 95.0f;
-    float norm_level = (db_spl - min_bar_db) / (max_bar_db - min_bar_db);
-    if (norm_level < 0.0f) norm_level = 0.0f;
-    if (norm_level > 1.0f) norm_level = 1.0f;
-    const int fill_w = static_cast<int>(roundf(norm_level * (bar_w - 2)));
+    // Pretvorba SNR v širino stolpca (dinamični razpon 0..30 dB SNR)
+    constexpr float max_snr_db = 30.0f;
+    float norm_snr = snr_db / max_snr_db;
+    if (norm_snr < 0.0f) norm_snr = 0.0f;
+    if (norm_snr > 1.0f) norm_snr = 1.0f;
+    const int fill_w = static_cast<int>(roundf(norm_snr * (bar_w - 2)));
 
     if (fill_w > 0) {
-        uint16_t bar_color = (db_spl > NEEDLE_HIGH_SPL_THRESHOLD) ? ST77XX_RED :
-                             ((db_spl > NEEDLE_MED_SPL_THRESHOLD) ? ST77XX_YELLOW : ST77XX_GREEN);
+        uint16_t bar_color;
+        if (snr_db >= 20.0f) {
+            bar_color = ST77XX_RED;
+        } else if (snr_db >= snr_margin_db) {
+            bar_color = ST77XX_YELLOW;
+        } else {
+            bar_color = ST77XX_GREEN; // pod pragom zaznave (šum okolice)
+        }
         canvas.fillRect(bar_x + 1, bar_y + 1, fill_w, bar_h - 2, bar_color);
     }
 
-    // Oznaka praga srednje glasnosti na merilniku
-    const int med_tick_x = bar_x + static_cast<int>(roundf(((NEEDLE_MED_SPL_THRESHOLD - min_bar_db) / (max_bar_db - min_bar_db)) * bar_w));
-    canvas.drawFastVLine(med_tick_x, bar_y - 1, bar_h + 2, COLOR_MUTED_GRAY);
+    // Oznaka adaptivnega praga sprožitve (gate) na SNR merilniku
+    const int gate_x = bar_x + static_cast<int>(roundf((snr_margin_db / max_snr_db) * (bar_w - 2)));
+    canvas.drawFastVLine(gate_x, bar_y - 1, bar_h + 2, ST77XX_WHITE);
 
     // 3.2 Združena vrstica okoljske kompenzacije: hitrost zvoka in temperatura/vlaga (y = 117)
     canvas.setTextColor(ST77XX_WHITE);
@@ -239,6 +282,15 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
     }
 
     display.drawRGBBitmap(0, 0, canvas.getBuffer(), TFT_WIDTH, TFT_HEIGHT);
+}
+
+bool RadarDisplay::hasActiveDecayBlips(uint32_t now_ms) const {
+    for (size_t b = 0; b < MAX_DECAY_BLIPS; ++b) {
+        if (hit_blips[b].active && (now_ms - hit_blips[b].timestamp_ms <= 1200)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void RadarDisplay::drawBootPrompt(uint32_t remaining_ms, uint32_t total_ms, const BootSelfTestResult &post) {

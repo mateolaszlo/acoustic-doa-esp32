@@ -609,46 +609,39 @@ void sensor_display_task(void *param) {
     bool last_server_available = server_available.load();
     MultiTargetDisplayTracker tracker;
     TrackedTarget tracked_targets[DOA_MAX_SOURCES];
+    size_t prev_rendered_tracks = 0;
+    bool prev_rendered_blips = false;
 
     while (true) {
         update_environmental_compensation();
 
+        const uint32_t now_ms = millis();
+        bool needs_redraw = false;
+
         if (xQueueReceive(display_queue, &event, pdMS_TO_TICKS(DISPLAY_QUEUE_TIMEOUT_MS))) {
             last_event = event;
-            const uint32_t now_ms = millis();
             tracker.update(event, now_ms);
+            needs_redraw = true;
 
-            const size_t num_tracks = tracker.getActiveTracks(tracked_targets, DOA_MAX_SOURCES);
-            float angles[DOA_MAX_SOURCES];
-            float confs[DOA_MAX_SOURCES];
-            for (size_t i = 0; i < num_tracks; ++i) {
-                angles[i] = tracked_targets[i].smoothed_angle_deg;
-                confs[i] = tracked_targets[i].confidence;
-            }
-
-            float temp = current_temperature.load();
-            float speed = current_sound_speed.load();
-            float humidity = current_humidity.load();
-            float pressure = current_pressure.load();
             const float calibrated_db = event.rms_db + db_spl_offset.load();
-
             for (uint8_t s = 0; s < event.count; ++s) {
                 SerialUI::printDoaEvent(event.sources[s].angle_deg, event.sources[s].confidence, calibrated_db);
             }
+        } else {
+            // Tišina (brez novih paketov): preveri ali sledi ali fosforne točke še razpadajo
+            const size_t active_tracks = tracker.getActiveTracks(tracked_targets, DOA_MAX_SOURCES);
+            const bool active_blips = radar_display.hasActiveDecayBlips(now_ms);
+            const bool current_server_available = server_available.load();
 
-            if (radar_display.isInitialized()) {
-                last_server_available = server_available.load();
-                radar_display.drawRadarMulti(angles, confs, num_tracks, temp, humidity, pressure, speed,
-                                            calibrated_db, last_server_available,
-                                            adaptive_threshold_active.load());
+            if (active_tracks > 0 || active_blips ||
+                prev_rendered_tracks > 0 || prev_rendered_blips ||
+                current_server_available != last_server_available) {
+                needs_redraw = true;
             }
         }
 
-        const bool current_server_available = server_available.load();
-        if (radar_display.isInitialized() &&
-            current_server_available != last_server_available) {
-            last_server_available = current_server_available;
-            const float calibrated_db = last_event.rms_db + db_spl_offset.load();
+        if (needs_redraw && radar_display.isInitialized()) {
+            last_server_available = server_available.load();
             const size_t num_tracks = tracker.getActiveTracks(tracked_targets, DOA_MAX_SOURCES);
             float angles[DOA_MAX_SOURCES];
             float confs[DOA_MAX_SOURCES];
@@ -656,11 +649,28 @@ void sensor_display_task(void *param) {
                 angles[i] = tracked_targets[i].smoothed_angle_deg;
                 confs[i] = tracked_targets[i].confidence;
             }
+
+            const float current_noise = current_noise_floor_db.load();
+            const float offset = db_spl_offset.load();
+            float current_rms = (num_tracks > 0) ? last_event.rms_db : current_noise;
+            if (current_rms < -100.0f) current_rms = current_noise;
+            const float calibrated_db = current_rms + offset;
+
+            float snr_db = 0.0f;
+            if (num_tracks > 0 && current_noise > -99.0f) {
+                snr_db = last_event.rms_db - current_noise;
+                if (snr_db < 0.0f) snr_db = 0.0f;
+            }
+
             radar_display.drawRadarMulti(angles, confs, num_tracks,
                                         current_temperature.load(), current_humidity.load(),
                                         current_pressure.load(), current_sound_speed.load(),
                                         calibrated_db, last_server_available,
-                                        adaptive_threshold_active.load());
+                                        adaptive_threshold_active.load(),
+                                        snr_db, DEFAULT_SNR_MARGIN_DB);
+
+            prev_rendered_tracks = num_tracks;
+            prev_rendered_blips = radar_display.hasActiveDecayBlips(now_ms);
         }
         esp_task_wdt_reset();
     }

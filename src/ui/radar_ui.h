@@ -23,17 +23,20 @@ public:
 
     bool init();
     void drawRadar(float angle_deg, float temp_c, float hum, float pres, float c_sound,
-                   float db_spl, bool api_available, bool adaptive_active = false);
+                   float db_spl, bool api_available, bool adaptive_active = false,
+                   float snr_db = 0.0f, float snr_margin_db = DEFAULT_SNR_MARGIN_DB);
     void drawRadarMulti(const float* angles_deg, const float* confidences, size_t count,
                         float temp_c, float hum, float pres, float c_sound,
-                        float db_spl, bool api_available, bool adaptive_active = false);
+                        float db_spl, bool api_available, bool adaptive_active = false,
+                        float snr_db = 0.0f, float snr_margin_db = DEFAULT_SNR_MARGIN_DB);
     void drawBootPrompt(uint32_t remaining_ms, uint32_t total_ms, const BootSelfTestResult &post);
     void drawHardwareDegraded(const BootSelfTestResult &post);
     void drawSetupPortal();
     bool isInitialized() const { return initialized; }
+    bool hasActiveDecayBlips(uint32_t now_ms) const;
 
 private:
-    static constexpr size_t MAX_DECAY_BLIPS = 6;
+    static constexpr size_t MAX_DECAY_BLIPS = 16;
     struct RadarHitBlip {
         float angle_deg;
         uint32_t timestamp_ms;
