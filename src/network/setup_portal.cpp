@@ -20,6 +20,8 @@ String SetupPortal::generateHtmlPage(const DeviceConfig &config) {
             String(config.db_spl_offset, 2) + "'><br>";
     page += "Fixed threshold (dB SPL)<br><input name='spl_threshold' value='" +
             String(config.sound_level_threshold_db_spl, 1) + "'><br>";
+    page += "Correlation threshold (min R, e.g. 0.45)<br><input name='corr_threshold' step='0.01' value='" +
+            String(config.correlation_threshold, 2) + "'><br>";
     page += "Zero angle offset (deg)<br><input name='ang_offset' value='" +
             String(config.angle_offset_deg, 1) + "'><br>";
     page += "<label><input type='checkbox' name='adapt_thresh' value='1'" +
@@ -93,6 +95,12 @@ void SetupPortal::enter(DeviceConfig &config, RadarDisplay &radar,
             float spl = web_server.arg("spl_threshold").toFloat();
             if (std::isfinite(spl) && spl >= SPL_THRESHOLD_MIN_DB && spl <= SPL_THRESHOLD_MAX_DB) {
                 config.sound_level_threshold_db_spl = spl;
+            }
+        }
+        if (web_server.hasArg("corr_threshold")) {
+            float corr = web_server.arg("corr_threshold").toFloat();
+            if (std::isfinite(corr) && corr >= 0.10f && corr <= 1.0f) {
+                config.correlation_threshold = corr;
             }
         }
         if (web_server.hasArg("ang_offset")) {
