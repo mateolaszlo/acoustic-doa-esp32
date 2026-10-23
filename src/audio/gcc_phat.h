@@ -14,6 +14,13 @@ struct DoaResult {
     bool valid;
 };
 
+struct MultiDoaResult {
+    DoaResult sources[DOA_MAX_SOURCES]; // Detektirani zvočni viri, razvrščeni padajoče po zaupanju
+    uint8_t count;                      // Število veljavnih virov (0..DOA_MAX_SOURCES)
+    float rms_db;                       // Vsesmerna energija bloka v dBFS
+    bool valid;                         // Resnično, če je vsaj en vir veljaven
+};
+
 class GccPhat {
 public:
     GccPhat(float sample_rate = DEFAULT_SAMPLE_RATE,

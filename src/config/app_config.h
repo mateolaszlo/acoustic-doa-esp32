@@ -65,6 +65,13 @@ constexpr float DEFAULT_SNR_MARGIN_DB                = 8.0f;
 constexpr float DEFAULT_ANGLE_OFFSET_DEG             = 0.0f;
 constexpr bool  DEFAULT_ADAPTIVE_THRESHOLD_ENABLED   = true;
 
+// Multi-Source SRP-PHAT & CLEAN Tracking Constants
+constexpr size_t DOA_MAX_SOURCES                     = 3;
+constexpr float  DOA_MIN_SOURCE_SEPARATION_DEG       = 25.0f;
+constexpr size_t SRP_GRID_ANGLES                     = 72;
+constexpr float  SRP_GRID_STEP_DEG                   = 5.0f;
+constexpr size_t CLEAN_KERNEL_RADIUS_SAMPLES         = 16;
+
 // Dual-Band GCC-PHAT Raised-Cosine Spectral Weighting Cutoffs
 constexpr float GCC_PHAT_MIN_HZ      = 300.0f;
 constexpr float GCC_PHAT_EDGE_MAX_HZ = 2200.0f;
@@ -110,8 +117,8 @@ constexpr uint32_t DISPLAY_QUEUE_TIMEOUT_MS       = 100;
 constexpr uint32_t TASK_NETWORK_STACK_SIZE        = 8192;
 constexpr unsigned TASK_NETWORK_PRIORITY          = 2;
 constexpr int TASK_NETWORK_CORE                   = 0;
-constexpr uint32_t NETWORK_QUEUE_LENGTH           = 64;
-constexpr uint32_t NETWORK_BATCH_MAX_MEASUREMENTS = 8;
+constexpr uint32_t NETWORK_QUEUE_LENGTH           = 128;
+constexpr uint32_t NETWORK_BATCH_MAX_MEASUREMENTS = 24;
 constexpr uint32_t NETWORK_BATCH_FLUSH_INTERVAL_MS = 200;
 constexpr uint32_t NETWORK_MAX_REQUEST_INTERVAL_MS = 200;
 constexpr int HTTP_RETRY_COUNT                    = 3;

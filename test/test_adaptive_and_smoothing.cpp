@@ -652,6 +652,20 @@ static void test_app_config_consistency() {
     assert(RADAR_CENTER_Y == 44);
     assert(RADAR_RADIUS == 34);
 
+    // Multi-Source constants & data structure verification (Slice 1)
+    assert(DOA_MAX_SOURCES == 3);
+    assert(std::fabs(DOA_MIN_SOURCE_SEPARATION_DEG - 25.0f) < 1e-4f);
+    assert(SRP_GRID_ANGLES == 72);
+    assert(std::fabs(SRP_GRID_STEP_DEG - 5.0f) < 1e-4f);
+    assert(CLEAN_KERNEL_RADIUS_SAMPLES == 16);
+    assert(NETWORK_QUEUE_LENGTH == 128);
+    assert(NETWORK_BATCH_MAX_MEASUREMENTS == 24);
+
+    MultiDoaResult multi_test = {};
+    assert(multi_test.count == 0);
+    assert(!multi_test.valid);
+    assert(sizeof(multi_test.sources) == DOA_MAX_SOURCES * sizeof(DoaResult));
+
     // Verify default-constructed GccPhat inherits central app_config constants
     GccPhat doa_default;
     assert(std::fabs(doa_default.getAngleOffsetDeg() - DEFAULT_ANGLE_OFFSET_DEG) < 1e-4f);
@@ -1363,9 +1377,9 @@ static void test_rest_binary_batch_serialization() {
     // 3. Error handling: nullptr
     assert(serialize_measurement_batch(nullptr, 2, buffer, sizeof(buffer), db_spl_offset) == 0);
     assert(serialize_measurement_batch(batch, 2, nullptr, sizeof(buffer), db_spl_offset) == 0);
-    // 4. Error handling: count = 0 or count > 8
+    // 4. Error handling: count = 0 or count > NETWORK_BATCH_MAX_MEASUREMENTS
     assert(serialize_measurement_batch(batch, 0, buffer, sizeof(buffer), db_spl_offset) == 0);
-    assert(serialize_measurement_batch(batch, 9, buffer, sizeof(buffer), db_spl_offset) == 0);
+    assert(serialize_measurement_batch(batch, NETWORK_BATCH_MAX_MEASUREMENTS + 1, buffer, sizeof(buffer), db_spl_offset) == 0);
     // 5. Error handling: mismatched clock flags
     batch[1].clock_flags = CLOCK_FLAG_MONOTONIC_UPTIME;
     assert(serialize_measurement_batch(batch, 2, buffer, sizeof(buffer), db_spl_offset) == 0);

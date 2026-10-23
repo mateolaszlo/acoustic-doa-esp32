@@ -53,26 +53,18 @@ Following the `/incremental-implementation` guidelines, each slice is self-conta
 
 ## Slices & Checklists
 
-### [ ] Slice 1: Configuration Constants & Multi-Source Data Structures
+### [x] Slice 1: Configuration Constants & Multi-Source Data Structures
 - **Objective**: Define core parameters and return types without altering existing pipeline behavior.
 - **Changes**:
   - `src/config/app_config.h`:
-    - Add `DOA_MAX_SOURCES = 3`.
-    - Add `DOA_MIN_SOURCE_SEPARATION_DEG = 25.0f`.
-    - Adjust `GCC_PHAT_EDGE_MAX_HZ = 5000.0f` and `GCC_PHAT_DIAG_MAX_HZ = 4500.0f` (with compile-time compatibility flag if needed).
-    - Expand `NETWORK_BATCH_MAX_MEASUREMENTS = 24` and `NETWORK_QUEUE_LENGTH = 128`.
+    - Added `DOA_MAX_SOURCES = 3`.
+    - Added `DOA_MIN_SOURCE_SEPARATION_DEG = 25.0f`.
+    - Added `SRP_GRID_ANGLES = 72`, `SRP_GRID_STEP_DEG = 5.0f`, `CLEAN_KERNEL_RADIUS_SAMPLES = 16`.
+    - Expanded `NETWORK_BATCH_MAX_MEASUREMENTS = 24` and `NETWORK_QUEUE_LENGTH = 128`.
   - `src/audio/gcc_phat.h`:
-    - Define `struct MultiDoaResult`:
-      ```cpp
-      struct MultiDoaResult {
-          DoaResult sources[DOA_MAX_SOURCES];
-          uint8_t count;
-          float rms_db;
-          bool valid;
-      };
-      ```
+    - Defined `struct MultiDoaResult` with up to `DOA_MAX_SOURCES` array.
 - **Verification**:
-  - `make test`: All 12 existing test suites compile and pass without modification.
+  - `make test`: All 12 unit test suites compile and pass under ASAN/UBSAN with new assertions.
 - **Completion Target**: Build succeeds, data structures defined, backwards compatibility maintained.
 
 ---
@@ -179,7 +171,7 @@ Following the `/incremental-implementation` guidelines, each slice is self-conta
 
 | Slice | Description | Status | Commit SHA |
 |---|---|:---:|:---:|
-| **Slice 1** | Configuration Constants & Multi-Source Data Structures | [ ] Pending | — |
+| **Slice 1** | Configuration Constants & Multi-Source Data Structures | [x] Completed | `eba0c38` |
 | **Slice 2** | Wideband Weight Tables & Autocorrelation Kernels | [ ] Pending | — |
 | **Slice 3** | Lag Window Preservation & 72-Point SRP-PHAT Grid Search | [ ] Pending | — |
 | **Slice 4** | CLEAN Deconvolution Loop & Multi-Source Parabolic WLS | [ ] Pending | — |
