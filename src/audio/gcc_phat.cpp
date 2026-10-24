@@ -736,7 +736,9 @@ MultiDoaResult GccPhat::processMulti(const int32_t* ch0, const int32_t* ch1,
     }
 
     // Poišči sekundarne vire na preostalem korelacijskem polju z SRP-PHAT
-    const float sec_threshold = (correlation_threshold < 0.20f) ? correlation_threshold : 0.20f;
+    const float sec_threshold = (correlation_threshold < DEFAULT_CLEAN_SECONDARY_THRESHOLD)
+                                    ? correlation_threshold
+                                    : DEFAULT_CLEAN_SECONDARY_THRESHOLD;
     for (size_t iter = 1; iter < DOA_MAX_SOURCES; ++iter) {
         float seed_angle = 0.0f;
         float seed_power = 0.0f;

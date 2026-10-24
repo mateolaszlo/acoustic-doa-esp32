@@ -630,7 +630,11 @@ void sensor_display_task(void *param) {
 
             const float calibrated_db = event.rms_db + db_spl_offset.load();
             for (uint8_t s = 0; s < event.count; ++s) {
-                SerialUI::printDoaEvent(event.sources[s].angle_deg, event.sources[s].confidence, calibrated_db);
+                SerialUI::printDoaEvent(event.sources[s].angle_deg,
+                                        event.sources[s].confidence,
+                                        calibrated_db,
+                                        s,
+                                        event.count);
             }
         } else {
             // Tišina (brez novih paketov): preveri ali sledi ali fosforne točke še razpadajo

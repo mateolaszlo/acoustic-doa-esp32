@@ -68,6 +68,7 @@ constexpr bool  DEFAULT_ADAPTIVE_THRESHOLD_ENABLED   = true;
 // Multi-Source SRP-PHAT & CLEAN Tracking Constants
 constexpr size_t DOA_MAX_SOURCES                     = 3;
 constexpr float  DOA_MIN_SOURCE_SEPARATION_DEG       = 25.0f;
+constexpr float  DEFAULT_CLEAN_SECONDARY_THRESHOLD   = 0.20f;
 constexpr size_t SRP_GRID_ANGLES                     = 72;
 constexpr float  SRP_GRID_STEP_DEG                   = 5.0f;
 constexpr size_t CLEAN_KERNEL_RADIUS_SAMPLES         = 16;
