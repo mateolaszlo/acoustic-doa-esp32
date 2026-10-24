@@ -1720,6 +1720,61 @@ static void test_gcc_phat_rank_deficiency_and_axis_observability() {
     printf("  [PASS] test_gcc_phat_rank_deficiency_and_axis_observability passed.\n");
 }
 
+static void test_gcc_phat_split_brain_chimera_fallback() {
+    printf("[TEST] Running test_gcc_phat_split_brain_chimera_fallback...\n");
+
+    const size_t n = 1024;
+    const float fs = 44100.0f;
+    const float d = DEFAULT_MIC_DISTANCE_M; // 0.082 m
+    GccPhat doa(fs, d, 20.0f);
+    assert(doa.init(n));
+    const float c_sound = doa.getSoundSpeed();
+    const float max_lag = (d / c_sound) * fs;
+
+    // 1. Direct mathematical verification: A chimera lag vector mixing 0 deg and 90 deg lags
+    // MUST be rejected by solveWlsAzimuth due to triangle loop closure failure:
+    float lags_chimera[AUDIO_NUM_PAIRS] = {
+        max_lag,   // Pair 0 (+Y from 0 deg)
+        -max_lag,  // Pair 1 (-X from 90 deg)
+        max_lag,   // Pair 2 (+Y from 0 deg)
+        -max_lag,  // Pair 3 (-X from 90 deg)
+        max_lag,   // Pair 4 (LB -> RF)
+        max_lag    // Pair 5 (RB -> LF)
+    };
+    float confs_chimera[AUDIO_NUM_PAIRS] = {0.85f, 0.85f, 0.85f, 0.85f, 0.85f, 0.85f};
+    DoaResult chimera_wls = doa.solveWlsAzimuth(lags_chimera, confs_chimera, -50.0f, 0.45f);
+    assert(!chimera_wls.valid); // Triangle closure correctly catches chimera inconsistency!
+
+    // 2. Multi-talker cocktail party scenario: Two equal-energy orthogonal sources at 0.0 deg and 90.0 deg
+    // Pass 0 fallback to SRP-PHAT seeding + CLEAN deconvolution must resolve both speakers!
+    std::vector<int32_t> ch0, ch1, ch2, ch3;
+    synthesize_two_quad_wavefronts(0.0f, 1.0f, 90.0f, 0.95f, fs, d, c_sound, n, ch0, ch1, ch2, ch3);
+
+    MultiDoaResult multi_res = doa.processMulti(ch0.data(), ch1.data(), ch2.data(), ch3.data());
+    assert(multi_res.valid);
+    assert(multi_res.count >= 2);
+
+    float ang0 = multi_res.sources[0].angle_deg;
+    float ang1 = multi_res.sources[1].angle_deg;
+    printf("  Orthogonal Sources [0.0, 90.0] deg -> Extracted count: %d, Src0: %.2f deg (conf: %.3f), Src1: %.2f deg (conf: %.3f)\n",
+           multi_res.count, ang0, multi_res.sources[0].confidence, ang1, multi_res.sources[1].confidence);
+
+    const float err_0_to_0 = fabsf(circular_angle_diff_deg(ang0, 0.0f));
+    const float err_0_to_90 = fabsf(circular_angle_diff_deg(ang0, 90.0f));
+    const float err_1_to_0 = fabsf(circular_angle_diff_deg(ang1, 0.0f));
+    const float err_1_to_90 = fabsf(circular_angle_diff_deg(ang1, 90.0f));
+
+    const bool match_direct = (err_0_to_0 < 10.0f && err_1_to_90 < 10.0f);
+    const bool match_reversed = (err_0_to_90 < 10.0f && err_1_to_0 < 10.0f);
+    assert(match_direct || match_reversed);
+
+    // Verify neither source locked onto a phantom 45.0 deg chimera
+    assert(fabsf(circular_angle_diff_deg(ang0, 45.0f)) > 15.0f);
+    assert(fabsf(circular_angle_diff_deg(ang1, 45.0f)) > 15.0f);
+
+    printf("  [PASS] test_gcc_phat_split_brain_chimera_fallback passed.\n");
+}
+
 int main() {
     test_gcc_phat_adaptive_noise_floor();
     test_display_smoothing_filter();
@@ -1737,6 +1792,7 @@ int main() {
     test_gcc_phat_clean_multisource();
     test_multi_target_display_tracker();
     test_gcc_phat_rank_deficiency_and_axis_observability();
+    test_gcc_phat_split_brain_chimera_fallback();
     printf("\nAll unit tests passed successfully!\n");
     return 0;
 }

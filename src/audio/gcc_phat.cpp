@@ -593,6 +593,88 @@ float GccPhat::evaluateSrpPhat(const float pair_corr[AUDIO_NUM_PAIRS][PAIR_CORR_
     return best_power;
 }
 
+DoaResult GccPhat::solveFromSrpSeed(const float pair_corr[AUDIO_NUM_PAIRS][PAIR_CORR_SIZE],
+                                    float seed_angle,
+                                    float scale,
+                                    float rms_db,
+                                    float min_confidence,
+                                    float out_lags[AUDIO_NUM_PAIRS],
+                                    float out_confs[AUDIO_NUM_PAIRS]) {
+    const float deg_to_rad = static_cast<float>(M_PI) / 180.0f;
+    const float theta_rad = seed_angle * deg_to_rad;
+    const float u_x = sinf(theta_rad);
+    const float u_y = cosf(theta_rad);
+    const float t_x = u_x * scale;
+    const float t_y = u_y * scale;
+
+    const float theo_lags[AUDIO_NUM_PAIRS] = {
+        t_y,
+        -t_x,
+        t_y,
+        -t_x,
+        t_x + t_y,
+        -t_x + t_y
+    };
+
+    float lags[AUDIO_NUM_PAIRS];
+    float confs[AUDIO_NUM_PAIRS];
+
+    for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) {
+        const int center_lag = static_cast<int>(roundf(theo_lags[p]));
+        constexpr int search_radius = 3;
+
+        int best_idx = center_lag;
+        float best_val = -1.0f;
+
+        for (int l = center_lag - search_radius; l <= center_lag + search_radius; ++l) {
+            if (l < -PAIR_CORR_RADIUS || l > PAIR_CORR_RADIUS) {
+                continue;
+            }
+            const size_t k = static_cast<size_t>(l + PAIR_CORR_RADIUS);
+            const float val = pair_corr[p][k];
+            if (val > best_val) {
+                best_val = val;
+                best_idx = l;
+            }
+        }
+
+        // 3-točkovna parabolična interpolacija okoli lokalnega vrha
+        const int l_m1 = (best_idx - 1 >= -PAIR_CORR_RADIUS) ? (best_idx - 1) : best_idx;
+        const int l_p1 = (best_idx + 1 <= PAIR_CORR_RADIUS) ? (best_idx + 1) : best_idx;
+
+        const float alpha = pair_corr[p][static_cast<size_t>(l_m1 + PAIR_CORR_RADIUS)];
+        const float beta  = best_val;
+        const float gamma = pair_corr[p][static_cast<size_t>(l_p1 + PAIR_CORR_RADIUS)];
+
+        float p_offset = 0.0f;
+        float peak_val = beta;
+        const float denom = (alpha - 2.0f * beta + gamma);
+        if (denom < -1e-6f) {
+            p_offset = 0.5f * (alpha - gamma) / denom;
+            if (p_offset > 0.5f) {
+                p_offset = 0.5f;
+            } else if (p_offset < -0.5f) {
+                p_offset = -0.5f;
+            }
+            const float vertex = beta - 0.25f * (alpha - gamma) * p_offset;
+            if (vertex > peak_val) {
+                peak_val = vertex;
+            }
+        }
+
+        lags[p] = static_cast<float>(best_idx) + p_offset;
+        confs[p] = (peak_val > 1.0f) ? 1.0f : (peak_val < 0.0f ? 0.0f : peak_val);
+        if (out_lags != nullptr) {
+            out_lags[p] = lags[p];
+        }
+        if (out_confs != nullptr) {
+            out_confs[p] = confs[p];
+        }
+    }
+
+    return solveWlsAzimuth(lags, confs, rms_db, min_confidence);
+}
+
 DoaResult GccPhat::process(const int32_t* left_channel, const int32_t* right_channel) {
     // 2-channel compatibility wrapper: delegates to quad array processing by mirroring stereo channels
     return process(left_channel, right_channel, left_channel, right_channel);
@@ -762,8 +844,22 @@ MultiDoaResult GccPhat::processMulti(const int32_t* ch0, const int32_t* ch1,
         pair_confidences[p] = (peak_val > 1.0f) ? 1.0f : (peak_val < 0.0f ? 0.0f : peak_val);
     }
 
+    const float scale = (d / c_sound) * fs;
+    const float deg_to_rad = static_cast<float>(M_PI) / 180.0f;
+    const float offset_deg = std::isfinite(angle_offset_deg) ? angle_offset_deg : 0.0f;
+
     // Določitev primarnega zvočnega vira (Prehod 0) preko 2x2 WLS cenilnika
     DoaResult primary = solveWlsAzimuth(pair_lags_samples, pair_confidences, multi_res.rms_db);
+    if (!primary.valid || primary.confidence < correlation_threshold) {
+        // Fallback za primer "chimera" / razcepa lagov med več govorci: uporabi globalni SRP-PHAT vrh
+        float srp_seed_angle = 0.0f;
+        float srp_seed_power = 0.0f;
+        evaluateSrpPhat(pair_corr, srp_seed_angle, srp_seed_power);
+        if (srp_seed_power >= correlation_threshold && std::isfinite(srp_seed_power)) {
+            primary = solveFromSrpSeed(pair_corr, srp_seed_angle, scale, multi_res.rms_db, correlation_threshold);
+        }
+    }
+
     multi_res.sources[0] = primary;
     if (!primary.valid || primary.confidence < correlation_threshold) {
         return multi_res;
@@ -773,9 +869,6 @@ MultiDoaResult GccPhat::processMulti(const int32_t* ch0, const int32_t* ch1,
     multi_res.valid = true;
 
     // 7. CLEAN iterativna dekonvolucija za sekundarne in terciarne zvočne vire
-    const float scale = (d / c_sound) * fs;
-    const float deg_to_rad = static_cast<float>(M_PI) / 180.0f;
-    const float offset_deg = std::isfinite(angle_offset_deg) ? angle_offset_deg : 0.0f;
     const float phi_raw = wrap_angle_180(primary.angle_deg + offset_deg);
     const float theta_raw_rad = phi_raw * deg_to_rad;
     const float u_raw_x = sinf(theta_raw_rad);
@@ -803,72 +896,9 @@ MultiDoaResult GccPhat::processMulti(const int32_t* ch0, const int32_t* ch1,
             break;
         }
 
-        const float theta_rad = seed_angle * deg_to_rad;
-        const float u_x = sinf(theta_rad);
-        const float u_y = cosf(theta_rad);
-        const float t_x = u_x * scale;
-        const float t_y = u_y * scale;
-
-        const float theo_lags[AUDIO_NUM_PAIRS] = {
-            t_y,
-            -t_x,
-            t_y,
-            -t_x,
-            t_x + t_y,
-            -t_x + t_y
-        };
-
         float sec_lags[AUDIO_NUM_PAIRS];
         float sec_confs[AUDIO_NUM_PAIRS];
-
-        for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) {
-            const int center_lag = static_cast<int>(roundf(theo_lags[p]));
-            constexpr int search_radius = 3;
-
-            int best_idx = center_lag;
-            float best_val = -1.0f;
-
-            for (int l = center_lag - search_radius; l <= center_lag + search_radius; ++l) {
-                if (l < -PAIR_CORR_RADIUS || l > PAIR_CORR_RADIUS) {
-                    continue;
-                }
-                const size_t k = static_cast<size_t>(l + PAIR_CORR_RADIUS);
-                const float val = pair_corr[p][k];
-                if (val > best_val) {
-                    best_val = val;
-                    best_idx = l;
-                }
-            }
-
-            // 3-točkovna parabolična interpolacija okoli lokalnega vrha
-            const int l_m1 = (best_idx - 1 >= -PAIR_CORR_RADIUS) ? (best_idx - 1) : best_idx;
-            const int l_p1 = (best_idx + 1 <= PAIR_CORR_RADIUS) ? (best_idx + 1) : best_idx;
-
-            const float alpha = pair_corr[p][static_cast<size_t>(l_m1 + PAIR_CORR_RADIUS)];
-            const float beta  = best_val;
-            const float gamma = pair_corr[p][static_cast<size_t>(l_p1 + PAIR_CORR_RADIUS)];
-
-            float p_offset = 0.0f;
-            float peak_val = beta;
-            const float denom = (alpha - 2.0f * beta + gamma);
-            if (denom < -1e-6f) {
-                p_offset = 0.5f * (alpha - gamma) / denom;
-                if (p_offset > 0.5f) {
-                    p_offset = 0.5f;
-                } else if (p_offset < -0.5f) {
-                    p_offset = -0.5f;
-                }
-                const float vertex = beta - 0.25f * (alpha - gamma) * p_offset;
-                if (vertex > peak_val) {
-                    peak_val = vertex;
-                }
-            }
-
-            sec_lags[p] = static_cast<float>(best_idx) + p_offset;
-            sec_confs[p] = (peak_val > 1.0f) ? 1.0f : (peak_val < 0.0f ? 0.0f : peak_val);
-        }
-
-        DoaResult candidate = solveWlsAzimuth(sec_lags, sec_confs, multi_res.rms_db, sec_threshold);
+        DoaResult candidate = solveFromSrpSeed(pair_corr, seed_angle, scale, multi_res.rms_db, sec_threshold, sec_lags, sec_confs);
 
         // Odštej odtis sekundarnega kandidata iz pair_corr
         if (candidate.valid) {
