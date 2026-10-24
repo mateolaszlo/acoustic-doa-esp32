@@ -34,6 +34,42 @@ constexpr MicPairDescriptor MIC_PAIRS[AUDIO_NUM_PAIRS] = {
     {0, 2, true,  -1.0f,  1.0f, 0, 1}  // Pair 5: Diagonal RB -> LF (-X, +Y), 300-1450 Hz
 };
 
+static float estimateLocalPeakAmplitude(const float pair_corr[PAIR_CORR_SIZE],
+                                        float center_float_lag,
+                                        int search_radius = 2) {
+    const int center_lag = static_cast<int>(roundf(center_float_lag));
+    int best_idx = center_lag;
+    float best_val = -1.0f;
+
+    for (int l = center_lag - search_radius; l <= center_lag + search_radius; ++l) {
+        if (l < -PAIR_CORR_RADIUS || l > PAIR_CORR_RADIUS) continue;
+        const size_t k = static_cast<size_t>(l + PAIR_CORR_RADIUS);
+        const float val = pair_corr[k];
+        if (val > best_val) {
+            best_val = val;
+            best_idx = l;
+        }
+    }
+
+    const int l_m1 = (best_idx - 1 >= -PAIR_CORR_RADIUS) ? (best_idx - 1) : best_idx;
+    const int l_p1 = (best_idx + 1 <= PAIR_CORR_RADIUS) ? (best_idx + 1) : best_idx;
+    const float alpha = pair_corr[static_cast<size_t>(l_m1 + PAIR_CORR_RADIUS)];
+    const float beta  = best_val;
+    const float gamma = pair_corr[static_cast<size_t>(l_p1 + PAIR_CORR_RADIUS)];
+    float peak_amp = beta;
+    const float denom = (alpha - 2.0f * beta + gamma);
+    if (denom < -1e-6f) {
+        const float p_offset = 0.5f * (alpha - gamma) / denom;
+        if (p_offset >= -0.5f && p_offset <= 0.5f) {
+            const float vertex = beta - 0.25f * (alpha - gamma) * p_offset;
+            if (vertex > peak_amp) peak_amp = vertex;
+        }
+    }
+    if (peak_amp > 1.0f) peak_amp = 1.0f;
+    if (peak_amp < 0.0f) peak_amp = 0.0f;
+    return peak_amp;
+}
+
 static void subtractCleanKernel(float pair_corr[AUDIO_NUM_PAIRS][PAIR_CORR_SIZE],
                                 size_t p,
                                 const float* kernel,
@@ -739,12 +775,19 @@ MultiDoaResult GccPhat::processMulti(const int32_t* ch0, const int32_t* ch1,
     // 7. CLEAN iterativna dekonvolucija za sekundarne in terciarne zvočne vire
     const float scale = (d / c_sound) * fs;
     const float deg_to_rad = static_cast<float>(M_PI) / 180.0f;
+    const float offset_deg = std::isfinite(angle_offset_deg) ? angle_offset_deg : 0.0f;
+    const float phi_raw = wrap_angle_180(primary.angle_deg + offset_deg);
+    const float theta_raw_rad = phi_raw * deg_to_rad;
+    const float u_raw_x = sinf(theta_raw_rad);
+    const float u_raw_y = cosf(theta_raw_rad);
 
-    // Odštej akustični odtis primarnega vira iz pair_corr
+    // Odštej akustični odtis primarnega vira iz pair_corr po modelskem planarjenem valu WLS
     for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) {
         const MicPairDescriptor& pair = MIC_PAIRS[p];
         const float* kernel = pair.is_diagonal ? clean_kernel_diag : clean_kernel_edge;
-        subtractCleanKernel(pair_corr, p, kernel, pair_lags_samples[p], pair_confidences[p]);
+        const float theo_lag = (pair.dir_x * u_raw_x + pair.dir_y * u_raw_y) * scale;
+        const float peak_amp = estimateLocalPeakAmplitude(pair_corr[p], theo_lag);
+        subtractCleanKernel(pair_corr, p, kernel, theo_lag, peak_amp);
     }
 
     // Poišči sekundarne vire na preostalem korelacijskem polju z SRP-PHAT
@@ -828,10 +871,24 @@ MultiDoaResult GccPhat::processMulti(const int32_t* ch0, const int32_t* ch1,
         DoaResult candidate = solveWlsAzimuth(sec_lags, sec_confs, multi_res.rms_db, sec_threshold);
 
         // Odštej odtis sekundarnega kandidata iz pair_corr
-        for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) {
-            const MicPairDescriptor& pair = MIC_PAIRS[p];
-            const float* kernel = pair.is_diagonal ? clean_kernel_diag : clean_kernel_edge;
-            subtractCleanKernel(pair_corr, p, kernel, sec_lags[p], sec_confs[p]);
+        if (candidate.valid) {
+            const float phi_cand_raw = wrap_angle_180(candidate.angle_deg + offset_deg);
+            const float theta_cand_rad = phi_cand_raw * deg_to_rad;
+            const float u_cand_x = sinf(theta_cand_rad);
+            const float u_cand_y = cosf(theta_cand_rad);
+            for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) {
+                const MicPairDescriptor& pair = MIC_PAIRS[p];
+                const float* kernel = pair.is_diagonal ? clean_kernel_diag : clean_kernel_edge;
+                const float theo_lag = (pair.dir_x * u_cand_x + pair.dir_y * u_cand_y) * scale;
+                const float peak_amp = estimateLocalPeakAmplitude(pair_corr[p], theo_lag);
+                subtractCleanKernel(pair_corr, p, kernel, theo_lag, peak_amp);
+            }
+        } else {
+            for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) {
+                const MicPairDescriptor& pair = MIC_PAIRS[p];
+                const float* kernel = pair.is_diagonal ? clean_kernel_diag : clean_kernel_edge;
+                subtractCleanKernel(pair_corr, p, kernel, sec_lags[p], sec_confs[p]);
+            }
         }
 
         if (!candidate.valid || candidate.confidence < sec_threshold) {
