@@ -26,12 +26,12 @@ struct MicPairDescriptor {
 };
 
 constexpr MicPairDescriptor MIC_PAIRS[AUDIO_NUM_PAIRS] = {
-    {0, 1, false,  0.0f,  1.0f, 0, 2}, // Pair 0: Right Edge (+Y), 300-2200 Hz
-    {1, 2, false, -1.0f,  0.0f, 0, 3}, // Pair 1: Front Edge (-X), 300-2200 Hz
-    {3, 2, false,  0.0f,  1.0f, 1, 3}, // Pair 2: Left Edge (+Y), 300-2200 Hz
-    {0, 3, false, -1.0f,  0.0f, 1, 2}, // Pair 3: Back Edge (-X), 300-2200 Hz
-    {3, 1, true,   1.0f,  1.0f, 2, 3}, // Pair 4: Diagonal LB -> RF (+X, +Y), 300-1450 Hz
-    {0, 2, true,  -1.0f,  1.0f, 0, 1}  // Pair 5: Diagonal RB -> LF (-X, +Y), 300-1450 Hz
+    {0, 1, false,  0.0f,  1.0f, 0, 2}, // Pair 0: Right Edge (+Y), 300-5000 Hz
+    {1, 2, false, -1.0f,  0.0f, 0, 3}, // Pair 1: Front Edge (-X), 300-5000 Hz
+    {3, 2, false,  0.0f,  1.0f, 1, 3}, // Pair 2: Left Edge (+Y), 300-5000 Hz
+    {0, 3, false, -1.0f,  0.0f, 1, 2}, // Pair 3: Back Edge (-X), 300-5000 Hz
+    {3, 1, true,   1.0f,  1.0f, 2, 3}, // Pair 4: Diagonal LB -> RF (+X, +Y), 300-4500 Hz
+    {0, 2, true,  -1.0f,  1.0f, 0, 1}  // Pair 5: Diagonal RB -> LF (-X, +Y), 300-4500 Hz
 };
 
 static float estimateLocalPeakAmplitude(const float pair_corr[PAIR_CORR_SIZE],
@@ -360,7 +360,7 @@ bool GccPhat::configure(float sample_rate, size_t window_size) {
     // Priprava Hannovega okna
     dsps_wind_hann_f32(window, static_cast<int>(fft_size));
 
-    // Predizračun dvopasovnih uteži (300-2200 Hz za robne pare, 300-1450 Hz za diagonali)
+    // Predizračun dvopasovnih uteži (300-5000 Hz za robne pare, 300-4500 Hz za diagonali)
     const float bin_hz = fs / static_cast<float>(fft_size);
     weight_sum_edge = 0.0f;
     weight_sum_diag = 0.0f;

@@ -53,11 +53,14 @@ private:
     bool has_smoothed_angle;
 };
 
+/**
+ * @brief Representation of an actively tracked target on the radar display.
+ */
 struct TrackedTarget {
-    float smoothed_angle_deg;
-    float confidence;
-    bool active;
-    uint8_t slot_id;
+    float smoothed_angle_deg; /**< Circularly smoothed azimuth in [-180, +180] deg */
+    float confidence;         /**< Detection confidence score in [0, 1] */
+    bool active;              /**< Whether the track slot is active and within silence timeout */
+    uint8_t slot_id;          /**< Persistent tracker slot index (0..DOA_MAX_SOURCES-1) preserving UI needle/badge color */
 };
 
 /**

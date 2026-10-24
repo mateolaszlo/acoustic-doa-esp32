@@ -44,11 +44,34 @@ public:
     DoaResult process(const int32_t* left_channel, const int32_t* right_channel);
     DoaResult process(const int32_t* ch0, const int32_t* ch1,
                       const int32_t* ch2, const int32_t* ch3);
+    /**
+     * @brief Process synchronized 4-channel audio block for multiple concurrent sound sources.
+     * Combines pairwise GCC-PHAT, Pass-0 chimera fallback via SRP-PHAT seeding, and iterative
+     * CLEAN deconvolution with WLS planar wavefront subtraction to extract up to DOA_MAX_SOURCES sources.
+     */
     MultiDoaResult processMulti(const int32_t* ch0, const int32_t* ch1,
                                 const int32_t* ch2, const int32_t* ch3);
+
+    /**
+     * @brief Compute Steered Response Power (SRP-PHAT) over a 360-degree coarse angular grid (72 directions).
+     * @param pair_corr Preserved correlation lag matrices [-PAIR_CORR_RADIUS, +PAIR_CORR_RADIUS] for all 6 pairs.
+     * @param[out] best_angle_deg Output azimuth in degrees corresponding to maximum steered power.
+     * @param[out] best_power Output maximum average steered response power in [0, 1].
+     * @return Best steered response power.
+     */
     float evaluateSrpPhat(const float pair_corr[AUDIO_NUM_PAIRS][PAIR_CORR_SIZE],
                           float &best_angle_deg, float &best_power) const;
+
+    /**
+     * @brief Populate normalized cross-correlation lag windows for all 6 microphone pairs.
+     */
     void populatePairCorrelations(float pair_corr[AUDIO_NUM_PAIRS][PAIR_CORR_SIZE]);
+
+    /**
+     * @brief Solve 2D horizontal azimuth via 2x2 Weighted Least-Squares (WLS) from 6-pair delays.
+     * Evaluates 4-triangle closed loop errors, suppresses multipath outliers, and enforces
+     * 2D rank observability guards against numerical axis collapse.
+     */
     DoaResult solveWlsAzimuth(const float pair_lags_samples[AUDIO_NUM_PAIRS],
                               const float pair_confidences[AUDIO_NUM_PAIRS],
                               float rms_db,
@@ -125,6 +148,10 @@ private:
     bool updateNoiseFloorAndCheckGate(float rms_db);
     void computePairCrossCorrelationIfft(size_t mic_i, size_t mic_j, const float* weights);
     void precomputeCleanKernels();
+    /**
+     * @brief Extract candidate lags guided by SRP angular ray and solve azimuth via WLS.
+     * Evaluates local 3-point parabolic peak within +/- 3 samples of theoretical plane wave delays.
+     */
     DoaResult solveFromSrpSeed(const float pair_corr[AUDIO_NUM_PAIRS][PAIR_CORR_SIZE],
                                float seed_angle,
                                float scale,
