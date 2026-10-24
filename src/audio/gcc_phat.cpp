@@ -34,6 +34,31 @@ constexpr MicPairDescriptor MIC_PAIRS[AUDIO_NUM_PAIRS] = {
     {0, 2, true,  -1.0f,  1.0f, 0, 1}  // Pair 5: Diagonal RB -> LF (-X, +Y), 300-1450 Hz
 };
 
+static void subtractCleanKernel(float pair_corr[AUDIO_NUM_PAIRS][PAIR_CORR_SIZE],
+                                size_t p,
+                                const float* kernel,
+                                float exact_lag,
+                                float amp) {
+    if (amp <= 0.05f || !std::isfinite(exact_lag) || !std::isfinite(amp)) {
+        return;
+    }
+    const int base_lag = static_cast<int>(floorf(exact_lag));
+    const float frac = exact_lag - static_cast<float>(base_lag); // in [0, 1)
+
+    for (int delta_l = -static_cast<int>(CLEAN_KERNEL_RADIUS_SAMPLES);
+         delta_l <= static_cast<int>(CLEAN_KERNEL_RADIUS_SAMPLES); ++delta_l) {
+        const int target_lag = base_lag + delta_l;
+        if (target_lag >= -PAIR_CORR_RADIUS && target_lag <= PAIR_CORR_RADIUS) {
+            const size_t target_k = static_cast<size_t>(target_lag + PAIR_CORR_RADIUS);
+            const size_t k0 = static_cast<size_t>(delta_l + static_cast<int>(CLEAN_KERNEL_RADIUS_SAMPLES));
+            const float k_interp = (k0 > 0)
+                ? ((1.0f - frac) * kernel[k0] + frac * kernel[k0 - 1])
+                : ((1.0f - frac) * kernel[k0]);
+            pair_corr[p][target_k] -= amp * k_interp;
+        }
+    }
+}
+
 } // namespace
 
 float GccPhat::computeBandWeight(float frequency_hz, float min_hz,
@@ -719,20 +744,7 @@ MultiDoaResult GccPhat::processMulti(const int32_t* ch0, const int32_t* ch1,
     for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) {
         const MicPairDescriptor& pair = MIC_PAIRS[p];
         const float* kernel = pair.is_diagonal ? clean_kernel_diag : clean_kernel_edge;
-        const int peak_lag = static_cast<int>(roundf(pair_lags_samples[p]));
-        const float amp = pair_confidences[p];
-
-        if (amp > 0.05f) {
-            for (int delta_l = -static_cast<int>(CLEAN_KERNEL_RADIUS_SAMPLES);
-                 delta_l <= static_cast<int>(CLEAN_KERNEL_RADIUS_SAMPLES); ++delta_l) {
-                const int target_lag = peak_lag + delta_l;
-                if (target_lag >= -PAIR_CORR_RADIUS && target_lag <= PAIR_CORR_RADIUS) {
-                    const size_t target_k = static_cast<size_t>(target_lag + PAIR_CORR_RADIUS);
-                    const size_t kernel_k = static_cast<size_t>(delta_l + static_cast<int>(CLEAN_KERNEL_RADIUS_SAMPLES));
-                    pair_corr[p][target_k] -= amp * kernel[kernel_k];
-                }
-            }
-        }
+        subtractCleanKernel(pair_corr, p, kernel, pair_lags_samples[p], pair_confidences[p]);
     }
 
     // Poišči sekundarne vire na preostalem korelacijskem polju z SRP-PHAT
@@ -819,20 +831,7 @@ MultiDoaResult GccPhat::processMulti(const int32_t* ch0, const int32_t* ch1,
         for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) {
             const MicPairDescriptor& pair = MIC_PAIRS[p];
             const float* kernel = pair.is_diagonal ? clean_kernel_diag : clean_kernel_edge;
-            const int peak_lag = static_cast<int>(roundf(sec_lags[p]));
-            const float amp = sec_confs[p];
-
-            if (amp > 0.05f) {
-                for (int delta_l = -static_cast<int>(CLEAN_KERNEL_RADIUS_SAMPLES);
-                     delta_l <= static_cast<int>(CLEAN_KERNEL_RADIUS_SAMPLES); ++delta_l) {
-                    const int target_lag = peak_lag + delta_l;
-                    if (target_lag >= -PAIR_CORR_RADIUS && target_lag <= PAIR_CORR_RADIUS) {
-                        const size_t target_k = static_cast<size_t>(target_lag + PAIR_CORR_RADIUS);
-                        const size_t kernel_k = static_cast<size_t>(delta_l + static_cast<int>(CLEAN_KERNEL_RADIUS_SAMPLES));
-                        pair_corr[p][target_k] -= amp * kernel[kernel_k];
-                    }
-                }
-            }
+            subtractCleanKernel(pair_corr, p, kernel, sec_lags[p], sec_confs[p]);
         }
 
         if (!candidate.valid || candidate.confidence < sec_threshold) {
