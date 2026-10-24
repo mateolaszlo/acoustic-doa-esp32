@@ -1,6 +1,43 @@
 #include "ui/radar_ui.h"
 #include <cmath>
 
+// 3x5 Micro-font for compact numeric annotations (digits 0..9)
+// 5 rows of 3 bits per glyph (packed into uint16_t, MSB first)
+static void drawMicroDigit(GFXcanvas16& canvas, int x, int y, uint8_t digit, uint16_t color) {
+    if (digit > 9) return;
+    static const uint16_t FONT3X5[10] = {
+        0b1111011011011110, // 0: ### / # # / # # / # # / ###
+        0b0101100100101110, // 1:  #  / ##  /  #  /  #  / ###
+        0b1110011111001110, // 2: ### /   # / ### / #   / ###
+        0b1110011110011110, // 3: ### /   # / ### /   # / ###
+        0b1011011110010010, // 4: # # / # # / ### /   # /   #
+        0b1111001110011110, // 5: ### / #   / ### /   # / ###
+        0b1111001111011110, // 6: ### / #   / ### / # # / ###
+        0b1110010010010010, // 7: ### /   # /   # /   # /   #
+        0b1111011111011110, // 8: ### / # # / ### / # # / ###
+        0b1111011110011110  // 9: ### / # # / ### /   # / ###
+    };
+    const uint16_t glyph = FONT3X5[digit];
+    for (int r = 0; r < 5; ++r) {
+        for (int c = 0; c < 3; ++c) {
+            if (glyph & (1 << (15 - (r * 3 + c)))) {
+                canvas.drawPixel(x + c, y + r, color);
+            }
+        }
+    }
+}
+
+static void drawMicroNumber(GFXcanvas16& canvas, int x, int y, int value, uint16_t color) {
+    if (value < 0) value = 0;
+    if (value >= 100) value = 99;
+    if (value >= 10) {
+        drawMicroDigit(canvas, x, y, static_cast<uint8_t>(value / 10), color);
+        drawMicroDigit(canvas, x + 4, y, static_cast<uint8_t>(value % 10), color);
+    } else {
+        drawMicroDigit(canvas, x, y, static_cast<uint8_t>(value), color);
+    }
+}
+
 RadarDisplay::RadarDisplay()
     : tft_spi(FSPI),
       display(&tft_spi, TFT_CS_PIN, TFT_DC_PIN, TFT_RST_PIN),
@@ -216,14 +253,14 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
         }
     }
 
-    // 3.1 Nivo zvoka in dinamični SNR/adaptivni prag stolpec (y = 104..112)
+    // 3.1 Nivo zvoka in dinamični SNR/adaptivni prag stolpec (y = 103..110)
     canvas.setTextSize(1);
-    canvas.setCursor(2, 104);
+    canvas.setCursor(2, 103);
     canvas.setTextColor(ST77XX_YELLOW);
     canvas.printf("%2.0fdB", (db_spl > 0.0f) ? db_spl : 0.0f);
 
     // Numerični izpis SNR (+XX dB)
-    canvas.setCursor(28, 104);
+    canvas.setCursor(28, 103);
     if (snr_db >= snr_margin_db) {
         canvas.setTextColor(ST77XX_GREEN);
     } else {
@@ -231,9 +268,9 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
     }
     canvas.printf("+%1.0f", (snr_db > 0.0f) ? snr_db : 0.0f);
 
-    // Mini horizontalni merilnik SNR z adaptivnim pragom (x = 50, y = 104, w = 74, h = 7)
+    // Mini horizontalni merilnik SNR z adaptivnim pragom (x = 50, y = 103, w = 74, h = 7)
     constexpr int bar_x = 50;
-    constexpr int bar_y = 104;
+    constexpr int bar_y = 103;
     constexpr int bar_w = 74;
     constexpr int bar_h = 7;
     canvas.drawRect(bar_x, bar_y, bar_w, bar_h, COLOR_MUTED_GRAY);
@@ -260,6 +297,15 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
     // Oznaka adaptivnega praga sprožitve (gate) na SNR merilniku
     const int gate_x = bar_x + static_cast<int>(roundf((snr_margin_db / max_snr_db) * (bar_w - 2)));
     canvas.drawFastVLine(gate_x, bar_y - 1, bar_h + 2, ST77XX_WHITE);
+
+    // Izpis vrednosti praga z mikro pisavo 3x5 pik tik pod zarezo
+    const int gate_val = static_cast<int>(roundf(snr_margin_db));
+    const int digit_offset = (gate_val >= 10) ? 3 : 1;
+    const int num_w = (gate_val >= 10) ? 7 : 3;
+    int num_x = gate_x - digit_offset;
+    if (num_x < bar_x) num_x = bar_x;
+    if (num_x + num_w > bar_x + bar_w) num_x = bar_x + bar_w - num_w;
+    drawMicroNumber(canvas, num_x, bar_y + bar_h + 1, gate_val, ST77XX_WHITE);
 
     // 3.2 Združena vrstica okoljske kompenzacije: hitrost zvoka in temperatura/vlaga (y = 117)
     canvas.setTextColor(ST77XX_WHITE);
