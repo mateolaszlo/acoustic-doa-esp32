@@ -30,7 +30,7 @@ When running off-target, the tests link against lightweight, bit-exact mocks loc
 
 ## 3. Test Suites Overview
 
-The test harness in [`test/test_adaptive_and_smoothing.cpp`](../test/test_adaptive_and_smoothing.cpp) covers 12 specialized test suites:
+The test harness in [`test/test_adaptive_and_smoothing.cpp`](../test/test_adaptive_and_smoothing.cpp) covers 18 specialized test suites:
 
 1. **`test_gcc_phat_adaptive_noise_floor`**:
    - Verifies the asymmetric attack/decay tracking ($3\text{ dB/s}$ upward creep vs. $30\text{ dB/s}$ fast downward recovery).
@@ -41,15 +41,15 @@ The test harness in [`test/test_adaptive_and_smoothing.cpp`](../test/test_adapti
    - Validates legacy 2-microphone Power-On Self-Test (POST) flatline, rail short, and stereo bus collision detection.
 4. **`test_quad_post_checker`**:
    - Validates 4-microphone health heuristics across all 4 channels (`M0..M3`).
-   - Injects flatline ($\le -95\text{ dBFS}$), rail saturation ($\ge -3\text{ dBFS}$), intra-bus L/R collisions (Bus 0 and Bus 1), and cross-bus shorts (`GPIO 6` vs `GPIO 7`).
+   - Injects flatline ($\le -95\text{ dBFS}$), rail saturation ($\ge -0.8\text{ dBFS}$), intra-bus L/R collisions (Bus 0 and Bus 1), and cross-bus shorts (`GPIO 6` vs `GPIO 7`).
 5. **`test_gcc_phat_angle_offset`**:
    - Verifies hardware rotational offset trim compensation and wrap-around arithmetic.
 6. **`test_app_config_consistency`**:
    - Verifies central configuration constants: array edge length ($d = 82\text{ mm}$), sample rates ($44100 / 48000\text{ Hz}$), window sizes ($512 / 1024 / 2048$), I2S pin assignments (`BCLK = 5`, `WS = 4`, `DIN0 = 6`, `DIN1 = 7`), and filter cutoff constants.
 7. **`test_gcc_phat_dual_band_weights`**:
    - Verifies precomputed raised-cosine frequency weight tables:
-     - 4 Edge pairs: $300\text{--}2200\text{ Hz}$ with $100\text{ Hz}$ ramps.
-     - 2 Diagonal pairs: $300\text{--}1450\text{ Hz}$ with $100\text{ Hz}$ ramps (rolling off before diagonal spatial aliasing at $1483\text{ Hz}$).
+     - 4 Edge pairs: $300\text{--}5000\text{ Hz}$ with $100\text{ Hz}$ ramps.
+     - 2 Diagonal pairs: $300\text{--}4500\text{ Hz}$ with $100\text{ Hz}$ ramps.
 8. **`test_gcc_phat_quad_rms_and_pipeline`**:
    - Verifies 4-channel omnidirectional unwindowed RMS symmetry across all inputs and buffer rollback if allocation fails.
 9. **`test_gcc_phat_quad_wls_all_quadrants`**:
@@ -66,6 +66,21 @@ The test harness in [`test/test_adaptive_and_smoothing.cpp`](../test/test_adapti
     - Verifies 12-byte header Little-Endian byte packing (version `1`, measurement count, base timestamp, and clock flags).
     - Verifies 20-byte per-record Little-Endian float encoding (`angle_deg`, `delay_us`, calibrated dB, and confidence).
     - Validates buffer overflow protection, homogeneous clock flag validation, and timestamp sequence constraints.
+13. **`test_gcc_phat_srp_phat_coarse_grid`**:
+    - Verifies 72-direction coarse Steered Response Power ($5^\circ$ step) beamforming across all four quadrants ($0^\circ, \pm 45^\circ, \pm 90^\circ, \pm 135^\circ, \pm 180^\circ, +30^\circ, -60^\circ$), locating the true bearing with zero beamforming error.
+14. **`test_gcc_phat_clean_multisource`**:
+    - Validates multi-source iterative CLEAN deconvolution with fractional kernel interpolation.
+    - Confirms that single-source extraction matches legacy `process()` and extracts two simultaneous sources at $+30^\circ$ and $-60^\circ$.
+15. **`test_multi_target_display_tracker`**:
+    - Verifies multi-target nearest-neighbor angular association, independent circular smoothing, active silence track pruning ($1500\text{ ms}$ timeout), and persistent `slot_id` identity mapping to preserve needle and chip colors.
+16. **`test_gcc_phat_rank_deficiency_and_axis_observability`**:
+    - Injects rank-deficient correlation patterns where X-axis or Y-axis pairs drop out.
+    - Confirms that 2D rank observability guards (`norm_s_xx`, `norm_s_yy`, `unreg_det`) prevent numerical collapse into phantom $180^\circ$ or $\pm 90^\circ$ bearings.
+17. **`test_gcc_phat_split_brain_chimera_fallback`**:
+    - Verifies that chimera lag vectors mixing orthogonal talker lags fail closed-triangle consistency.
+    - Validates that Pass-0 SRP-PHAT fallback seamlessly recovers the dominant talker and resolves both simultaneous orthogonal speakers ($0^\circ$ and $90^\circ$).
+18. **`test_gcc_phat_multisource_edge_cases`**:
+    - Validates sub-threshold CLEAN stopping ($< 0.20$), close-angle candidate suppression ($< 30^\circ$ spatial separation gate), and full 3-source extraction (`DOA_MAX_SOURCES = 3`) at $[0.0^\circ, +75.0^\circ, -135.0^\circ]$.
 
 ---
 
