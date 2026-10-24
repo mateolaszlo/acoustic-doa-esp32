@@ -28,7 +28,8 @@ public:
     void drawRadarMulti(const float* angles_deg, const float* confidences, size_t count,
                         float temp_c, float hum, float pres, float c_sound,
                         float db_spl, bool api_available, bool adaptive_active = false,
-                        float snr_db = 0.0f, float snr_margin_db = DEFAULT_SNR_MARGIN_DB);
+                        float snr_db = 0.0f, float snr_margin_db = DEFAULT_SNR_MARGIN_DB,
+                        const uint8_t* slot_ids = nullptr);
     void drawBootPrompt(uint32_t remaining_ms, uint32_t total_ms, const BootSelfTestResult &post);
     void drawHardwareDegraded(const BootSelfTestResult &post);
     void drawSetupPortal();

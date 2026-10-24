@@ -664,9 +664,11 @@ void sensor_display_task(void *param) {
             const size_t num_tracks = tracker.getActiveTracks(tracked_targets, DOA_MAX_SOURCES, now_ms);
             float angles[DOA_MAX_SOURCES];
             float confs[DOA_MAX_SOURCES];
+            uint8_t slot_ids[DOA_MAX_SOURCES];
             for (size_t i = 0; i < num_tracks; ++i) {
                 angles[i] = tracked_targets[i].smoothed_angle_deg;
                 confs[i] = tracked_targets[i].confidence;
+                slot_ids[i] = tracked_targets[i].slot_id;
             }
 
             const float current_noise = current_noise_floor_db.load();
@@ -686,7 +688,8 @@ void sensor_display_task(void *param) {
                                         current_pressure.load(), current_sound_speed.load(),
                                         calibrated_db, last_server_available,
                                         adaptive_threshold_active.load(),
-                                        snr_db, current_snr_margin_db.load());
+                                        snr_db, current_snr_margin_db.load(),
+                                        slot_ids);
 
             prev_rendered_tracks = num_tracks;
             prev_rendered_blips = radar_display.hasActiveDecayBlips(now_ms);

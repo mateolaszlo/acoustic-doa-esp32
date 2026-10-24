@@ -1606,6 +1606,8 @@ static void test_multi_target_display_tracker() {
 
     size_t active_count = tracker.getActiveTracks(targets, DOA_MAX_SOURCES);
     assert(active_count == 2);
+    assert(targets[0].slot_id == 0);
+    assert(targets[1].slot_id == 1);
     assert(fabsf(targets[0].smoothed_angle_deg - 0.0f) < 1e-4f);
     assert(fabsf(targets[1].smoothed_angle_deg - 90.0f) < 1e-4f);
 
@@ -1617,25 +1619,37 @@ static void test_multi_target_display_tracker() {
 
     active_count = tracker.getActiveTracks(targets, DOA_MAX_SOURCES);
     assert(active_count == 2);
+    assert(targets[0].slot_id == 0);
+    assert(targets[1].slot_id == 1);
 
     // Track 0 was at 0 deg, updated with 4 deg (EMA alpha=0.25 -> 0 + 0.25 * 4 = 1.0 deg)
     assert(fabsf(targets[0].smoothed_angle_deg - 1.0f) < 0.1f);
     // Track 1 was at 90 deg, updated with 86 deg (EMA alpha=0.25 -> 90 + 0.25 * -4 = 89.0 deg)
     assert(fabsf(targets[1].smoothed_angle_deg - 89.0f) < 0.1f);
 
+    // 2b. Test persistent slot identity when slot 0 times out while slot 1 remains active:
+    // Update only track 1 at t = 2000 ms with 88.0 deg
+    float raw2b[1] = {88.0f};
+    float conf2b[1] = {0.90f};
+    tracker.update(raw2b, conf2b, 1, 2000);
+    // At t = 2600 ms, track 0 last updated at 1023 ms (> 1500 ms ago) is pruned; track 1 (updated at 2000 ms) remains active
+    active_count = tracker.getActiveTracks(targets, DOA_MAX_SOURCES, 2600);
+    assert(active_count == 1);
+    assert(targets[0].slot_id == 1); // Preserves slot 1 identity!
+
     // 3. Test silence timeout: skip 2000 ms (> reset_silence_ms = 1500 ms)
     // New single source at -150.0 deg should reset previous tracks
     float raw3[1] = {-150.0f};
     float conf3[1] = {0.90f};
-    tracker.update(raw3, conf3, 1, 3023);
+    tracker.update(raw3, conf3, 1, 4000);
 
     active_count = tracker.getActiveTracks(targets, DOA_MAX_SOURCES);
     assert(active_count == 1);
     assert(fabsf(targets[0].smoothed_angle_deg - (-150.0f)) < 1e-4f);
 
     // 4. Test absolute silence timeout without incoming events:
-    // After 2000 ms of silence (t = 5023 ms), getActiveTracks(..., now_ms) must prune to 0
-    active_count = tracker.getActiveTracks(targets, DOA_MAX_SOURCES, 5023);
+    // After 2000 ms of silence (t = 6000 ms), getActiveTracks(..., now_ms) must prune to 0
+    active_count = tracker.getActiveTracks(targets, DOA_MAX_SOURCES, 6000);
     assert(active_count == 0);
 
     printf("  [PASS] test_multi_target_display_tracker passed.\n");

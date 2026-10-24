@@ -212,6 +212,7 @@ size_t MultiTargetDisplayTracker::getActiveTracks(TrackedTarget* out_targets, si
             out_targets[count].smoothed_angle_deg = filters[i].getSmoothedAngle();
             out_targets[count].confidence = last_confidence[i];
             out_targets[count].active = true;
+            out_targets[count].slot_id = static_cast<uint8_t>(i);
             count++;
         }
     }

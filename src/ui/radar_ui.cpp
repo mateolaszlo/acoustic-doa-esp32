@@ -73,7 +73,8 @@ void RadarDisplay::drawRadar(float angle_deg, float temp_c, float hum, float pre
 void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confidences, size_t count,
                                  float temp_c, float hum, float pres, float c_sound,
                                  float db_spl, bool api_available, bool adaptive_active,
-                                 float snr_db, float snr_margin_db) {
+                                 float snr_db, float snr_margin_db,
+                                 const uint8_t* slot_ids) {
     if (!initialized) return;
     canvas.fillScreen(ST77XX_BLACK);
 
@@ -190,14 +191,15 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
         const int target_x = cx + static_cast<int>(roundf(r * cosf(rad)));
         const int target_y = cy + static_cast<int>(roundf(r * sinf(rad)));
 
+        const uint8_t slot = (slot_ids != nullptr) ? slot_ids[s] : static_cast<uint8_t>(s);
         uint16_t needle_color;
         int tip_radius = 2;
-        if (s == 0) {
+        if (slot == 0) {
             // Primarni vir: barva glede na glasnost (rdeča/rumena/zelena), večja konica
             needle_color = (db_spl > NEEDLE_HIGH_SPL_THRESHOLD) ? ST77XX_RED :
                            ((db_spl > NEEDLE_MED_SPL_THRESHOLD) ? ST77XX_YELLOW : ST77XX_GREEN);
             tip_radius = 3;
-        } else if (s == 1) {
+        } else if (slot == 1) {
             // Sekundarni vir: cian
             needle_color = ST77XX_CYAN;
         } else {
@@ -219,8 +221,9 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
         canvas.setCursor(4, 84);
         canvas.printf(" ---.- deg");
     } else if (num_needles == 1) {
+        const uint8_t slot = (slot_ids != nullptr) ? slot_ids[0] : 0;
         canvas.setTextSize(2);
-        canvas.setTextColor(ST77XX_CYAN);
+        canvas.setTextColor((slot == 2) ? ST77XX_MAGENTA : ST77XX_CYAN);
         canvas.setCursor(4, 84);
         canvas.printf("%+6.1f deg", primary_angle);
     } else {
@@ -231,11 +234,12 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
 
         for (size_t s = 0; s < num_needles; ++s) {
             const float ang = (angles_deg != nullptr) ? angles_deg[s] : 0.0f;
+            const uint8_t slot = (slot_ids != nullptr) ? slot_ids[s] : static_cast<uint8_t>(s);
             uint16_t chip_color;
-            if (s == 0) {
+            if (slot == 0) {
                 chip_color = (db_spl > NEEDLE_HIGH_SPL_THRESHOLD) ? ST77XX_RED :
                              ((db_spl > NEEDLE_MED_SPL_THRESHOLD) ? ST77XX_YELLOW : ST77XX_GREEN);
-            } else if (s == 1) {
+            } else if (slot == 1) {
                 chip_color = ST77XX_CYAN;
             } else {
                 chip_color = ST77XX_MAGENTA;
@@ -245,9 +249,9 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
             canvas.setTextColor(chip_color);
             canvas.setCursor(x_pos + 3, 88);
             if (num_needles == 2) {
-                canvas.printf("%u:%+4.0f", static_cast<unsigned>(s + 1), ang);
+                canvas.printf("%u:%+4.0f", static_cast<unsigned>(slot + 1), ang);
             } else {
-                canvas.printf("%u:%+3.0f", static_cast<unsigned>(s + 1), ang);
+                canvas.printf("%u:%+3.0f", static_cast<unsigned>(slot + 1), ang);
             }
             x_pos += chip_w + gap;
         }

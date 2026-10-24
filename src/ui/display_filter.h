@@ -57,6 +57,7 @@ struct TrackedTarget {
     float smoothed_angle_deg;
     float confidence;
     bool active;
+    uint8_t slot_id;
 };
 
 /**
