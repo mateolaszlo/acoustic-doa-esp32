@@ -171,7 +171,7 @@ During startup (`SETUP_BOOT_DELAY_MS = 3000`), the firmware executes an automate
   transmits monotonic uptime timestamps with an explicit clock flag instead of
   blocking or discarding measurements.
 - Refreshes remote calibration at boot and approximately every 60 seconds.
-- Receives timestamped results from `network_queue` and batches up to eight
+- Receives timestamped results from `network_queue` and batches up to 24
   measurements, flushing a partial batch after 200 ms.
 - Sends packed binary batches with HTTP keep-alive and a five-second timeout.
 - Targets at most five requests per second.
@@ -250,11 +250,11 @@ The 128x160 color SPI TFT (ST7735 / KMR-1.8) shows a full $360^\circ$ circular r
   - **Slot 1**: Secondary talker, colored cyan.
   - **Slot 2**: Tertiary talker, colored magenta.
   - Persistent slot assignment ensures needles and bottom chip badges (`1:`, `2:`, `3:`) never swap color identities when one speaker pauses or times out.
-- Acoustic phosphor decay trail: Fleeting acoustic impulses leave decaying phosphor dots on the outer perimeter ring that fade gracefully over 1200 ms, ensuring transient events (hand claps, impacts) remain clearly visible.
+- Acoustic phosphor decay trail: Fleeting acoustic impulses leave decaying phosphor dots on the outer perimeter ring that fade gracefully over 500 ms (matching `PHOSPHOR_DECAY_DURATION_MS`), ensuring transient events (hand claps, impacts) remain clearly visible.
 - The lower telemetry dashboard (`y = 84..159`):
   - Heading Row ($y = 85$): Displays large `%+6.1f deg` when tracking a single source, or compact color-coded target chips (`1:+36°`, `2:-64°`, `3:+120°`) matching needle colors when multiple sources are active. When all tracks exceed the 1500 ms silence timeout, it displays `---.- deg` in muted gray.
   - Sound Level & Dynamic Bar ($y = 104$): Displays digital sound level in dB SPL alongside a 72-pixel mini horizontal dynamic range bar with a white trigger gate notch and a 3x5 micro-font readout of the runtime SNR margin (`current_snr_margin_db` from NVS or captive portal) positioned below the notch.
   - Environmental Compensation ($y = 117$): Consolidated live moist air sound speed, ambient temperature, and relative humidity (`c:%.1fm/s %.0fC %.0f%%`).
-  - System Telemetry ($y = 130$): Barometric pressure and audio block configuration (`P:%.0fhPa 44.1k/1024`).
+  - System Telemetry ($y = 130$): Barometric pressure and audio block configuration (e.g. `P:%.0fhPa 44k/1024` or `48k/2048`).
   - Connectivity ($y = 145$): Color-coded status indicator and live API state (`API ONLINE` in green / `API OFFLINE` in red).
 - The display is refreshed immediately when a valid event arrives from `display_queue`, on backend reachability transitions, and at a 1 Hz idle cadence during silence to track background noise floor and BME280 metrics without excessive CPU or SPI bus overhead.

@@ -125,7 +125,7 @@ ones. Failed measurements are not persisted across reboot. The display shows
 `API OFFLINE` while delivery is unavailable.
 
 The two event queues have finite capacity. The display keeps the newest result
-when full. Network batches contain up to eight records and are spaced by at
+when full. Network batches contain up to 24 records and are spaced by at
 least 200 ms. The network queue keeps newer pending measurements when full;
 older pending measurements may be discarded during prolonged outages by
 design. The retry queue is not an archive of every DSP block.

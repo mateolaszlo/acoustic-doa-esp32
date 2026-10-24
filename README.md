@@ -33,7 +33,7 @@ The backend, database, and web dashboard are separate systems. See [REST API int
 The project includes an automated off-target host unit test suite for rapid feature verification and regression prevention without physical ESP32 hardware:
 
 ```bash
-# Run all 15 unit test suites with AddressSanitizer and UndefinedBehaviorSanitizer
+# Run all 18 unit test suites with AddressSanitizer and UndefinedBehaviorSanitizer
 make test
 
 # Or run the shell script
@@ -56,7 +56,7 @@ See [Testing documentation](docs/testing.md) for mock details and full suite des
 
 - The DSP defaults to 44100 Hz with a 1024-sample FFT window. Supported remote values are 44100 or 48000 Hz and 512, 1024, or 2048 samples; other values are rejected.
 - The DSP reports raw signal level internally as dBFS. The uploaded `raven_zvoka_db` value is calculated as dBFS plus a user-provided offset and should only be called dB SPL after that offset has been calibrated.
-- Measurements are sent in timestamped binary batches of up to eight records, with
+- Measurements are sent in timestamped binary batches of up to 24 records, with
   a target limit of five requests per second. Failed batches are retried in RAM
   three times and then dropped; they are not persisted across reboot.
 - The calibration response may provide `server_time_unix_ms`; this lets the

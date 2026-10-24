@@ -40,6 +40,8 @@ static std::atomic<bool> server_time_valid(false);
 static std::atomic<float> current_noise_floor_db(-100.0f);
 static std::atomic<bool> adaptive_threshold_active(DEFAULT_ADAPTIVE_THRESHOLD_ENABLED);
 static std::atomic<float> current_snr_margin_db(DEFAULT_SNR_MARGIN_DB);
+static std::atomic<uint32_t> current_sample_rate(DEFAULT_SAMPLE_RATE);
+static std::atomic<uint32_t> current_window_size(DEFAULT_WINDOW_SIZE);
 
 // Diagnostični števci
 static std::atomic<uint32_t> dsp_deadline_misses(0);
@@ -481,6 +483,8 @@ void network_task(void *param) {
                     xSemaphoreTake(config_mutex, portMAX_DELAY);
                     device_config = remote_cfg;
                     xSemaphoreGive(config_mutex);
+                    current_sample_rate.store(remote_cfg.sample_rate);
+                    current_window_size.store(remote_cfg.window_size);
 
                     if (apply_dsp_calibration(current_temperature.load(),
                                               current_humidity.load(),
@@ -491,6 +495,8 @@ void network_task(void *param) {
                         xSemaphoreTake(config_mutex, portMAX_DELAY);
                         device_config = previous;
                         xSemaphoreGive(config_mutex);
+                        current_sample_rate.store(previous.sample_rate);
+                        current_window_size.store(previous.window_size);
                         reconfigure_audio(previous.sample_rate, previous.window_size);
                     }
                 }
@@ -689,7 +695,9 @@ void sensor_display_task(void *param) {
                                         calibrated_db, last_server_available,
                                         adaptive_threshold_active.load(),
                                         snr_db, current_snr_margin_db.load(),
-                                        slot_ids);
+                                        slot_ids,
+                                        current_sample_rate.load(),
+                                        current_window_size.load());
 
             prev_rendered_tracks = num_tracks;
             prev_rendered_blips = radar_display.hasActiveDecayBlips(now_ms);
@@ -706,6 +714,8 @@ void setup() {
                   ESP.getFreePsram());
     device_configured = load_device_config(device_config);
     current_snr_margin_db.store(device_config.snr_margin_db);
+    current_sample_rate.store(device_config.sample_rate);
+    current_window_size.store(device_config.window_size);
 
     // 1. Zagon zaslona in BME280 senzorja
     init_sensors_and_display();
@@ -727,7 +737,9 @@ void setup() {
                                 current_sound_speed.load(), 0.0f,
                                 server_available.load(),
                                 adaptive_threshold_active.load(),
-                                0.0f, current_snr_margin_db.load());
+                                0.0f, current_snr_margin_db.load(),
+                                current_sample_rate.load(),
+                                current_window_size.load());
     }
 
     // Ustvari FreeRTOS objekte za prenos rezultatov in zaščito DSP konfiguracije
@@ -751,6 +763,8 @@ void setup() {
                       DEFAULT_WINDOW_SIZE);
         device_config.sample_rate = DEFAULT_SAMPLE_RATE;
         device_config.window_size = DEFAULT_WINDOW_SIZE;
+        current_sample_rate.store(DEFAULT_SAMPLE_RATE);
+        current_window_size.store(DEFAULT_WINDOW_SIZE);
     }
     if (!doa.configure(static_cast<float>(device_config.sample_rate),
                        device_config.window_size)) {

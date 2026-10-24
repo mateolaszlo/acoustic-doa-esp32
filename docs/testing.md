@@ -135,7 +135,7 @@ The GitHub Actions workflow in [`.github/workflows/build.yml`](../.github/workfl
 
 1. **Host Unit Tests (`test` job)**:
    - Executes `make test` under `ubuntu-latest`.
-   - Validates all 12 unit test suites with AddressSanitizer and UndefinedBehaviorSanitizer enabled.
+   - Validates all 18 unit test suites with AddressSanitizer and UndefinedBehaviorSanitizer enabled.
    - Fails fast in $<2\text{ s}$ if algorithmic regressions, memory corruption, or boundary violations occur.
 2. **PlatformIO Firmware Build (`build` job)**:
    - Depends on the `test` job (`needs: test`).

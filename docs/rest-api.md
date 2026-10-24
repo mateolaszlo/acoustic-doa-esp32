@@ -104,7 +104,7 @@ Connection: keep-alive
 
 The configured API base URL is still used with `/meritve` appended. The API key
 identifies the device; the binary body does not contain a device ID. The
-firmware batches up to eight measurements and flushes a partial batch when its
+firmware batches up to 24 measurements and flushes a partial batch when its
 oldest measurement is 200 ms old. Requests are spaced by at least 200 ms, for a
 maximum target of five requests per second. The DSP and display continue operating
 at the active audio-block rate independently of network I/O.
@@ -118,7 +118,7 @@ starts with this 12-byte packed header:
 | Offset | Size | Field |
 |---:|---:|---|
 | 0 | 1 | Format version (`1`) |
-| 1 | 1 | Measurement count (`1` through `8`) |
+| 1 | 1 | Measurement count (`1` through `24`) |
 | 2 | 2 | Clock flags |
 | 4 | 8 | Base timestamp in milliseconds |
 
@@ -148,7 +148,8 @@ Each measurement then occupies exactly 20 bytes:
 | 16 | 4 | Correlation confidence as float32 (weighted mean 6-pair WLS confidence in $[0, 1]$) |
 
 Therefore, the body size is `12 + (measurement_count * 20)` bytes. For
-example, eight measurements occupy 172 bytes. The timestamp of record `i` is
+example, a full batch of 24 measurements occupies 492 bytes (or 172 bytes for
+eight measurements). The timestamp of record `i` is
 `base_timestamp_ms + offset_ms`. For monotonic batches, this is uptime relative
 to the current boot.
 
@@ -219,7 +220,7 @@ The backend should:
 
 - Expose `/naprave/:id/kalibracija` with API-key authentication.
 - Expose `/meritve` with API-key authentication.
-- Accept version 1 of the documented little-endian binary batch format.
+- Accept version 1 of the documented little-endian binary batch format with measurement counts up to 24 (payload up to 492 bytes; ensure backend validator does not reject count > 8 with HTTP 400).
 - Validate the content length against the count field before decoding.
 - Return 2xx for accepted measurements.
 - Return useful JSON error bodies for failed requests.

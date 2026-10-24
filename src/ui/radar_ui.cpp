@@ -63,18 +63,20 @@ bool RadarDisplay::init() {
 
 void RadarDisplay::drawRadar(float angle_deg, float temp_c, float hum, float pres, float c_sound,
                             float db_spl, bool api_available, bool adaptive_active,
-                            float snr_db, float snr_margin_db) {
+                            float snr_db, float snr_margin_db,
+                            uint32_t sample_rate, uint32_t window_size) {
     const float angles[1] = { angle_deg };
     const float confs[1] = { 1.0f };
     drawRadarMulti(angles, confs, 1, temp_c, hum, pres, c_sound, db_spl, api_available, adaptive_active,
-                   snr_db, snr_margin_db);
+                   snr_db, snr_margin_db, nullptr, sample_rate, window_size);
 }
 
 void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confidences, size_t count,
                                  float temp_c, float hum, float pres, float c_sound,
                                  float db_spl, bool api_available, bool adaptive_active,
                                  float snr_db, float snr_margin_db,
-                                 const uint8_t* slot_ids) {
+                                 const uint8_t* slot_ids,
+                                 uint32_t sample_rate, uint32_t window_size) {
     if (!initialized) return;
     canvas.fillScreen(ST77XX_BLACK);
 
@@ -319,7 +321,8 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
     // 3.3 Barometrični tlak in konfiguracija vzorčenja (y = 130)
     canvas.setTextColor(COLOR_MUTED_GRAY);
     canvas.setCursor(4, 130);
-    canvas.printf("P:%4.0fhPa  44k/1024", pres / 100.0f);
+    const unsigned sr_k = static_cast<unsigned>(roundf(sample_rate / 1000.0f));
+    canvas.printf("P:%4.0fhPa  %uk/%u", pres / 100.0f, sr_k, static_cast<unsigned>(window_size));
 
     // 3.4 API status (y = 145..155)
     int status_y = 148;
