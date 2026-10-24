@@ -1178,6 +1178,14 @@ static void test_gcc_phat_loop_closure_multipath_rejection() {
     const float high_confs[AUDIO_NUM_PAIRS] = { 0.80f, 0.80f, 0.80f, 0.80f, 0.80f, 0.80f };
     assert(!doa.solveWlsAzimuth(zero_lags, high_confs, -30.0f).valid);
 
+    // Verify mathematical axis collapse anomalies (0.0 deg without true Y transit delay) are rejected
+    const float fake_zero_lags[AUDIO_NUM_PAIRS] = { 0.5f, 0.0f, 0.5f, 0.0f, 0.5f, 0.5f };
+    assert(!doa.solveWlsAzimuth(fake_zero_lags, high_confs, -30.0f).valid);
+
+    // Verify mathematical axis collapse anomalies (90.0 deg without true X transit delay) are rejected
+    const float fake_90_lags[AUDIO_NUM_PAIRS] = { 0.0f, -0.5f, 0.0f, -0.5f, -0.5f, 0.5f };
+    assert(!doa.solveWlsAzimuth(fake_90_lags, high_confs, -30.0f).valid);
+
     // Verify diagnostic arrays are cleared when process() gates out a silent frame
     std::vector<int32_t> silent(n, 0);
     DoaResult silent_res = doa.process(silent.data(), silent.data(), silent.data(), silent.data());

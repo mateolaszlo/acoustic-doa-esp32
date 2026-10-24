@@ -1023,6 +1023,34 @@ DoaResult GccPhat::solveWlsAzimuth(const float pair_lags_samples[AUDIO_NUM_PAIRS
 
     // 4. Polni 360-stopinjski azimut [-180, +180] in krožna kompenzacija angle_offset_deg
     const float phi_raw = atan2f(u_x, u_y) * (180.0f / static_cast<float>(M_PI));
+
+    // Preverjanje fizične skladnosti osnih prihodov (Endfire Validation)
+    // Za izogibanje numeričnemu zrušenju difuznega šuma v fiktivne osne kote (0°, 90°, -90°, 180°):
+    // Zvok, ki resnično prihaja vzdolž določene osi, MORA ustvariti ustrezen zakasnitveni zamik (endfire delay).
+    const float abs_cos_phi = fabsf(cosf(phi_raw * (static_cast<float>(M_PI) / 180.0f)));
+    const float abs_sin_phi = fabsf(sinf(phi_raw * (static_cast<float>(M_PI) / 180.0f)));
+    const float tau_edge_max = (d / c_sound) * fs;
+    constexpr float MIN_ENDFIRE_FRACTION = 0.35f;
+    const float min_required_lag = tau_edge_max * MIN_ENDFIRE_FRACTION;
+
+    // Če kandidat trdi, da je vzdolž osi Y (blizu 0° ali 180°, abs_cos > 0.90):
+    // mora vsaj en robni par osi Y (Pair 0 ali Pair 2) izkazati zadosten zamik (|dn| >= min_required_lag).
+    if (abs_cos_phi > 0.90f) {
+        const float max_y_lag = fmaxf(fabsf(dn0), fabsf(dn2));
+        if (max_y_lag < min_required_lag) {
+            return result; // Fiktivni osni zrušek šuma (brez realne Y zakasnitve)
+        }
+    }
+
+    // Če kandidat trdi, da je vzdolž osi X (blizu +90° ali -90°, abs_sin > 0.90):
+    // mora vsaj en robni par osi X (Pair 1 ali Pair 3) izkazati zadosten zamik (|dn| >= min_required_lag).
+    if (abs_sin_phi > 0.90f) {
+        const float max_x_lag = fmaxf(fabsf(dn1), fabsf(dn3));
+        if (max_x_lag < min_required_lag) {
+            return result; // Fiktivni osni zrušek šuma (brez realne X zakasnitve)
+        }
+    }
+
     const float offset_deg = std::isfinite(angle_offset_deg) ? angle_offset_deg : 0.0f;
     const float phi_cal = wrap_angle_180(phi_raw - offset_deg);
     const float phi_cal_rad = phi_cal * (static_cast<float>(M_PI) / 180.0f);
