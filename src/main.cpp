@@ -39,6 +39,7 @@ static std::atomic<int64_t> server_utc_offset_ms(0);
 static std::atomic<bool> server_time_valid(false);
 static std::atomic<float> current_noise_floor_db(-100.0f);
 static std::atomic<bool> adaptive_threshold_active(DEFAULT_ADAPTIVE_THRESHOLD_ENABLED);
+static std::atomic<float> current_snr_margin_db(DEFAULT_SNR_MARGIN_DB);
 
 // Diagnostični števci
 static std::atomic<uint32_t> dsp_deadline_misses(0);
@@ -362,6 +363,7 @@ static bool apply_dsp_calibration(float temperature_c,
     xSemaphoreGive(doa_mutex);
     db_spl_offset.store(configured_offset);
     adaptive_threshold_active.store(adaptive_enabled);
+    current_snr_margin_db.store(snr_margin);
     return true;
 }
 
@@ -684,7 +686,7 @@ void sensor_display_task(void *param) {
                                         current_pressure.load(), current_sound_speed.load(),
                                         calibrated_db, last_server_available,
                                         adaptive_threshold_active.load(),
-                                        snr_db, DEFAULT_SNR_MARGIN_DB);
+                                        snr_db, current_snr_margin_db.load());
 
             prev_rendered_tracks = num_tracks;
             prev_rendered_blips = radar_display.hasActiveDecayBlips(now_ms);
@@ -700,6 +702,7 @@ void setup() {
                   ESP.getPsramSize(),
                   ESP.getFreePsram());
     device_configured = load_device_config(device_config);
+    current_snr_margin_db.store(device_config.snr_margin_db);
 
     // 1. Zagon zaslona in BME280 senzorja
     init_sensors_and_display();
@@ -720,7 +723,8 @@ void setup() {
                                 current_pressure.load(),
                                 current_sound_speed.load(), 0.0f,
                                 server_available.load(),
-                                adaptive_threshold_active.load());
+                                adaptive_threshold_active.load(),
+                                0.0f, current_snr_margin_db.load());
     }
 
     // Ustvari FreeRTOS objekte za prenos rezultatov in zaščito DSP konfiguracije
