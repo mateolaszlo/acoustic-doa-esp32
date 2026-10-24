@@ -58,7 +58,7 @@ The firmware uses four synchronized digital I2S microphones (e.g., INMP441) arra
 | Ground | GND | GND | GND | GND | GND |
 | Power | 3.3 V | VDD | VDD | VDD | VDD |
 
-Both I2S drivers are configured for 32-bit samples, stereo left/right standard I2S format, four DMA buffers, and DMA buffer length 512, followed by a synchronous 6-block warmup discard (`POST_WARMUP_BLOCKS = 6`).
+Both I2S drivers are configured for 32-bit samples, stereo left/right standard I2S format, four DMA buffers, and DMA buffer length 512, followed by a synchronous 12-block warmup discard (`POST_WARMUP_BLOCKS = 12`, $\approx 278\text{ ms}$) to settle MEMS charge pumps.
 
 Confirm the microphone module voltage and slot-selection wiring from its datasheet before connecting it. Do not short `GPIO 6` and `GPIO 7` together; the Power-On Self-Test (POST) explicitly checks for both intra-bus L/R collision and cross-bus data-line shorts.
 

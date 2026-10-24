@@ -27,8 +27,8 @@ The DSP task reads a synchronized 4-channel audio block via `read_i2s_quad()`. T
 2. **Adaptive Noise Floor Gating**: Evaluate the block RMS against the effective threshold (adaptive noise floor + SNR margin, or fixed threshold). Quiet frames return early without running FFTs.
 3. **Windowing & 4 Forward FFTs**: Apply a Hann window to each of the 4 channels and compute 4 in-place radix-2 complex forward FFTs (`dsps_fft2r_fc32` + `dsps_bit_rev_fc32`) yielding $X_0(f) \dots X_3(f)$.
 4. **6-Pair Dual-Band PHAT Cross-Correlation**: Iterate over all $\binom{4}{2} = 6$ microphone pairs:
-   - **Edge Pairs ($p \in \{0, 1, 2, 3\}$, baseline $d = 82\text{ mm}$)**: Weighted by precomputed `band_weight_edge` ($300\text{--}2200\text{ Hz}$ with $100\text{ Hz}$ raised-cosine ramps).
-   - **Diagonal Pairs ($p \in \{4, 5\}$, baseline $d\sqrt{2} \approx 116\text{ mm}$)**: Weighted by precomputed `band_weight_diag` ($300\text{--}1450\text{ Hz}$ with $100\text{ Hz}$ raised-cosine ramps) to roll off cleanly below the diagonal spatial aliasing frequency ($f_{\text{alias}} = \frac{c}{2d\sqrt{2}} \approx 1483\text{ Hz}$).
+   - **Edge Pairs ($p \in \{0, 1, 2, 3\}$, baseline $d = 82\text{ mm}$)**: Weighted by precomputed `band_weight_edge` ($300\text{--}5000\text{ Hz}$ with $100\text{ Hz}$ raised-cosine ramps).
+   - **Diagonal Pairs ($p \in \{4, 5\}$, baseline $d\sqrt{2} \approx 116\text{ mm}$)**: Weighted by precomputed `band_weight_diag` ($300\text{--}4500\text{ Hz}$ with $100\text{ Hz}$ raised-cosine ramps).
    - Compute PHAT-normalized cross-spectra in the shared `ccorr` buffer, run the inverse FFT, search within each pair's physical lag bound $\lceil \frac{\|\mathbf{b}_p\|}{c} f_s \rceil + 1$, and refine the peak lag $\tau_p$ and peak $\text{confidence}_p \in [0, 1]$ via 3-point parabolic interpolation.
 5. **Closed-Triangle Loop-Closure Consistency**: Evaluate the 4 closed spatial triangles ($\tau_{ij} + \tau_{jk} + \tau_{ki} = 0$) across the 4-mic square and assign each pair a Gaussian consistency weight $\psi_p = \exp\left(-e_{\text{pair},p}^2 / (2\sigma_{\text{loop}}^2)\right)$ with $\sigma_{\text{loop}} = 1.5\text{ samples}$ to suppress single-pair multipath reflections.
 6. **$2\times 2$ Weighted Least-Squares (WLS) 2D Azimuth Solver**:
@@ -51,15 +51,20 @@ To track up to `DOA_MAX_SOURCES = 3` concurrent acoustic events within a single 
 2. **Lag Window Preservation**:
    - The normalized cross-correlation lags for all 6 pairs are copied into a stack buffer `pair_corr[6][45]` (covering lag offsets $[-22, +22]$ samples) consuming only $\sim 1\text{ KB}$ of the 8 KB DSP stack.
 3. **Iterative Extraction Loop**:
-   - **Pass 0 (Dominant Source)**: Computes the primary sound azimuth via pairwise argmax and $2\times 2$ WLS solver. If valid, the primary source is stored in `MultiDoaResult.sources[0]`. The scaled acoustic imprint of the primary source ($A_p \cdot K_p[\tau - \hat{\tau}_p]$) is subtracted from `pair_corr[p]` for all 6 pairs.
+   - **Pass 0 (Dominant Source)**: Computes the primary sound azimuth via pairwise argmax and $2\times 2$ WLS solver. If pairwise argmax fails closed-triangle loop closure due to a multi-talker split-brain / chimera lag vector, Pass 0 seamlessly falls back to global coarse SRP-PHAT grid search (`solveFromSrpSeed`) to lock onto the dominant coherent wavefront. Once verified, the primary source is stored in `MultiDoaResult.sources[0]`.
+   - **CLEAN Subtraction (Wavefront Model & Fractional Interpolation)**: The acoustic imprint of each accepted source is subtracted from `pair_corr[p]` at the theoretical WLS planar wavefront delay:
+     $$\hat{\tau}_p = \frac{d \cdot f_s}{c} (\text{dir\_x}_p \sin\phi_{\text{raw}} + \text{dir\_y}_p \cos\phi_{\text{raw}})$$
+     scaled by the local correlation peak amplitude at $\hat{\tau}_p$ (`estimateLocalPeakAmplitude()`). Sub-sample delays are subtracted using linear fractional kernel interpolation:
+     $$K(\delta_l - \text{frac}) = (1 - \text{frac}) K[k_0] + \text{frac} \cdot K[k_0 - 1]$$
+     eliminating fractional sidelobe residuals that would otherwise deceive subsequent passes.
    - **Pass 1..2 (Secondary & Tertiary Sources)**:
      - **Coarse SRP-PHAT Grid Search**: Sweeps 72 candidate azimuths $\theta \in [-180^\circ, +180^\circ)$ with $5^\circ$ resolution:
        $$P(\theta) = \frac{1}{6} \sum_{p=0}^5 \text{pair\_corr}_p\big[\text{round}(\tau_p(\theta))\big]$$
        Algebraically optimized to only 2 multiplications per angle, completing the entire 72-point beamforming search in $< 10\ \mu\text{s}$ CPU time.
-     - **Termination Gate**: If $P(\theta_{\text{seed}}) < \text{threshold}$, the iteration stops.
+     - **Termination Gate**: If $P(\theta_{\text{seed}}) < \text{sec\_threshold}$ (`DEFAULT_CLEAN_SECONDARY_THRESHOLD = 0.20f`), the iteration stops.
      - **Local Parabolic WLS Refinement**: For each pair, searches within a narrow local window of $\pm 3\text{ samples}$ around $\tau_p(\theta_{\text{seed}})$, fits a 3-point parabolic peak, and solves the $2\times 2$ WLS normal equations with closed-triangle loop-closure validation.
      - **Spatial Separation Constraint**: Requires candidate azimuths to maintain at least $25^\circ$ separation (`DOA_MIN_SOURCE_SEPARATION_DEG`) from all previously accepted sources to avoid reporting residual sidelobes.
-     - **CLEAN Subtraction**: The candidate's fitted imprint is subtracted from `pair_corr`, and the loop repeats.
+     - **Iterative CLEAN Subtraction**: The candidate's fitted planar wavefront imprint is subtracted from `pair_corr`, and the loop repeats for up to `DOA_MAX_SOURCES = 3` sources.
 
 ### Adaptive Noise Floor Tracking
 
@@ -118,9 +123,9 @@ During startup (`SETUP_BOOT_DELAY_MS = 3000`), the firmware executes an automate
 
 1. **Octal PSRAM**: Verifies that 8 MB OPI PSRAM is detected and available.
 2. **BME280 Environmental Sensor**: Probes I2C `0x76`/`0x77` and verifies plausible temperature and pressure readings.
-3. **4-Channel I2S Microphones (`evaluate_quad_microphone_health`)**: Captures a synchronized 1024-sample quad block from `I2S0` (`GPIO 6`) and `I2S1` (`GPIO 7`) and verifies:
+3. **4-Channel I2S Microphones (`evaluate_quad_microphone_health`)**: Following a 12-block warmup discard (`POST_WARMUP_BLOCKS = 12`, $\approx 278\text{ ms}$) to settle MEMS charge pumps, captures a synchronized 1024-sample quad block from `I2S0` (`GPIO 6`) and `I2S1` (`GPIO 7`) and verifies:
    - **Flatline Detection**: Rejects any channel (`M0..M3`) where $\text{min} == \text{max}$ or AC $\text{RMS} \le -95\text{ dBFS}$ (disconnected, unpowered, or floating line).
-   - **Rail Saturation**: Rejects any channel with total or AC $\text{RMS} \ge -3\text{ dBFS}$ (DC short to rail or severe clipping).
+   - **Rail Saturation**: Rejects any channel with total or AC $\text{RMS} \ge -0.8\text{ dBFS}$ (`POST_MIC_RAIL_SHORT_RMS_DB`, $>91\%$ full scale rail short or severe clipping).
    - **Intra-Bus & Cross-Bus Collision**: Checks pairwise identical sample counts ($< 85\%$) on Bus 0 (`M0` vs `M1`), Bus 1 (`M2` vs `M3`), and across buses (Bus 0 `GPIO 6` vs Bus 1 `GPIO 7`) to detect L/R slot miswiring or shorted data lines.
 4. **Dual Reporting & Hardware Degraded Fault Halt**:
    - Outputs a comprehensive ASCII diagnostic table to Serial at 115200 baud.
@@ -240,12 +245,16 @@ processing that is too slow even when the task continues to run.
 The 128x160 color SPI TFT (ST7735 / KMR-1.8) shows a full $360^\circ$ circular radar scope (`cx = 64, cy = 44, r = 34`) with the latest valid sound azimuth in $[-180^\circ, +180^\circ]$. Rendering is double-buffered in RAM via a 40 KB `GFXcanvas16` framebuffer to eliminate screen flicker, then transferred over 27 MHz SPI via `drawRGBBitmap`.
 
 - The upper scope (`y = 0..82`) displays outer ($r = 34$) and inner ($r = 17$) concentric range rings, precision $30^\circ$ inward compass tick marks, N/E/S/W crosshair axes, and cardinal degree labels (`0`, `+90`, `180`, `-90`).
-- The $360^\circ$ polar radar needle is color-coded by calibrated sound pressure level ($> 75\text{ dB SPL}$ red, $> 60\text{ dB SPL}$ yellow, otherwise green). Up to 3 simultaneous needles are displayed (Primary: SPL color; Secondary: cyan; Tertiary: magenta).
+- The $360^\circ$ polar radar needles are bound to persistent tracker slot IDs (`slot_id`):
+  - **Slot 0**: Primary talker, color-coded by calibrated sound pressure level ($> 75\text{ dB SPL}$ red, $> 60\text{ dB SPL}$ yellow, otherwise green).
+  - **Slot 1**: Secondary talker, colored cyan.
+  - **Slot 2**: Tertiary talker, colored magenta.
+  - Persistent slot assignment ensures needles and bottom chip badges (`1:`, `2:`, `3:`) never swap color identities when one speaker pauses or times out.
 - Acoustic phosphor decay trail: Fleeting acoustic impulses leave decaying phosphor dots on the outer perimeter ring that fade gracefully over 1200 ms, ensuring transient events (hand claps, impacts) remain clearly visible.
 - The lower telemetry dashboard (`y = 84..159`):
-  - Heading Row ($y = 85$): Displays large `%+6.1f deg` when tracking a single source, or compact color-coded target chips (`1:+36°`, `2:-64°`, `3:+120°`) matching needle colors when multiple sources are active.
-  - Sound Level & Dynamic Bar ($y = 104$): Displays digital sound level in dB SPL alongside a 72-pixel mini horizontal dynamic range bar with a mid-SPL reference tick.
+  - Heading Row ($y = 85$): Displays large `%+6.1f deg` when tracking a single source, or compact color-coded target chips (`1:+36°`, `2:-64°`, `3:+120°`) matching needle colors when multiple sources are active. When all tracks exceed the 1500 ms silence timeout, it displays `---.- deg` in muted gray.
+  - Sound Level & Dynamic Bar ($y = 104$): Displays digital sound level in dB SPL alongside a 72-pixel mini horizontal dynamic range bar with a white trigger gate notch and a 3x5 micro-font readout of the runtime SNR margin (`current_snr_margin_db` from NVS or captive portal) positioned below the notch.
   - Environmental Compensation ($y = 117$): Consolidated live moist air sound speed, ambient temperature, and relative humidity (`c:%.1fm/s %.0fC %.0f%%`).
   - System Telemetry ($y = 130$): Barometric pressure and audio block configuration (`P:%.0fhPa 44.1k/1024`).
   - Connectivity ($y = 145$): Color-coded status indicator and live API state (`API ONLINE` in green / `API OFFLINE` in red).
-- The display is updated when a valid event arrives from `display_queue` or when backend reachability state changes.
+- The display is refreshed immediately when a valid event arrives from `display_queue`, on backend reachability transitions, and at a 1 Hz idle cadence during silence to track background noise floor and BME280 metrics without excessive CPU or SPI bus overhead.
