@@ -154,9 +154,9 @@ constexpr float NEEDLE_MED_SPL_THRESHOLD  = 60.0f; // Yellow (> 60 dB SPL)
 // 6. POWER-ON SELF-TEST (POST) HEURISTICS
 // ==============================================================================
 constexpr size_t POST_SAMPLE_COUNT          = 1024;
-constexpr int POST_WARMUP_BLOCKS            = 6;
+constexpr int POST_WARMUP_BLOCKS            = 12; // ~278 ms lockstep warmup to settle MEMS charge pumps
 constexpr float POST_MIC_FLATLINE_RMS_DB    = -95.0f;
-constexpr float POST_MIC_RAIL_SHORT_RMS_DB  = -3.0f;
+constexpr float POST_MIC_RAIL_SHORT_RMS_DB  = -0.8f; // Pegged against 32-bit rail (>91% full scale)
 constexpr size_t POST_MIC_MAX_COLLISION_PCT = 85;
 
 // ==============================================================================
