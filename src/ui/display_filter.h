@@ -70,6 +70,8 @@ public:
     void update(const float* raw_angles, const float* confidences, size_t count, uint32_t now_ms);
     void update(const MultiDoaResult& multi_res, uint32_t now_ms);
 
+    void prune(uint32_t now_ms);
+    size_t getActiveTracks(TrackedTarget* out_targets, size_t max_targets, uint32_t now_ms = 0);
     size_t getActiveTracks(TrackedTarget* out_targets, size_t max_targets) const;
     void reset();
 

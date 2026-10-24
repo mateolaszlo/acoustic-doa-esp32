@@ -121,21 +121,24 @@ void MultiTargetDisplayTracker::update(const MultiDoaResult& multi_res, uint32_t
     update(angles, confs, cnt, now_ms);
 }
 
-void MultiTargetDisplayTracker::update(const float* raw_angles, const float* confidences,
-                                      size_t count, uint32_t now_ms) {
-    if (raw_angles == nullptr || confidences == nullptr || count == 0) {
-        return;
-    }
-
+void MultiTargetDisplayTracker::prune(uint32_t now_ms) {
     constexpr uint32_t track_timeout_ms = DisplaySmoothingFilter::DEFAULT_RESET_SILENCE_MS;
-
-    // 1. Preveri potek neaktivnih sledi
     for (size_t i = 0; i < DOA_MAX_SOURCES; ++i) {
         if (track_active[i] && (now_ms - last_update_ms[i] > track_timeout_ms)) {
             track_active[i] = false;
             filters[i].reset();
         }
     }
+}
+
+void MultiTargetDisplayTracker::update(const float* raw_angles, const float* confidences,
+                                      size_t count, uint32_t now_ms) {
+    if (raw_angles == nullptr || confidences == nullptr || count == 0) {
+        return;
+    }
+
+    // 1. Preveri potek neaktivnih sledi
+    prune(now_ms);
 
     const size_t num_dets = (count > DOA_MAX_SOURCES) ? DOA_MAX_SOURCES : count;
     bool det_assigned[DOA_MAX_SOURCES] = {false};
@@ -189,6 +192,13 @@ void MultiTargetDisplayTracker::update(const float* raw_angles, const float* con
             }
         }
     }
+}
+
+size_t MultiTargetDisplayTracker::getActiveTracks(TrackedTarget* out_targets, size_t max_targets, uint32_t now_ms) {
+    if (now_ms > 0) {
+        prune(now_ms);
+    }
+    return static_cast<const MultiTargetDisplayTracker*>(this)->getActiveTracks(out_targets, max_targets);
 }
 
 size_t MultiTargetDisplayTracker::getActiveTracks(TrackedTarget* out_targets, size_t max_targets) const {

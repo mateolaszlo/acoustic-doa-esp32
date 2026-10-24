@@ -176,7 +176,12 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
     canvas.drawFastHLine(0, 82, TFT_WIDTH, COLOR_MUTED_GRAY);
 
     const float primary_angle = (angles_deg != nullptr && num_needles > 0) ? angles_deg[0] : 0.0f;
-    if (num_needles <= 1) {
+    if (num_needles == 0) {
+        canvas.setTextSize(2);
+        canvas.setTextColor(COLOR_MUTED_GRAY);
+        canvas.setCursor(4, 84);
+        canvas.printf(" ---.- deg");
+    } else if (num_needles == 1) {
         canvas.setTextSize(2);
         canvas.setTextColor(ST77XX_CYAN);
         canvas.setCursor(4, 84);

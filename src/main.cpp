@@ -638,7 +638,7 @@ void sensor_display_task(void *param) {
             }
         } else {
             // Tišina (brez novih paketov): preveri ali sledi ali fosforne točke še razpadajo
-            const size_t active_tracks = tracker.getActiveTracks(tracked_targets, DOA_MAX_SOURCES);
+            const size_t active_tracks = tracker.getActiveTracks(tracked_targets, DOA_MAX_SOURCES, now_ms);
             const bool active_blips = radar_display.hasActiveDecayBlips(now_ms);
             const bool current_server_available = server_available.load();
 
@@ -651,7 +651,7 @@ void sensor_display_task(void *param) {
 
         if (needs_redraw && radar_display.isInitialized()) {
             last_server_available = server_available.load();
-            const size_t num_tracks = tracker.getActiveTracks(tracked_targets, DOA_MAX_SOURCES);
+            const size_t num_tracks = tracker.getActiveTracks(tracked_targets, DOA_MAX_SOURCES, now_ms);
             float angles[DOA_MAX_SOURCES];
             float confs[DOA_MAX_SOURCES];
             for (size_t i = 0; i < num_tracks; ++i) {

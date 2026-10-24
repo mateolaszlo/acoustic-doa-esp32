@@ -1632,6 +1632,11 @@ static void test_multi_target_display_tracker() {
     assert(active_count == 1);
     assert(fabsf(targets[0].smoothed_angle_deg - (-150.0f)) < 1e-4f);
 
+    // 4. Test absolute silence timeout without incoming events:
+    // After 2000 ms of silence (t = 5023 ms), getActiveTracks(..., now_ms) must prune to 0
+    active_count = tracker.getActiveTracks(targets, DOA_MAX_SOURCES, 5023);
+    assert(active_count == 0);
+
     printf("  [PASS] test_multi_target_display_tracker passed.\n");
 }
 
