@@ -631,6 +631,9 @@ static void test_app_config_consistency() {
     assert(DEFAULT_SAMPLE_RATE == 44100);
     assert(DEFAULT_WINDOW_SIZE == 1024);
     assert(AUDIO_MAX_WINDOW_SIZE >= DEFAULT_WINDOW_SIZE);
+    assert(DEFAULT_CLEAN_SECONDARY_THRESHOLD > 0.0f && DEFAULT_CLEAN_SECONDARY_THRESHOLD <= 1.0f);
+    assert(DOA_WLS_MIN_AXIS_OBSERVABILITY > 0.0f);
+    assert(DOA_WLS_MIN_UNREG_DET > 0.0f);
 
     // Audio config whitelist validator
     assert(is_supported_audio_config(44100, 512));
@@ -1632,6 +1635,71 @@ static void test_multi_target_display_tracker() {
     printf("  [PASS] test_multi_target_display_tracker passed.\n");
 }
 
+static void test_gcc_phat_rank_deficiency_and_axis_observability() {
+    printf("[TEST] Running test_gcc_phat_rank_deficiency_and_axis_observability...\n");
+
+    const float fs = 44100.0f;
+    const float d = DEFAULT_MIC_DISTANCE_M; // 0.082 m
+    GccPhat doa(fs, d, 20.0f);
+    assert(doa.init(1024));
+    const float c_sound = doa.getSoundSpeed();
+    const float max_lag = (d / c_sound) * fs;
+
+    // 1. Nominal 120 deg sound: both X and Y axes have physical delays
+    // theta = 120 deg -> u_x = sin(120) = +0.866, u_y = cos(120) = -0.500
+    // theo_lags:
+    // Pair 0 (+Y): u_y * max_lag = -0.500 * max_lag
+    // Pair 1 (-X): -u_x * max_lag = -0.866 * max_lag
+    // Pair 2 (+Y): u_y * max_lag = -0.500 * max_lag
+    // Pair 3 (-X): -u_x * max_lag = -0.866 * max_lag
+    // Pair 4 (+X, +Y): (u_x + u_y) * max_lag = 0.366 * max_lag
+    // Pair 5 (-X, +Y): (-u_x + u_y) * max_lag = -1.366 * max_lag
+    float lags_120[AUDIO_NUM_PAIRS] = {
+        -0.500f * max_lag,
+        -0.866f * max_lag,
+        -0.500f * max_lag,
+        -0.866f * max_lag,
+         0.366f * max_lag,
+        -1.366f * max_lag
+    };
+    float confs_nominal[AUDIO_NUM_PAIRS] = {0.85f, 0.85f, 0.85f, 0.85f, 0.85f, 0.85f};
+
+    DoaResult nom_res = doa.solveWlsAzimuth(lags_120, confs_nominal, -50.0f, 0.45f);
+    assert(nom_res.valid);
+    assert(fabsf(circular_angle_diff_deg(nom_res.angle_deg, 120.0f)) < 0.5f);
+
+    // 2. Rank deficiency scenario: X-axis pairs (Pair 1, Pair 3) and diagonals drop out
+    // Only Y-axis edge pairs (Pair 0, Pair 2) survive with high correlation.
+    // Without axis observability check, this collapsed to u_x = 0, u_y < 0 -> EXACTLY 180.0 deg!
+    float confs_y_only[AUDIO_NUM_PAIRS] = {0.85f, 0.0f, 0.85f, 0.0f, 0.0f, 0.0f};
+    DoaResult y_only_res = doa.solveWlsAzimuth(lags_120, confs_y_only, -50.0f, 0.45f);
+    // Must be rejected as invalid due to lack of 2D rank / X-axis observability!
+    assert(!y_only_res.valid);
+
+    // 3. Rank deficiency scenario: Y-axis pairs drop out, only X-axis survives.
+    // Without axis observability check, this collapsed to u_y = 0 -> -90.0 deg or +90.0 deg!
+    float confs_x_only[AUDIO_NUM_PAIRS] = {0.0f, 0.85f, 0.0f, 0.85f, 0.0f, 0.0f};
+    DoaResult x_only_res = doa.solveWlsAzimuth(lags_120, confs_x_only, -50.0f, 0.45f);
+    assert(!x_only_res.valid);
+
+    // 4. Genuine 180.0 deg sound: wavefront along -Y.
+    // Y pairs have max negative lag, X pairs have lag ~ 0 with HIGH confidence!
+    float lags_true_180[AUDIO_NUM_PAIRS] = {
+        -max_lag, // Pair 0 (+Y)
+         0.0f,    // Pair 1 (-X)
+        -max_lag, // Pair 2 (+Y)
+         0.0f,    // Pair 3 (-X)
+        -max_lag, // Pair 4
+        -max_lag  // Pair 5
+    };
+    float confs_true_180[AUDIO_NUM_PAIRS] = {0.90f, 0.90f, 0.90f, 0.90f, 0.90f, 0.90f};
+    DoaResult true_180_res = doa.solveWlsAzimuth(lags_true_180, confs_true_180, -50.0f, 0.45f);
+    assert(true_180_res.valid);
+    assert(fabsf(fabsf(true_180_res.angle_deg) - 180.0f) < 0.5f);
+
+    printf("  [PASS] test_gcc_phat_rank_deficiency_and_axis_observability passed.\n");
+}
+
 int main() {
     test_gcc_phat_adaptive_noise_floor();
     test_display_smoothing_filter();
@@ -1648,6 +1716,7 @@ int main() {
     test_gcc_phat_srp_phat_coarse_grid();
     test_gcc_phat_clean_multisource();
     test_multi_target_display_tracker();
+    test_gcc_phat_rank_deficiency_and_axis_observability();
     printf("\nAll unit tests passed successfully!\n");
     return 0;
 }

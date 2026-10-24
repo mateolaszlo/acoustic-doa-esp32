@@ -82,6 +82,8 @@ constexpr float GCC_PHAT_DIAG_MAX_HZ = 4500.0f;
 constexpr float GCC_PHAT_MAX_HZ      = GCC_PHAT_EDGE_MAX_HZ;
 constexpr float GCC_PHAT_RAMP_HZ     = 100.0f;
 constexpr float DOA_LOOP_CLOSURE_TOLERANCE_SAMPLES = 1.5f;
+constexpr float DOA_WLS_MIN_AXIS_OBSERVABILITY     = 0.02f;
+constexpr float DOA_WLS_MIN_UNREG_DET              = 0.001f;
 
 // Parameter Plausibility & Validation Bounds
 constexpr float ANGLE_OFFSET_MIN_DEG    = -180.0f;

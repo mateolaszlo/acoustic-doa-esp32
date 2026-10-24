@@ -1005,6 +1005,18 @@ DoaResult GccPhat::solveWlsAzimuth(const float pair_lags_samples[AUDIO_NUM_PAIRS
         return result;
     }
 
+    const float d2 = d * d;
+    const float norm_s_xx = s_xx / d2;
+    const float norm_s_yy = s_yy / d2;
+    const float norm_s_xy = s_xy / d2;
+    const float unreg_det = norm_s_xx * norm_s_yy - norm_s_xy * norm_s_xy;
+
+    if (norm_s_xx < DOA_WLS_MIN_AXIS_OBSERVABILITY ||
+        norm_s_yy < DOA_WLS_MIN_AXIS_OBSERVABILITY ||
+        unreg_det < DOA_WLS_MIN_UNREG_DET) {
+        return result; // Zavrni numerično degeneracijo (izguba 2D opazljivosti na eni od osi)
+    }
+
     const float lambda = 1e-6f * d * d;
     const float a_xx = s_xx + lambda;
     const float a_yy = s_yy + lambda;
