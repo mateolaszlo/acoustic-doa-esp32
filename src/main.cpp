@@ -616,6 +616,7 @@ void sensor_display_task(void *param) {
     TrackedTarget tracked_targets[DOA_MAX_SOURCES];
     size_t prev_rendered_tracks = 0;
     bool prev_rendered_blips = false;
+    uint32_t last_idle_refresh_ms = 0;
 
     while (true) {
         update_environmental_compensation();
@@ -627,6 +628,7 @@ void sensor_display_task(void *param) {
             last_event = event;
             tracker.update(event, now_ms);
             needs_redraw = true;
+            last_idle_refresh_ms = now_ms;
 
             const float calibrated_db = event.rms_db + db_spl_offset.load();
             for (uint8_t s = 0; s < event.count; ++s) {
@@ -638,14 +640,20 @@ void sensor_display_task(void *param) {
             }
         } else {
             // Tišina (brez novih paketov): preveri ali sledi ali fosforne točke še razpadajo
+            // oziroma ali je potekel 1-sekundni interval za osvežitev nivoja šuma okolice
             const size_t active_tracks = tracker.getActiveTracks(tracked_targets, DOA_MAX_SOURCES, now_ms);
             const bool active_blips = radar_display.hasActiveDecayBlips(now_ms);
             const bool current_server_available = server_available.load();
+            const bool idle_refresh_due = (now_ms - last_idle_refresh_ms >= DISPLAY_IDLE_REFRESH_INTERVAL_MS);
 
             if (active_tracks > 0 || active_blips ||
                 prev_rendered_tracks > 0 || prev_rendered_blips ||
-                current_server_available != last_server_available) {
+                current_server_available != last_server_available ||
+                idle_refresh_due) {
                 needs_redraw = true;
+                if (idle_refresh_due) {
+                    last_idle_refresh_ms = now_ms;
+                }
             }
         }
 

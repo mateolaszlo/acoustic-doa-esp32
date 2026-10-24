@@ -117,6 +117,7 @@ constexpr unsigned TASK_SENSOR_DISPLAY_PRIORITY   = 2;
 constexpr int TASK_SENSOR_DISPLAY_CORE            = 0;
 constexpr uint32_t DISPLAY_QUEUE_LENGTH           = 10;
 constexpr uint32_t DISPLAY_QUEUE_TIMEOUT_MS       = 50;
+constexpr uint32_t DISPLAY_IDLE_REFRESH_INTERVAL_MS = 1000; // 1 Hz live noise-floor & sensor refresh in silence
 
 // Network Task (Core 0 - REST Client & Telemetry)
 constexpr uint32_t TASK_NETWORK_STACK_SIZE        = 8192;

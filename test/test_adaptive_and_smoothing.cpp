@@ -634,6 +634,7 @@ static void test_app_config_consistency() {
     assert(DEFAULT_CLEAN_SECONDARY_THRESHOLD > 0.0f && DEFAULT_CLEAN_SECONDARY_THRESHOLD <= 1.0f);
     assert(DOA_WLS_MIN_AXIS_OBSERVABILITY > 0.0f);
     assert(DOA_WLS_MIN_UNREG_DET > 0.0f);
+    assert(DISPLAY_IDLE_REFRESH_INTERVAL_MS == 1000);
 
     // Audio config whitelist validator
     assert(is_supported_audio_config(44100, 512));
