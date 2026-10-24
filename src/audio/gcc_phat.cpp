@@ -847,6 +847,9 @@ MultiDoaResult GccPhat::processMulti(const int32_t* ch0, const int32_t* ch1,
     const float scale = (d / c_sound) * fs;
     const float deg_to_rad = static_cast<float>(M_PI) / 180.0f;
     const float offset_deg = std::isfinite(angle_offset_deg) ? angle_offset_deg : 0.0f;
+    const float sec_threshold = (correlation_threshold < DEFAULT_CLEAN_SECONDARY_THRESHOLD)
+                                    ? correlation_threshold
+                                    : DEFAULT_CLEAN_SECONDARY_THRESHOLD;
 
     // Določitev primarnega zvočnega vira (Prehod 0) preko 2x2 WLS cenilnika
     DoaResult primary = solveWlsAzimuth(pair_lags_samples, pair_confidences, multi_res.rms_db);
@@ -855,13 +858,13 @@ MultiDoaResult GccPhat::processMulti(const int32_t* ch0, const int32_t* ch1,
         float srp_seed_angle = 0.0f;
         float srp_seed_power = 0.0f;
         evaluateSrpPhat(pair_corr, srp_seed_angle, srp_seed_power);
-        if (srp_seed_power >= correlation_threshold && std::isfinite(srp_seed_power)) {
-            primary = solveFromSrpSeed(pair_corr, srp_seed_angle, scale, multi_res.rms_db, correlation_threshold);
+        if (srp_seed_power >= sec_threshold && std::isfinite(srp_seed_power)) {
+            primary = solveFromSrpSeed(pair_corr, srp_seed_angle, scale, multi_res.rms_db, sec_threshold);
         }
     }
 
     multi_res.sources[0] = primary;
-    if (!primary.valid || primary.confidence < correlation_threshold) {
+    if (!primary.valid || primary.confidence < sec_threshold) {
         return multi_res;
     }
 
@@ -884,9 +887,6 @@ MultiDoaResult GccPhat::processMulti(const int32_t* ch0, const int32_t* ch1,
     }
 
     // Poišči sekundarne vire na preostalem korelacijskem polju z SRP-PHAT
-    const float sec_threshold = (correlation_threshold < DEFAULT_CLEAN_SECONDARY_THRESHOLD)
-                                    ? correlation_threshold
-                                    : DEFAULT_CLEAN_SECONDARY_THRESHOLD;
     for (size_t iter = 1; iter < DOA_MAX_SOURCES; ++iter) {
         float seed_angle = 0.0f;
         float seed_power = 0.0f;

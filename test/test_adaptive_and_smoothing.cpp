@@ -1024,6 +1024,31 @@ static void synthesize_two_quad_wavefronts(
     }
 }
 
+static void synthesize_three_quad_wavefronts(
+    float angle1_deg, float amp1,
+    float angle2_deg, float amp2,
+    float angle3_deg, float amp3,
+    float fs, float d, float c_sound, size_t n,
+    std::vector<int32_t>& ch0, std::vector<int32_t>& ch1,
+    std::vector<int32_t>& ch2, std::vector<int32_t>& ch3) {
+
+    std::vector<int32_t> a0, a1, a2, a3;
+    std::vector<int32_t> b0, b1, b2, b3;
+    std::vector<int32_t> c0, c1, c2, c3;
+
+    synthesize_quad_wavefront(angle1_deg, fs, d, c_sound, n, a0, a1, a2, a3, 0.0f, 0.0f);
+    synthesize_quad_wavefront(angle2_deg, fs, d, c_sound, n, b0, b1, b2, b3, 18.0f, 1.234f);
+    synthesize_quad_wavefront(angle3_deg, fs, d, c_sound, n, c0, c1, c2, c3, 37.0f, 2.567f);
+
+    ch0.resize(n); ch1.resize(n); ch2.resize(n); ch3.resize(n);
+    for (size_t i = 0; i < n; ++i) {
+        ch0[i] = static_cast<int32_t>(static_cast<float>(a0[i]) * amp1 + static_cast<float>(b0[i]) * amp2 + static_cast<float>(c0[i]) * amp3);
+        ch1[i] = static_cast<int32_t>(static_cast<float>(a1[i]) * amp1 + static_cast<float>(b1[i]) * amp2 + static_cast<float>(c1[i]) * amp3);
+        ch2[i] = static_cast<int32_t>(static_cast<float>(a2[i]) * amp1 + static_cast<float>(b2[i]) * amp2 + static_cast<float>(c2[i]) * amp3);
+        ch3[i] = static_cast<int32_t>(static_cast<float>(a3[i]) * amp1 + static_cast<float>(b3[i]) * amp2 + static_cast<float>(c3[i]) * amp3);
+    }
+}
+
 static void test_gcc_phat_quad_wls_all_quadrants() {
     printf("[TEST] Running test_gcc_phat_quad_wls_all_quadrants...\n");
 
@@ -1775,6 +1800,65 @@ static void test_gcc_phat_split_brain_chimera_fallback() {
     printf("  [PASS] test_gcc_phat_split_brain_chimera_fallback passed.\n");
 }
 
+static void test_gcc_phat_multisource_edge_cases() {
+    printf("[TEST] Running test_gcc_phat_multisource_edge_cases...\n");
+
+    const size_t n = 1024;
+    const float fs = 44100.0f;
+    const float d = DEFAULT_MIC_DISTANCE_M; // 0.082 m
+    GccPhat doa(fs, d, 20.0f);
+    assert(doa.init(n));
+    const float c_sound = doa.getSoundSpeed();
+
+    std::vector<int32_t> ch0, ch1, ch2, ch3;
+
+    // 1. Sub-threshold stopping: Primary source at 45.0 deg (amp 1.0) and faint background sound at -60.0 deg (amp 0.05)
+    // Residual correlation for secondary sound is well below DEFAULT_CLEAN_SECONDARY_THRESHOLD (0.20f)
+    // processMulti must terminate early and report exactly 1 source without hallucination.
+    synthesize_two_quad_wavefronts(45.0f, 1.0f, -60.0f, 0.05f, fs, d, c_sound, n, ch0, ch1, ch2, ch3);
+    MultiDoaResult sub_res = doa.processMulti(ch0.data(), ch1.data(), ch2.data(), ch3.data());
+    assert(sub_res.valid);
+    assert(sub_res.count == 1);
+    assert(fabsf(circular_angle_diff_deg(sub_res.sources[0].angle_deg, 45.0f)) < 1.0f);
+
+    // 2. Spatial separation gate: Primary source at +40.0 deg (amp 1.0) and close secondary sound at +52.0 deg (amp 0.70)
+    // Separation is 12 deg (< DOA_MIN_SOURCE_SEPARATION_DEG = 30 deg).
+    // The candidate closer than 30 deg must be rejected, keeping count == 1.
+    synthesize_two_quad_wavefronts(40.0f, 1.0f, 52.0f, 0.70f, fs, d, c_sound, n, ch0, ch1, ch2, ch3);
+    MultiDoaResult sep_res = doa.processMulti(ch0.data(), ch1.data(), ch2.data(), ch3.data());
+    assert(sep_res.valid);
+    assert(sep_res.count == 1);
+    assert(fabsf(circular_angle_diff_deg(sep_res.sources[0].angle_deg, 45.0f)) < 10.0f);
+
+    // 3. Full 3-source extraction: Three loud, widely separated talkers at 0.0 deg, +75.0 deg, and -135.0 deg
+    // All 3 pairs of sources have >= 75 deg separation (> 30 deg gate) and high power.
+    // processMulti must extract all 3 sources (reaching DOA_MAX_SOURCES = 3).
+    synthesize_three_quad_wavefronts(0.0f, 1.0f, 75.0f, 0.90f, -135.0f, 0.80f, fs, d, c_sound, n, ch0, ch1, ch2, ch3);
+    MultiDoaResult three_res = doa.processMulti(ch0.data(), ch1.data(), ch2.data(), ch3.data());
+    assert(three_res.valid);
+    assert(three_res.count == 3);
+
+    printf("  3-Source Extraction -> Count: %d, [Src0: %.1f deg (%.2f), Src1: %.1f deg (%.2f), Src2: %.1f deg (%.2f)]\n",
+           three_res.count,
+           three_res.sources[0].angle_deg, three_res.sources[0].confidence,
+           three_res.sources[1].angle_deg, three_res.sources[1].confidence,
+           three_res.sources[2].angle_deg, three_res.sources[2].confidence);
+
+    bool found_near_0 = false;
+    bool found_near_75 = false;
+    bool found_near_m135 = false;
+    for (size_t s = 0; s < 3; ++s) {
+        const float a = three_res.sources[s].angle_deg;
+        if (fabsf(circular_angle_diff_deg(a, 0.0f)) < 20.0f) found_near_0 = true;
+        if (fabsf(circular_angle_diff_deg(a, 75.0f)) < 20.0f) found_near_75 = true;
+        if (fabsf(circular_angle_diff_deg(a, -135.0f)) < 30.0f) found_near_m135 = true;
+        assert(three_res.sources[s].confidence >= DEFAULT_CLEAN_SECONDARY_THRESHOLD);
+    }
+    assert(found_near_0 && found_near_75 && found_near_m135);
+
+    printf("  [PASS] test_gcc_phat_multisource_edge_cases passed.\n");
+}
+
 int main() {
     test_gcc_phat_adaptive_noise_floor();
     test_display_smoothing_filter();
@@ -1793,6 +1877,7 @@ int main() {
     test_multi_target_display_tracker();
     test_gcc_phat_rank_deficiency_and_axis_observability();
     test_gcc_phat_split_brain_chimera_fallback();
+    test_gcc_phat_multisource_edge_cases();
     printf("\nAll unit tests passed successfully!\n");
     return 0;
 }
