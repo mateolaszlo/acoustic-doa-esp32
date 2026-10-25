@@ -15,6 +15,7 @@ constexpr int I2S_WS_PIN                = 4;
 constexpr int I2S_DIN0_PIN              = 6;
 constexpr int I2S_DIN1_PIN              = 7;
 constexpr int I2S_DIN_PIN               = I2S_DIN0_PIN;
+constexpr uint32_t I2S_READ_TIMEOUT_MS   = 100;
 
 // I2C Environmental Sensor (BME280)
 constexpr int I2C_SDA_PIN               = 8;
@@ -59,7 +60,13 @@ inline bool is_supported_audio_config(uint32_t sample_rate, uint32_t window_size
 // 3. ACOUSTIC & CALIBRATION DEFAULTS
 // ==============================================================================
 constexpr float DEFAULT_MIC_DISTANCE_M               = 0.082f; // 82 mm physical spacing
+constexpr float MIN_MIC_DISTANCE_M                   = 0.02f;
+constexpr float MAX_MIC_DISTANCE_M                   = 0.11f;
+constexpr float MIC_DISTANCE_MIN_M                   = MIN_MIC_DISTANCE_M;
+constexpr float MIC_DISTANCE_MAX_M                   = MAX_MIC_DISTANCE_M;
 constexpr float DEFAULT_CORRELATION_THRESHOLD        = 0.45f;
+constexpr float CORRELATION_THRESHOLD_MIN            = 0.10f;
+constexpr float CORRELATION_THRESHOLD_MAX            = 1.0f;
 constexpr float DEFAULT_SOUND_LEVEL_THRESHOLD_DB_SPL = 55.0f;
 constexpr float DEFAULT_DB_SPL_OFFSET                = 100.0f; // INMP441 dBFS-to-dB SPL offset
 constexpr float DEFAULT_SNR_MARGIN_DB                = 8.0f;
@@ -73,8 +80,8 @@ constexpr float  DEFAULT_CLEAN_SECONDARY_THRESHOLD   = 0.20f;
 constexpr size_t SRP_GRID_ANGLES                     = 72;
 constexpr float  SRP_GRID_STEP_DEG                   = 5.0f;
 constexpr size_t CLEAN_KERNEL_RADIUS_SAMPLES         = 16;
-constexpr int    PAIR_CORR_RADIUS                    = 22;
-constexpr size_t PAIR_CORR_SIZE                      = 2 * PAIR_CORR_RADIUS + 1; // 45 lags [-22, +22]
+constexpr int    PAIR_CORR_RADIUS                    = 32;
+constexpr size_t PAIR_CORR_SIZE                      = 2 * PAIR_CORR_RADIUS + 1; // 65 lags [-32, +32]
 
 // Dual-Band GCC-PHAT Raised-Cosine Spectral Weighting Cutoffs
 constexpr float GCC_PHAT_MIN_HZ      = 300.0f;
@@ -93,6 +100,8 @@ constexpr float SNR_MARGIN_MIN_DB       = 0.0f;
 constexpr float SNR_MARGIN_MAX_DB       = 60.0f;
 constexpr float SPL_THRESHOLD_MIN_DB    = -200.0f;
 constexpr float SPL_THRESHOLD_MAX_DB    = 200.0f;
+constexpr float DB_SPL_OFFSET_MIN_DB    = -100.0f;
+constexpr float DB_SPL_OFFSET_MAX_DB    = 200.0f;
 
 // Environmental Defaults (Moist Air Thermodynamics Fallback)
 constexpr float DEFAULT_TEMPERATURE_C   = 20.0f;
@@ -119,6 +128,7 @@ constexpr int TASK_SENSOR_DISPLAY_CORE            = 0;
 constexpr uint32_t DISPLAY_QUEUE_LENGTH           = 10;
 constexpr uint32_t DISPLAY_QUEUE_TIMEOUT_MS       = 50;
 constexpr uint32_t DISPLAY_IDLE_REFRESH_INTERVAL_MS = 500;  // 2 Hz live noise-floor & sensor refresh in silence
+constexpr uint32_t DISPLAY_TRACK_HOLD_TIMEOUT_MS  = 250;  // Active display needle & telemetry hold time before returning to idle
 
 // Network Task (Core 0 - REST Client & Telemetry)
 constexpr uint32_t TASK_NETWORK_STACK_SIZE        = 8192;

@@ -12,31 +12,57 @@ void RestClient::close() {
     if (http_initialized) {
         http.end();
         http_initialized = false;
+        current_url = "";
+        current_key = "";
     }
+}
+
+bool RestClient::sendBatch(const uint8_t *payload, size_t payload_size,
+                           const String &api_url, const String &api_key) {
+    if (WiFi.status() != WL_CONNECTED || api_url.isEmpty() || api_key.isEmpty() ||
+        payload == nullptr || payload_size == 0) {
+        return false;
+    }
+
+    if (!http_initialized || api_url != current_url || api_key != current_key) {
+        close();
+        http.setReuse(true);
+        http.useHTTP10(false);
+        http.setTimeout(5000);
+        current_url = api_url;
+        current_key = api_key;
+        http_initialized = true;
+    }
+
+    String url = current_url + "/meritve";
+    if (!http.begin(url)) {
+        Serial.println("HTTP client initialization failed");
+        http_initialized = false;
+        return false;
+    }
+    http.addHeader("Content-Type", "application/octet-stream");
+    http.addHeader("Connection", "keep-alive");
+    http.addHeader("x-api-key", current_key);
+
+    const int httpResponseCode = http.POST(const_cast<uint8_t*>(payload), payload_size);
+
+    if (httpResponseCode < 200 || httpResponseCode >= 300) {
+        const String response = http.getString();
+        Serial.printf("HTTP POST /meritve failed: %d, response: %s\n",
+                      httpResponseCode, response.c_str());
+        close();
+        return false;
+    }
+
+    http.end(); // With setReuse(true), drains unread 2xx body while keeping TCP socket alive
+    Serial.printf("Measurement batch accepted: HTTP %d, bytes: %u\n",
+                  httpResponseCode, static_cast<unsigned>(payload_size));
+    return true;
 }
 
 bool RestClient::sendBatch(const NetworkMeasurement *measurements, size_t count,
                            const String &api_url, const String &api_key,
                            float db_spl_offset) {
-    if (WiFi.status() != WL_CONNECTED || api_url.isEmpty() || api_key.isEmpty()) {
-        return false;
-    }
-
-    if (!http_initialized) {
-        String url = api_url + "/meritve";
-        if (!http.begin(url)) {
-            Serial.println("HTTP client initialization failed");
-            return false;
-        }
-        http.setReuse(true);
-        http.useHTTP10(false);
-        http.setTimeout(5000);
-        http.addHeader("Content-Type", "application/octet-stream");
-        http.addHeader("Connection", "keep-alive");
-        http.addHeader("x-api-key", api_key);
-        http_initialized = true;
-    }
-
     constexpr size_t max_payload_size =
         MEASUREMENT_BATCH_HEADER_SIZE +
         NETWORK_BATCH_MAX_MEASUREMENTS * MEASUREMENT_RECORD_SIZE;
@@ -48,20 +74,7 @@ bool RestClient::sendBatch(const NetworkMeasurement *measurements, size_t count,
         return false;
     }
 
-    const int httpResponseCode = http.POST(payload, payload_size);
-
-    if (httpResponseCode < 200 || httpResponseCode >= 300) {
-        const String response = http.getString();
-        Serial.printf("HTTP POST /meritve failed: %d, response: %s\n",
-                      httpResponseCode, response.c_str());
-        http.end();
-        http_initialized = false;
-        return false;
-    }
-
-    Serial.printf("Measurement batch accepted: HTTP %d, count: %u\n",
-                  httpResponseCode, static_cast<unsigned>(count));
-    return true;
+    return sendBatch(payload, payload_size, api_url, api_key);
 }
 
 bool RestClient::fetchCalibration(const String &api_url, const String &api_key,
@@ -107,67 +120,65 @@ bool RestClient::fetchCalibration(const String &api_url, const String &api_key,
         const uint64_t server_time_ms = server_time_value.as<uint64_t>();
         const int64_t midpoint_ms = request_start_ms + (request_end_ms - request_start_ms) / 2;
         if (server_time_ms >= static_cast<uint64_t>(MIN_VALID_EPOCH) * 1000ULL && midpoint_ms >= 0) {
-            server_utc_offset_ms.store(static_cast<int64_t>(server_time_ms) - midpoint_ms);
-            server_time_valid.store(true);
+            const int64_t new_offset_ms = static_cast<int64_t>(server_time_ms) - midpoint_ms;
+            if (!server_time_valid.load()) {
+                server_utc_offset_ms.store(new_offset_ms);
+                server_time_valid.store(true);
+            }
         } else {
             Serial.println("Calibration server time is invalid");
         }
     }
 
-    float distance = doc["razdalja_mikrofonov_m"] | 0.0f;
-    float correlation = doc["prag_korelacije"] | 0.0f;
-    float spl_threshold = doc["prag_glasnosti_db"] | 0.0f;
-    uint32_t sample_rate = doc["vzorcevalna_frekvenca"] | 0U;
-    uint32_t window_size = doc["okno_velikost"] | 0U;
-    float offset = doc["db_spl_offset"] | config.db_spl_offset;
+    DeviceConfig candidate = config;
+    if (!doc["razdalja_mikrofonov_m"].isNull()) {
+        candidate.microphone_distance_m = doc["razdalja_mikrofonov_m"].as<float>();
+    }
+    if (!doc["prag_korelacije"].isNull()) {
+        candidate.correlation_threshold = doc["prag_korelacije"].as<float>();
+    }
+    if (!doc["prag_glasnosti_db"].isNull()) {
+        candidate.sound_level_threshold_db_spl = doc["prag_glasnosti_db"].as<float>();
+    }
+    if (!doc["vzorcevalna_frekvenca"].isNull()) {
+        candidate.sample_rate = doc["vzorcevalna_frekvenca"].as<uint32_t>();
+    }
+    if (!doc["okno_velikost"].isNull()) {
+        candidate.window_size = doc["okno_velikost"].as<uint32_t>();
+    }
+    if (!doc["db_spl_offset"].isNull()) {
+        candidate.db_spl_offset = doc["db_spl_offset"].as<float>();
+    }
 
-    bool adaptive_enabled = config.adaptive_threshold_enabled;
     if (!doc["prilagodljivi_prag"].isNull()) {
-        adaptive_enabled = doc["prilagodljivi_prag"].as<bool>();
+        candidate.adaptive_threshold_enabled = doc["prilagodljivi_prag"].as<bool>();
     } else if (!doc["adaptive_threshold"].isNull()) {
-        adaptive_enabled = doc["adaptive_threshold"].as<bool>();
+        candidate.adaptive_threshold_enabled = doc["adaptive_threshold"].as<bool>();
     } else if (!doc["adaptive_threshold_enabled"].isNull()) {
-        adaptive_enabled = doc["adaptive_threshold_enabled"].as<bool>();
+        candidate.adaptive_threshold_enabled = doc["adaptive_threshold_enabled"].as<bool>();
     }
 
-    float snr_margin = config.snr_margin_db;
     if (!doc["snr_rob_db"].isNull()) {
-        snr_margin = doc["snr_rob_db"].as<float>();
+        candidate.snr_margin_db = doc["snr_rob_db"].as<float>();
     } else if (!doc["snr_margin_db"].isNull()) {
-        snr_margin = doc["snr_margin_db"].as<float>();
+        candidate.snr_margin_db = doc["snr_margin_db"].as<float>();
     } else if (!doc["snr_margin"].isNull()) {
-        snr_margin = doc["snr_margin"].as<float>();
+        candidate.snr_margin_db = doc["snr_margin"].as<float>();
     }
 
-    float angle_offset = config.angle_offset_deg;
     if (!doc["kot_odmik"].isNull()) {
-        angle_offset = doc["kot_odmik"].as<float>();
+        candidate.angle_offset_deg = doc["kot_odmik"].as<float>();
     } else if (!doc["angle_offset_deg"].isNull()) {
-        angle_offset = doc["angle_offset_deg"].as<float>();
+        candidate.angle_offset_deg = doc["angle_offset_deg"].as<float>();
     } else if (!doc["angle_offset"].isNull()) {
-        angle_offset = doc["angle_offset"].as<float>();
+        candidate.angle_offset_deg = doc["angle_offset"].as<float>();
     }
 
-    if (distance <= 0.0f || correlation <= 0.0f ||
-        spl_threshold < SPL_THRESHOLD_MIN_DB ||
-        !is_supported_audio_config(sample_rate, window_size) ||
-        !std::isfinite(distance) || !std::isfinite(correlation) ||
-        !std::isfinite(spl_threshold) || !std::isfinite(offset) ||
-        !std::isfinite(snr_margin) || snr_margin < SNR_MARGIN_MIN_DB || snr_margin > SNR_MARGIN_MAX_DB ||
-        !std::isfinite(angle_offset) || angle_offset < ANGLE_OFFSET_MIN_DEG || angle_offset > ANGLE_OFFSET_MAX_DEG) {
+    if (!validate_device_config(candidate)) {
         Serial.println("Calibration response contains invalid or unsupported values");
         return false;
     }
 
-    config.microphone_distance_m = distance;
-    config.correlation_threshold = correlation;
-    config.sound_level_threshold_db_spl = spl_threshold;
-    config.db_spl_offset = offset;
-    config.sample_rate = sample_rate;
-    config.window_size = window_size;
-    config.adaptive_threshold_enabled = adaptive_enabled;
-    config.snr_margin_db = snr_margin;
-    config.angle_offset_deg = angle_offset;
-
+    config = candidate;
     return true;
 }

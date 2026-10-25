@@ -17,6 +17,9 @@ public:
                    const String &api_url, const String &api_key,
                    float db_spl_offset);
 
+    bool sendBatch(const uint8_t *payload, size_t payload_size,
+                   const String &api_url, const String &api_key);
+
     bool fetchCalibration(const String &api_url, const String &api_key,
                           uint32_t device_id,
                           DeviceConfig &config,
@@ -28,4 +31,6 @@ public:
 private:
     HTTPClient http;
     bool http_initialized;
+    String current_url;
+    String current_key;
 };

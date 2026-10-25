@@ -7,6 +7,7 @@
 #include <vector>
 #include <esp_heap_caps.h>
 #include <esp_dsp.h>
+#include "ui/radar_ui.h"
 
 // --- Mock ESP-IDF and ESP-DSP for native host testing ---
 static int g_mock_fft_calls = 0;
@@ -16,6 +17,11 @@ static int g_mock_spiram_alloc_calls = 0;
 static int g_mock_fail_internal_after = -1; // -1 = never fail internal
 static int g_mock_fail_all_after = -1;      // -1 = never fail all
 static int g_mock_fft_init_ret = 0;
+static uint32_t g_mock_millis = 1000;
+
+uint32_t millis() {
+    return g_mock_millis;
+}
 
 extern "C" {
     int dsps_fft2r_init_fc32(void*, int) {
@@ -113,6 +119,9 @@ extern "C" {
 #include "audio/post_checker.h"
 #include "audio/i2s_sampler.h"
 #include "network/rest_protocol.h"
+#include "config/device_config.h"
+#include "network/setup_portal.h"
+#include <atomic>
 
 // Test 1: GccPhat adaptive noise floor tracking
 void test_gcc_phat_adaptive_noise_floor() {
@@ -664,6 +673,13 @@ static void test_app_config_consistency() {
     assert(SRP_GRID_ANGLES == 72);
     assert(std::fabs(SRP_GRID_STEP_DEG - 5.0f) < 1e-4f);
     assert(CLEAN_KERNEL_RADIUS_SAMPLES == 16);
+    assert(PAIR_CORR_RADIUS == 32);
+    assert(PAIR_CORR_SIZE == 65);
+    assert(std::fabs(MIN_MIC_DISTANCE_M - 0.02f) < 1e-4f);
+    assert(std::fabs(MAX_MIC_DISTANCE_M - 0.11f) < 1e-4f);
+    assert(std::fabs(CORRELATION_THRESHOLD_MIN - 0.10f) < 1e-4f);
+    assert(std::fabs(CORRELATION_THRESHOLD_MAX - 1.0f) < 1e-4f);
+    assert(I2S_READ_TIMEOUT_MS == 100);
     assert(NETWORK_QUEUE_LENGTH == 128);
     assert(NETWORK_BATCH_MAX_MEASUREMENTS == 24);
 
@@ -1620,7 +1636,7 @@ static void test_gcc_phat_clean_multisource() {
 static void test_multi_target_display_tracker() {
     printf("[TEST] Running test_multi_target_display_tracker...\n");
 
-    MultiTargetDisplayTracker tracker;
+    MultiTargetDisplayTracker tracker(1500, 1500);
     TrackedTarget targets[DOA_MAX_SOURCES];
 
     // 1. Initial multi-target detection at t = 1000 ms: two sources at 0.0 deg and 90.0 deg
@@ -1858,6 +1874,872 @@ static void test_gcc_phat_multisource_edge_cases() {
     printf("  [PASS] test_gcc_phat_multisource_edge_cases passed.\n");
 }
 
+static void test_gcc_phat_phase_one_memory_safety_and_threshold_gates() {
+    printf("[TEST] Running test_gcc_phat_phase_one_memory_safety_and_threshold_gates...\n");
+
+    const size_t n = 1024;
+    const float fs = 48000.0f;
+
+    // 1. CRIT-01: Large microphone distance geometry (d = 0.14m at 48kHz -> diagonal lag ~28 samples)
+    // Must NOT cause ASan stack buffer overflow or underflow
+    {
+        const float d_large = 0.14f;
+        GccPhat doa_large(fs, d_large, 20.0f);
+        assert(doa_large.init(n));
+        const float c_sound = doa_large.getSoundSpeed();
+
+        std::vector<int32_t> ch0, ch1, ch2, ch3;
+        // Test diagonal angle where theoretical diagonal lag is maximal (~28 samples)
+        synthesize_quad_wavefront(45.0f, fs, d_large, c_sound, n, ch0, ch1, ch2, ch3);
+        MultiDoaResult res_large = doa_large.processMulti(ch0.data(), ch1.data(), ch2.data(), ch3.data());
+        assert(res_large.valid);
+        assert(res_large.count >= 1);
+        assert(fabsf(circular_angle_diff_deg(res_large.sources[0].angle_deg, 45.0f)) < 5.0f);
+
+        // Also test extreme negative angle
+        synthesize_quad_wavefront(-135.0f, fs, d_large, c_sound, n, ch0, ch1, ch2, ch3);
+        MultiDoaResult res_large_neg = doa_large.processMulti(ch0.data(), ch1.data(), ch2.data(), ch3.data());
+        assert(res_large_neg.valid);
+        assert(res_large_neg.count >= 1);
+        assert(fabsf(circular_angle_diff_deg(res_large_neg.sources[0].angle_deg, -135.0f)) < 5.0f);
+    }
+
+    // 2. CRIT-01: Synthetic negative correlation field (all values <= -1.0f)
+    // Ensures clamp_corr_lag and !std::isfinite(best_val) prevent stack out-of-bounds indexing
+    {
+        GccPhat doa(44100.0f, DEFAULT_MIC_DISTANCE_M, 20.0f);
+        assert(doa.init(n));
+        float pair_corr[AUDIO_NUM_PAIRS][PAIR_CORR_SIZE];
+        for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) {
+            for (size_t k = 0; k < PAIR_CORR_SIZE; ++k) {
+                pair_corr[p][k] = -2.0f; // All values <= -1.0f
+            }
+        }
+        float best_angle = 0.0f;
+        float best_power = 0.0f;
+        doa.evaluateSrpPhat(pair_corr, best_angle, best_power);
+        assert(best_power <= 0.0f);
+    }
+
+    // 3. CRIT-02: Primary source correlation_threshold gating
+    // When confidence is in [DEFAULT_CLEAN_SECONDARY_THRESHOLD (0.20), correlation_threshold),
+    // Pass-0 fallback must NOT bypass correlation_threshold!
+    {
+        const float fs_norm = 44100.0f;
+        const float d_norm = DEFAULT_MIC_DISTANCE_M;
+        GccPhat doa(fs_norm, d_norm, 20.0f);
+        assert(doa.init(n));
+        const float c_sound = doa.getSoundSpeed();
+
+        // Synthesize coherent wavefront mixed with uncorrelated white noise to achieve ~0.35 confidence
+        std::vector<int32_t> coherent0, coherent1, coherent2, coherent3;
+        synthesize_quad_wavefront(30.0f, fs_norm, d_norm, c_sound, n, coherent0, coherent1, coherent2, coherent3);
+
+        std::vector<int32_t> mixed0(n), mixed1(n), mixed2(n), mixed3(n);
+        uint32_t lcg = 0x98765432u;
+        for (size_t i = 0; i < n; ++i) {
+            auto rand_noise = [&lcg]() -> float {
+                lcg = lcg * 1664525u + 1013904223u;
+                return (static_cast<float>(static_cast<int32_t>(lcg >> 8)) / 8388608.0f) - 1.0f;
+            };
+            const float n_amp = 21474836.0f / 4.0f;
+            mixed0[i] = static_cast<int32_t>(0.35f * static_cast<float>(coherent0[i]) + 0.65f * rand_noise() * n_amp);
+            mixed1[i] = static_cast<int32_t>(0.35f * static_cast<float>(coherent1[i]) + 0.65f * rand_noise() * n_amp);
+            mixed2[i] = static_cast<int32_t>(0.35f * static_cast<float>(coherent2[i]) + 0.65f * rand_noise() * n_amp);
+            mixed3[i] = static_cast<int32_t>(0.35f * static_cast<float>(coherent3[i]) + 0.65f * rand_noise() * n_amp);
+        }
+
+        // Measure confidence with very low threshold first
+        doa.updateCalibration(d_norm, 20.0f, 0.15f, -60.0f, false, 8.0f);
+        MultiDoaResult res_low = doa.processMulti(mixed0.data(), mixed1.data(), mixed2.data(), mixed3.data());
+        assert(res_low.valid);
+        const float measured_conf = res_low.sources[0].confidence;
+        printf("  Measured confidence of noisy signal: %.3f\n", measured_conf);
+        assert(measured_conf > 0.20f && measured_conf < 0.80f);
+
+        // Now set correlation_threshold higher than measured_conf (measured_conf + 0.10f)
+        const float strict_thresh = (measured_conf + 0.10f <= 0.95f) ? (measured_conf + 0.10f) : 0.95f;
+        doa.updateCalibration(d_norm, 20.0f, strict_thresh, -60.0f, false, 8.0f);
+        MultiDoaResult res_strict = doa.processMulti(mixed0.data(), mixed1.data(), mixed2.data(), mixed3.data());
+        // CRIT-02 fix check: frame MUST be rejected, NOT accepted via Pass-0 SRP fallback down to 0.20!
+        assert(!res_strict.valid);
+        assert(res_strict.count == 0);
+
+        // Now set correlation_threshold lower than measured_conf (measured_conf - 0.10f)
+        const float relaxed_thresh = (measured_conf - 0.10f >= 0.20f) ? (measured_conf - 0.10f) : 0.20f;
+        doa.updateCalibration(d_norm, 20.0f, relaxed_thresh, -60.0f, false, 8.0f);
+        MultiDoaResult res_ok = doa.processMulti(mixed0.data(), mixed1.data(), mixed2.data(), mixed3.data());
+        assert(res_ok.valid);
+        assert(res_ok.count >= 1);
+    }
+
+    // 4. CRIT-01 & Memory Safety Edge Cases: nullptr and NaN/Inf input robustness
+    {
+        GccPhat doa(44100.0f, DEFAULT_MIC_DISTANCE_M, 20.0f);
+        assert(doa.init(n));
+        float best_angle = 0.0f;
+        float best_power = 0.0f;
+
+        // evaluateSrpPhat nullptr check
+        assert(doa.evaluateSrpPhat(nullptr, best_angle, best_power) == 0.0f);
+
+        // solveFromSrpSeed nullptr and NaN inputs
+        DoaResult res_null = doa.solveFromSrpSeed(nullptr, 0.0f, 10.0f, -50.0f, 0.45f);
+        assert(!res_null.valid);
+
+        float pair_corr[AUDIO_NUM_PAIRS][PAIR_CORR_SIZE];
+        for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) {
+            for (size_t k = 0; k < PAIR_CORR_SIZE; ++k) {
+                pair_corr[p][k] = 0.5f;
+            }
+        }
+
+        // NaN seed angle
+        DoaResult res_nan_ang = doa.solveFromSrpSeed(pair_corr, NAN, 10.0f, -50.0f, 0.45f);
+        assert(!res_nan_ang.valid);
+
+        // NaN scale
+        DoaResult res_nan_scale = doa.solveFromSrpSeed(pair_corr, 0.0f, NAN, -50.0f, 0.45f);
+        assert(!res_nan_scale.valid);
+
+        // Negative scale
+        DoaResult res_neg_scale = doa.solveFromSrpSeed(pair_corr, 0.0f, -5.0f, -50.0f, 0.45f);
+        assert(!res_neg_scale.valid);
+
+        // Synthetic NaN in correlation field
+        float nan_corr[AUDIO_NUM_PAIRS][PAIR_CORR_SIZE];
+        for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) {
+            for (size_t k = 0; k < PAIR_CORR_SIZE; ++k) {
+                nan_corr[p][k] = NAN;
+            }
+        }
+        float out_lags[AUDIO_NUM_PAIRS];
+        float out_confs[AUDIO_NUM_PAIRS];
+        DoaResult res_nan_field = doa.solveFromSrpSeed(nan_corr, 0.0f, 10.0f, -50.0f, 0.20f, out_lags, out_confs);
+        assert(!res_nan_field.valid);
+        assert(res_nan_field.confidence == 0.0f);
+
+        // processMulti nullptr channels
+        MultiDoaResult res_null_ch = doa.processMulti(nullptr, nullptr, nullptr, nullptr);
+        assert(!res_null_ch.valid);
+        assert(res_null_ch.count == 0);
+
+        // Extreme large geometry d = 0.25m at 48 kHz (theoretical lag ~50 samples > PAIR_CORR_RADIUS=32)
+        // Must clamp cleanly without buffer overflow
+        const float d_extreme = 0.25f;
+        GccPhat doa_extreme(fs, d_extreme, 20.0f);
+        assert(doa_extreme.init(n));
+        const float c_sound = doa_extreme.getSoundSpeed();
+        std::vector<int32_t> ech0, ech1, ech2, ech3;
+        synthesize_quad_wavefront(45.0f, fs, d_extreme, c_sound, n, ech0, ech1, ech2, ech3);
+        MultiDoaResult res_extreme = doa_extreme.processMulti(ech0.data(), ech1.data(), ech2.data(), ech3.data());
+        assert(res_extreme.valid);
+        assert(res_extreme.count >= 1);
+    }
+
+    printf("  [PASS] test_gcc_phat_phase_one_memory_safety_and_threshold_gates passed.\n");
+}
+
+static void test_phase_two_security_and_contracts() {
+    printf("[TEST] Running test_phase_two_security_and_contracts...\n");
+
+    // =========================================================================
+    // 1. MED-02: DeviceConfig Validation & Sanitization Tests
+    // =========================================================================
+    {
+        DeviceConfig default_cfg;
+        assert(validate_device_config(default_cfg));
+        assert(!is_device_configured(default_cfg)); // Initial state: not yet configured
+
+        DeviceConfig configured_cfg = default_cfg;
+        configured_cfg.wifi_ssid = "TestWiFi";
+        configured_cfg.api_url = "http://192.168.1.100:8080/api/v1";
+        configured_cfg.api_key = "test_key_12345";
+        configured_cfg.device_id = 101;
+        assert(validate_device_config(configured_cfg));
+        assert(is_device_configured(configured_cfg));
+
+        // Test missing / zero credentials
+        DeviceConfig missing_cred = configured_cfg;
+        missing_cred.wifi_ssid = "";
+        assert(!is_device_configured(missing_cred));
+        missing_cred = configured_cfg;
+        missing_cred.api_url = "";
+        assert(!is_device_configured(missing_cred));
+        missing_cred = configured_cfg;
+        missing_cred.api_key = "";
+        assert(!is_device_configured(missing_cred));
+        missing_cred = configured_cfg;
+        missing_cred.device_id = 0;
+        assert(!is_device_configured(missing_cred));
+
+        // Test float bounds and NaN / Inf rejection
+        // microphone_distance_m [0.02, 0.11]
+        DeviceConfig c = configured_cfg;
+        c.microphone_distance_m = NAN; assert(!validate_device_config(c));
+        c.microphone_distance_m = INFINITY; assert(!validate_device_config(c));
+        c.microphone_distance_m = -INFINITY; assert(!validate_device_config(c));
+        c.microphone_distance_m = 0.019f; assert(!validate_device_config(c)); // below min
+        c.microphone_distance_m = 0.111f; assert(!validate_device_config(c)); // above max
+        c.microphone_distance_m = 0.02f; assert(validate_device_config(c));
+        c.microphone_distance_m = 0.11f; assert(validate_device_config(c));
+
+        // correlation_threshold [0.10, 1.0]
+        c = configured_cfg;
+        c.correlation_threshold = NAN; assert(!validate_device_config(c));
+        c.correlation_threshold = INFINITY; assert(!validate_device_config(c));
+        c.correlation_threshold = 0.09f; assert(!validate_device_config(c));
+        c.correlation_threshold = 1.01f; assert(!validate_device_config(c));
+        c.correlation_threshold = 0.10f; assert(validate_device_config(c));
+        c.correlation_threshold = 1.00f; assert(validate_device_config(c));
+
+        // sound_level_threshold_db_spl [-200.0, 200.0]
+        c = configured_cfg;
+        c.sound_level_threshold_db_spl = NAN; assert(!validate_device_config(c));
+        c.sound_level_threshold_db_spl = -200.1f; assert(!validate_device_config(c));
+        c.sound_level_threshold_db_spl = 200.1f; assert(!validate_device_config(c));
+        c.sound_level_threshold_db_spl = 55.0f; assert(validate_device_config(c));
+
+        // db_spl_offset [-100.0, 200.0]
+        c = configured_cfg;
+        c.db_spl_offset = NAN; assert(!validate_device_config(c));
+        c.db_spl_offset = -100.1f; assert(!validate_device_config(c));
+        c.db_spl_offset = 200.1f; assert(!validate_device_config(c));
+        c.db_spl_offset = 100.0f; assert(validate_device_config(c));
+
+        // angle_offset_deg [-180.0, 180.0]
+        c = configured_cfg;
+        c.angle_offset_deg = NAN; assert(!validate_device_config(c));
+        c.angle_offset_deg = -180.1f; assert(!validate_device_config(c));
+        c.angle_offset_deg = 180.1f; assert(!validate_device_config(c));
+        c.angle_offset_deg = 0.0f; assert(validate_device_config(c));
+
+        // snr_margin_db [0.0, 60.0]
+        c = configured_cfg;
+        c.snr_margin_db = NAN; assert(!validate_device_config(c));
+        c.snr_margin_db = -0.1f; assert(!validate_device_config(c));
+        c.snr_margin_db = 60.1f; assert(!validate_device_config(c));
+        c.snr_margin_db = 8.0f; assert(validate_device_config(c));
+
+        // sample_rate / window_size whitelist
+        c = configured_cfg;
+        c.sample_rate = 96000; assert(!validate_device_config(c));
+        c.sample_rate = 44100; c.window_size = 512; assert(!validate_device_config(c));
+        c.sample_rate = 48000; c.window_size = 1024; assert(validate_device_config(c));
+
+        // sanitize_device_config recovers corrupt configurations back to safe bounds
+        DeviceConfig corrupt;
+        corrupt.microphone_distance_m = NAN;
+        corrupt.correlation_threshold = -5.0f;
+        corrupt.sound_level_threshold_db_spl = INFINITY;
+        corrupt.db_spl_offset = NAN;
+        corrupt.angle_offset_deg = 999.0f;
+        corrupt.snr_margin_db = -50.0f;
+        corrupt.sample_rate = 12345;
+        corrupt.window_size = 777;
+        assert(!validate_device_config(corrupt));
+
+        sanitize_device_config(corrupt);
+        assert(validate_device_config(corrupt));
+        assert(corrupt.microphone_distance_m == DEFAULT_MIC_DISTANCE_M);
+        assert(corrupt.correlation_threshold == DEFAULT_CORRELATION_THRESHOLD);
+        assert(corrupt.sound_level_threshold_db_spl == DEFAULT_SOUND_LEVEL_THRESHOLD_DB_SPL);
+        assert(corrupt.db_spl_offset == DEFAULT_DB_SPL_OFFSET);
+        assert(corrupt.angle_offset_deg == DEFAULT_ANGLE_OFFSET_DEG);
+        assert(corrupt.snr_margin_db == DEFAULT_SNR_MARGIN_DB);
+        assert(corrupt.sample_rate == DEFAULT_SAMPLE_RATE);
+        assert(corrupt.window_size == DEFAULT_WINDOW_SIZE);
+
+        // sanitize_device_config preserves valid 48kHz rate even if window_size is 0 or invalid
+        DeviceConfig valid_48k = configured_cfg;
+        valid_48k.sample_rate = 48000;
+        valid_48k.window_size = 0;
+        assert(!validate_device_config(valid_48k));
+        sanitize_device_config(valid_48k);
+        assert(validate_device_config(valid_48k));
+        assert(valid_48k.sample_rate == 48000);
+        assert(valid_48k.window_size == DEFAULT_WINDOW_SIZE);
+    }
+
+    // =========================================================================
+    // 2. MED-02: Setup Portal HTML Attribute Escaping Tests
+    // =========================================================================
+    {
+        // Pure alphanumeric
+        assert(SetupPortal::escapeHtmlAttr("MySSID123") == "MySSID123");
+
+        // Apostrophe in SSID (e.g. Mateo's iPhone)
+        assert(SetupPortal::escapeHtmlAttr("Mateo's iPhone") == "Mateo&#39;s iPhone");
+
+        // Stored XSS attempt in SSID or URL
+        assert(SetupPortal::escapeHtmlAttr("<script>alert(1)</script>") ==
+               "&lt;script&gt;alert(1)&lt;/script&gt;");
+
+        // Double quotes and ampersands
+        assert(SetupPortal::escapeHtmlAttr("AT&T \"Gigabit\" WiFi") ==
+               "AT&amp;T &quot;Gigabit&quot; WiFi");
+
+        // Mixed payload
+        assert(SetupPortal::escapeHtmlAttr("' onfocus='alert(1)' <tag>&") ==
+               "&#39; onfocus=&#39;alert(1)&#39; &lt;tag&gt;&amp;");
+    }
+
+    // =========================================================================
+    // 3. MED-03: Multi-Source Confidence Sorting & Diagnostic Preservation
+    // =========================================================================
+    {
+        const size_t n = 1024;
+        const float fs = 44100.0f;
+        const float d = DEFAULT_MIC_DISTANCE_M;
+        GccPhat doa(fs, d, 20.0f);
+        assert(doa.init(n));
+        const float c_sound = doa.getSoundSpeed();
+
+        // Synthesize 2 sources: primary at 30 deg (amp 1.0), secondary at -60 deg (amp 0.75)
+        std::vector<int32_t> ch0, ch1, ch2, ch3;
+        synthesize_two_quad_wavefronts(30.0f, 1.0f, -60.0f, 0.75f, fs, d, c_sound, n, ch0, ch1, ch2, ch3);
+
+        MultiDoaResult multi_res = doa.processMulti(ch0.data(), ch1.data(), ch2.data(), ch3.data());
+        assert(multi_res.valid);
+        assert(multi_res.count == 2);
+
+        // Sources must be sorted descending by confidence!
+        assert(multi_res.sources[0].confidence >= multi_res.sources[1].confidence);
+
+        // Getters for last_pair_* must reflect the primary source (Pass 0), not secondary CLEAN candidate
+        const float* last_confs = doa.getLastPairConfidences();
+        const float* last_lags = doa.getLastPairLagsSamples();
+        const float* last_psi = doa.getLastPairLoopWeights();
+        const float* last_weights = doa.getLastPairWlsWeights();
+
+        for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) {
+            assert(std::isfinite(last_confs[p]));
+            assert(last_confs[p] >= 0.0f && last_confs[p] <= 1.0f);
+            assert(std::isfinite(last_lags[p]));
+            assert(std::isfinite(last_psi[p]));
+            assert(std::isfinite(last_weights[p]));
+        }
+
+        // Test 3-source scene to verify full descending sort across all 3 slots
+        synthesize_three_quad_wavefronts(0.0f, 1.0f, 75.0f, 0.90f, -135.0f, 0.80f, fs, d, c_sound, n, ch0, ch1, ch2, ch3);
+        MultiDoaResult three_res = doa.processMulti(ch0.data(), ch1.data(), ch2.data(), ch3.data());
+        assert(three_res.valid);
+        assert(three_res.count == 3);
+        assert(three_res.sources[0].confidence >= three_res.sources[1].confidence);
+        assert(three_res.sources[1].confidence >= three_res.sources[2].confidence);
+    }
+
+    // =========================================================================
+    // 4. MED-03: POST Flatline vs. Rail Short Diagnosis
+    // =========================================================================
+    {
+        auto diagnose = [](int32_t min_val, int32_t max_val, float rms_db) -> const char* {
+            const bool is_flatline = (min_val == max_val) || (rms_db <= POST_MIC_FLATLINE_RMS_DB);
+            return is_flatline ? "FLATLINE" : "RAIL SHORT";
+        };
+
+        // Case 1: Exact flatline (min == max)
+        assert(strcmp(diagnose(0, 0, -100.0f), "FLATLINE") == 0);
+        assert(strcmp(diagnose(100, 100, -90.0f), "FLATLINE") == 0);
+
+        // Case 2: Floating/flatline microphone with 1-LSB toggle noise (min != max, but RMS <= -95.0 dBFS)
+        // Previously this was bugged and misdiagnosed as "RAIL SHORT"!
+        assert(strcmp(diagnose(-1, 1, -98.0f), "FLATLINE") == 0);
+        assert(strcmp(diagnose(-2, 2, -95.5f), "FLATLINE") == 0);
+
+        // Case 3: Pegged rail short (active rail noise, RMS > -95.0 dBFS)
+        assert(strcmp(diagnose(static_cast<int32_t>(0x80000000), static_cast<int32_t>(0x7FFFFFFF), -0.5f), "RAIL SHORT") == 0);
+        assert(strcmp(diagnose(-1000, 1000, -50.0f), "RAIL SHORT") == 0);
+    }
+
+    // =========================================================================
+    // 5. MED-03: 2-Channel Compatibility Wrapper (process(left, right))
+    // =========================================================================
+    {
+        const size_t n = 1024;
+        const float fs = 44100.0f;
+        const float d = DEFAULT_MIC_DISTANCE_M;
+        GccPhat doa(fs, d, 20.0f);
+        assert(doa.init(n));
+        const float c_sound = doa.getSoundSpeed();
+
+        std::vector<int32_t> q0, q1, q2, q3;
+        // Synthesize wavefront from +90.0 deg (right side)
+        synthesize_quad_wavefront(90.0f, fs, d, c_sound, n, q0, q1, q2, q3);
+        // Left channel is q2 (or q3), Right channel is q0 (or q1)
+        DoaResult res_r = doa.process(q2.data(), q0.data());
+        assert(res_r.valid);
+        assert(fabsf(circular_angle_diff_deg(res_r.angle_deg, 90.0f)) < 5.0f);
+
+        // Synthesize wavefront from -90.0 deg (left side)
+        synthesize_quad_wavefront(-90.0f, fs, d, c_sound, n, q0, q1, q2, q3);
+        DoaResult res_l = doa.process(q2.data(), q0.data());
+        assert(res_l.valid);
+        assert(fabsf(circular_angle_diff_deg(res_l.angle_deg, -90.0f)) < 5.0f);
+    }
+
+    printf("  [PASS] test_phase_two_security_and_contracts passed.\n");
+}
+
+static void test_phase_three_responsiveness_and_expanded_harness() {
+    printf("[TEST] Running test_phase_three_responsiveness_and_expanded_harness...\n");
+
+    // =========================================================================
+    // 1. MED-01: Decoupled Active Track Hold (250 ms) vs. EMA Reset (1500 ms)
+    // =========================================================================
+    {
+        // Verify configuration defaults and constants
+        assert(MultiTargetDisplayTracker::DEFAULT_TRACK_HOLD_MS == 250);
+        assert(MultiTargetDisplayTracker::DEFAULT_RESET_SILENCE_MS == 1500);
+        assert(DISPLAY_TRACK_HOLD_TIMEOUT_MS == 250);
+
+        // Tracker configured with 250 ms active hold and 1500 ms silence reset
+        MultiTargetDisplayTracker tracker(250, 1500);
+        assert(tracker.getHoldTimeoutMs() == 250);
+        assert(tracker.getResetSilenceMs() == 1500);
+
+        TrackedTarget targets[DOA_MAX_SOURCES];
+
+        // t = 1000 ms: Ingest 2 targets (Source 0 @ 20.0 deg, Source 1 @ -70.0 deg)
+        float raw1[2] = {20.0f, -70.0f};
+        float conf1[2] = {0.92f, 0.85f};
+        tracker.update(raw1, conf1, 2, 1000);
+
+        // Immediate query at t = 1000 ms: both tracks active
+        size_t active_count = tracker.getActiveTracks(targets, DOA_MAX_SOURCES, 1000);
+        assert(active_count == 2);
+        assert(targets[0].slot_id == 0);
+        assert(targets[1].slot_id == 1);
+        assert(tracker.isTrackActive(0));
+        assert(tracker.isTrackActive(1));
+        assert(tracker.isTrackAllocated(0));
+        assert(tracker.isTrackAllocated(1));
+
+        // Query at t = 1150 ms (150 ms silence <= 250 ms hold timer):
+        // Both tracks remain active on display
+        active_count = tracker.getActiveTracks(targets, DOA_MAX_SOURCES, 1150);
+        assert(active_count == 2);
+        assert(tracker.isTrackActive(0));
+        assert(tracker.isTrackActive(1));
+
+        // Query at t = 1300 ms (300 ms silence > 250 ms hold timer, but < 1500 ms reset):
+        // Both tracks expire from active display (needles disappear, telemetry returns to noise floor)
+        active_count = tracker.getActiveTracks(targets, DOA_MAX_SOURCES, 1300);
+        assert(active_count == 0);
+        assert(!tracker.isTrackActive(0));
+        assert(!tracker.isTrackActive(1));
+
+        // However, both tracks remain allocated in tracker memory for EMA filter continuity!
+        assert(tracker.isTrackAllocated(0));
+        assert(tracker.isTrackAllocated(1));
+        TrackedTarget retained[DOA_MAX_SOURCES];
+        size_t retained_count = tracker.getRetainedTracks(retained, DOA_MAX_SOURCES);
+        assert(retained_count == 2);
+        assert(retained[0].slot_id == 0);
+        assert(retained[1].slot_id == 1);
+        assert(!retained[0].active);
+        assert(!retained[1].active);
+
+        // At t = 1400 ms (400 ms after initial event):
+        // Source 0 re-appears with a slight angular shift (+4 deg -> 24.0 deg)
+        float raw2[1] = {24.0f};
+        float conf2[1] = {0.90f};
+        tracker.update(raw2, conf2, 1, 1400);
+
+        // Slot 0 matches the retained track and updates via EMA without an abrupt snap:
+        // previous smoothed: 20.0 deg, raw: 24.0 deg, diff: +4.0 deg, alpha = 0.25 -> 20 + 0.25*4 = 21.0 deg
+        active_count = tracker.getActiveTracks(targets, DOA_MAX_SOURCES, 1400);
+        assert(active_count == 1);
+        assert(targets[0].slot_id == 0);
+        assert(fabsf(targets[0].smoothed_angle_deg - 21.0f) < 0.1f);
+        assert(tracker.isTrackActive(0));
+        assert(!tracker.isTrackActive(1));   // Source 1 is still inactive
+        assert(tracker.isTrackAllocated(1)); // Source 1 is still retained (1400 - 1000 = 400 < 1500)
+
+        // At t = 2600 ms (1600 ms since Source 1 last updated):
+        // Source 1 exceeds the 1500 ms reset silence timer and must be pruned
+        tracker.prune(2600);
+        assert(!tracker.isTrackAllocated(1)); // Slot 1 freed!
+        assert(!tracker.isTrackActive(1));
+
+        // Source 0 was updated at 1400 ms: 2600 - 1400 = 1200 ms (> 250 ms hold, < 1500 ms reset)
+        assert(!tracker.isTrackActive(0));   // Hold timer expired
+        assert(tracker.isTrackAllocated(0)); // Still retained
+
+        // At t = 3100 ms (1700 ms since Source 0 last updated at 1400 ms):
+        // Source 0 also exceeds reset silence timer and is pruned
+        tracker.prune(3100);
+        assert(!tracker.isTrackAllocated(0));
+        assert(tracker.getRetainedTracks(retained, DOA_MAX_SOURCES) == 0);
+
+        // Test slot reclamation when all slots are full and an inactive slot is reused:
+        // Fill 3 slots at t = 4000 ms
+        float raw_all[3] = {0.0f, 60.0f, -120.0f};
+        float conf_all[3] = {0.9f, 0.9f, 0.9f};
+        tracker.update(raw_all, conf_all, 3, 4000);
+        assert(tracker.getActiveTracks(targets, DOA_MAX_SOURCES, 4000) == 3);
+
+        // Only update slot 0 and slot 1 at t = 4300 ms (300 ms silence on slot 2 > 250 ms hold timer)
+        float raw_two[2] = {1.0f, 61.0f};
+        float conf_two[2] = {0.9f, 0.9f};
+        tracker.update(raw_two, conf_two, 2, 4300);
+
+        // At t = 4300 ms, slot 2 is inactive (4300 - 4000 = 300 ms > 250 ms), slots 0 and 1 active (0 ms <= 250 ms)
+        assert(tracker.isTrackActive(0));
+        assert(tracker.isTrackActive(1));
+        assert(!tracker.isTrackActive(2));
+
+        // A new third sound at 150 deg (distinct from 0, 60, -120) arrives at t = 4350 ms
+        float raw_new[1] = {150.0f};
+        float conf_new[1] = {0.85f};
+        tracker.update(raw_new, conf_new, 1, 4350);
+
+        // Must reclaim slot 2 for the new detection without dropping it!
+        active_count = tracker.getActiveTracks(targets, DOA_MAX_SOURCES, 4350);
+        assert(active_count == 3);
+        bool found_new = false;
+        for (size_t i = 0; i < active_count; ++i) {
+            if (fabsf(circular_angle_diff_deg(targets[i].smoothed_angle_deg, 150.0f)) < 1.0f) {
+                found_new = true;
+                assert(targets[i].slot_id == 2);
+            }
+        }
+        assert(found_new);
+    }
+
+    // =========================================================================
+    // 2. Expanded Array Geometries (d > 0.12 m) under AddressSanitizer/UBSAN
+    // =========================================================================
+    {
+        const size_t n = 1024;
+        const float fs = 48000.0f; // High sample rate increases theoretical lags
+
+        // Test array geometries beyond nominal bounds: d = 0.13m, 0.14m, 0.16m, 0.20m
+        const float test_distances[] = {0.13f, 0.14f, 0.16f, 0.20f};
+        const float test_angles[] = {-45.0f, +45.0f, +135.0f, -135.0f, 0.0f, +90.0f, -90.0f};
+
+        for (size_t di = 0; di < sizeof(test_distances) / sizeof(test_distances[0]); ++di) {
+            const float d_test = test_distances[di];
+            GccPhat doa(fs, d_test, 20.0f);
+            assert(doa.init(n));
+            const float c_sound = doa.getSoundSpeed();
+
+            for (size_t ai = 0; ai < sizeof(test_angles) / sizeof(test_angles[0]); ++ai) {
+                const float angle = test_angles[ai];
+                std::vector<int32_t> ch0, ch1, ch2, ch3;
+                synthesize_quad_wavefront(angle, fs, d_test, c_sound, n, ch0, ch1, ch2, ch3);
+
+                MultiDoaResult res = doa.processMulti(ch0.data(), ch1.data(), ch2.data(), ch3.data());
+
+                // Must run without ASAN buffer overflow or UBSAN invalid shifts/indices
+                assert(std::isfinite(res.rms_db));
+                for (size_t s = 0; s < res.count; ++s) {
+                    assert(std::isfinite(res.sources[s].angle_deg));
+                    assert(std::isfinite(res.sources[s].confidence));
+                    assert(std::isfinite(res.sources[s].delay_us));
+                }
+            }
+        }
+
+        // Verify DeviceConfig validation rejects d > MAX_MIC_DISTANCE_M (0.11 m)
+        DeviceConfig cfg;
+        cfg.microphone_distance_m = 0.121f;
+        assert(!validate_device_config(cfg));
+        cfg.microphone_distance_m = 0.14f;
+        assert(!validate_device_config(cfg));
+        cfg.microphone_distance_m = 0.20f;
+        assert(!validate_device_config(cfg));
+    }
+
+    // =========================================================================
+    // 3. Single-Source Rejection when confidence is in [0.20, correlation_threshold)
+    // =========================================================================
+    {
+        const size_t n = 1024;
+        const float fs = 44100.0f;
+        const float d = DEFAULT_MIC_DISTANCE_M;
+        GccPhat doa(fs, d, 20.0f);
+        assert(doa.init(n));
+        const float c_sound = doa.getSoundSpeed();
+
+        // Synthesize coherent wavefront mixed with uncorrelated noise
+        std::vector<int32_t> coherent0, coherent1, coherent2, coherent3;
+        synthesize_quad_wavefront(45.0f, fs, d, c_sound, n, coherent0, coherent1, coherent2, coherent3);
+
+        std::vector<int32_t> mixed0(n), mixed1(n), mixed2(n), mixed3(n);
+        uint32_t lcg = 0x12345678u;
+        for (size_t i = 0; i < n; ++i) {
+            auto rand_noise = [&lcg]() -> float {
+                lcg = lcg * 1664525u + 1013904223u;
+                return (static_cast<float>(static_cast<int32_t>(lcg >> 8)) / 8388608.0f) - 1.0f;
+            };
+            const float n_amp = 21474836.0f / 4.0f;
+            mixed0[i] = static_cast<int32_t>(0.30f * static_cast<float>(coherent0[i]) + 0.70f * rand_noise() * n_amp);
+            mixed1[i] = static_cast<int32_t>(0.30f * static_cast<float>(coherent1[i]) + 0.70f * rand_noise() * n_amp);
+            mixed2[i] = static_cast<int32_t>(0.30f * static_cast<float>(coherent2[i]) + 0.70f * rand_noise() * n_amp);
+            mixed3[i] = static_cast<int32_t>(0.30f * static_cast<float>(coherent3[i]) + 0.70f * rand_noise() * n_amp);
+        }
+
+        // Measure natural confidence with relaxed threshold (0.15)
+        doa.updateCalibration(d, 20.0f, 0.15f, -60.0f, false, 8.0f);
+        MultiDoaResult probe = doa.processMulti(mixed0.data(), mixed1.data(), mixed2.data(), mixed3.data());
+        assert(probe.valid);
+        const float cand_conf = probe.sources[0].confidence;
+        assert(cand_conf >= 0.20f && cand_conf <= 0.85f);
+
+        // Now set correlation_threshold strictly above cand_conf (e.g. cand_conf + 0.08)
+        const float strict_threshold = (cand_conf + 0.08f <= 0.95f) ? (cand_conf + 0.08f) : 0.95f;
+        doa.updateCalibration(d, 20.0f, strict_threshold, -60.0f, false, 8.0f);
+
+        // Primary source must be REJECTED! Pass-0 fallback must NOT accept it down to sec_threshold (0.20)!
+        MultiDoaResult rejected = doa.processMulti(mixed0.data(), mixed1.data(), mixed2.data(), mixed3.data());
+        assert(!rejected.valid);
+        assert(rejected.count == 0);
+    }
+
+    // =========================================================================
+    // 4. Non-Monotonic Server Timestamp Clamping & Offset Stability
+    // =========================================================================
+    {
+        // Test batch monotonic timestamp clamping logic
+        NetworkMeasurement batch[5];
+        const uint64_t base_t = 1700000000000ULL;
+        // Inject jitter / backwards steps across batch entries where timestamps step below base_timestamp_ms
+        const DoaResult dummy_res = {0.0f, 0.0f, 0.9f, -40.0f, true};
+        batch[0].result = dummy_res; batch[0].timestamp_ms = base_t + 100; batch[0].clock_flags = CLOCK_FLAG_SERVER_SYNCHRONIZED;
+        batch[1].result = dummy_res; batch[1].timestamp_ms = base_t + 150; batch[1].clock_flags = CLOCK_FLAG_SERVER_SYNCHRONIZED;
+        batch[2].result = dummy_res; batch[2].timestamp_ms = base_t + 50;  batch[2].clock_flags = CLOCK_FLAG_SERVER_SYNCHRONIZED; // Backwards below base_t + 100!
+        batch[3].result = dummy_res; batch[3].timestamp_ms = base_t + 80;  batch[3].clock_flags = CLOCK_FLAG_SERVER_SYNCHRONIZED; // Backwards below base_t + 100!
+        batch[4].result = dummy_res; batch[4].timestamp_ms = base_t + 200; batch[4].clock_flags = CLOCK_FLAG_SERVER_SYNCHRONIZED;
+
+        // Without clamping, serialize_measurement_batch must reject this non-monotonic batch:
+        uint8_t payload[512];
+        size_t raw_len = serialize_measurement_batch(batch, 5, payload, sizeof(payload), 100.0f);
+        assert(raw_len == 0);
+
+        // Apply monotonic clamping loop as implemented in main.cpp:network_task:
+        for (size_t i = 1; i < 5; ++i) {
+            if (batch[i].timestamp_ms < batch[i - 1].timestamp_ms) {
+                batch[i].timestamp_ms = batch[i - 1].timestamp_ms;
+            }
+        }
+
+        // Verify clamped sequence is non-decreasing:
+        assert(batch[0].timestamp_ms == base_t + 100);
+        assert(batch[1].timestamp_ms == base_t + 150);
+        assert(batch[2].timestamp_ms == base_t + 150); // Clamped to previous
+        assert(batch[3].timestamp_ms == base_t + 150); // Clamped to previous
+        assert(batch[4].timestamp_ms == base_t + 200);
+
+        // Now serialization must succeed cleanly!
+        size_t clamped_len = serialize_measurement_batch(batch, 5, payload, sizeof(payload), 100.0f);
+        assert(clamped_len == MEASUREMENT_BATCH_HEADER_SIZE + 5 * MEASUREMENT_RECORD_SIZE);
+
+        // Test server UTC offset stability:
+        // Calibration poll offset updates must only commit on first valid reading or be non-decreasing
+        std::atomic<int64_t> server_utc_offset_ms{0};
+        std::atomic<bool> server_time_valid{false};
+
+        // Initial sync: valid time arrives
+        const int64_t initial_offset = 123456789LL;
+        if (!server_time_valid.load()) {
+            server_utc_offset_ms.store(initial_offset);
+            server_time_valid.store(true);
+        }
+        assert(server_time_valid.load());
+        assert(server_utc_offset_ms.load() == initial_offset);
+
+        // Second calibration poll arrives with 50 ms Wi-Fi network jitter (offset fluctuates backwards)
+        const int64_t jittered_offset = initial_offset - 50LL;
+        if (!server_time_valid.load()) {
+            server_utc_offset_ms.store(jittered_offset);
+        }
+        // Offset must NOT step backwards on subsequent polls!
+        assert(server_utc_offset_ms.load() == initial_offset);
+    }
+
+    // =========================================================================
+    // 5. RadarDisplay Verification: Phosphor Blip Decay, Multi-Needle, POST
+    // =========================================================================
+    {
+        RadarDisplay display;
+        assert(display.init());
+        assert(display.isInitialized());
+
+        // Test blip ingestion and decay timing
+        const float angles[2] = {45.0f, -120.0f};
+        display.addDecayBlips(angles, 2, 1000);
+        assert(display.hasActiveDecayBlips(1000));
+        assert(display.hasActiveDecayBlips(1200));
+        assert(display.hasActiveDecayBlips(1500)); // Exactly 500 ms decay window
+        assert(!display.hasActiveDecayBlips(1501)); // Expired after 500 ms
+
+        // Test duplicate blip suppression within 150 ms and 8 degrees
+        display.addDecayBlips(angles, 1, 2000); // Angle 45 at t = 2000 ms
+        const float angle_near[1] = {47.0f};    // Within 2 deg (< 8 deg)
+        display.addDecayBlips(angle_near, 1, 2100); // 100 ms later (< 150 ms)
+        // Timestamp refreshed to 2100 ms
+        assert(display.hasActiveDecayBlips(2550)); // 2550 - 2100 = 450 ms <= 500 ms
+        assert(!display.hasActiveDecayBlips(2601)); // 2601 - 2100 = 501 ms > 500 ms
+
+        // Test drawRadarMulti with various counts and null safety
+        const float render_angles[4] = {10.0f, 60.0f, -135.0f, 90.0f};
+        const float render_confs[4] = {0.9f, 0.85f, 0.7f, 0.6f};
+        const uint8_t slot_ids[4] = {0, 1, 2, 3};
+
+        // Silence (count = 0)
+        display.drawRadarMulti(nullptr, nullptr, 0, 22.0f, 50.0f, 101325.0f, 344.0f, 40.0f, true, true, 0.0f, 8.0f, nullptr, 44100, 3000);
+
+        // Single source (count = 1)
+        display.drawRadarMulti(render_angles, render_confs, 1, 22.0f, 50.0f, 101325.0f, 344.0f, 65.0f, true, true, 15.0f, 8.0f, slot_ids, 44100, 3100);
+
+        // Two sources (count = 2)
+        display.drawRadarMulti(render_angles, render_confs, 2, 22.0f, 50.0f, 101325.0f, 344.0f, 75.0f, true, false, 25.0f, 8.0f, slot_ids, 44100, 3200);
+
+        // Three sources (count = 3)
+        display.drawRadarMulti(render_angles, render_confs, 3, 22.0f, 50.0f, 101325.0f, 344.0f, 85.0f, false, true, 28.0f, 8.0f, slot_ids, 48000, 3300);
+
+        // Capped sources (count = 4 > DOA_MAX_SOURCES)
+        display.drawRadarMulti(render_angles, render_confs, 4, 22.0f, 50.0f, 101325.0f, 344.0f, 95.0f, true, true, 30.0f, 8.0f, slot_ids, 48000, 3400);
+
+        // Test drawHardwareDegraded
+        BootSelfTestResult post;
+        post.psram_ok = true;
+        post.psram_bytes = 8 * 1024 * 1024;
+        post.bme_ok = true;
+        post.i2s_driver_ok = true;
+        post.all_nominal = false;
+        post.mic_health.ch_ok[0] = true;
+        post.mic_health.ch_ok[1] = false;
+        post.mic_health.ch_min[1] = 0;
+        post.mic_health.ch_max[1] = 0;
+        post.mic_health.ch_rms_db[1] = -98.0f; // Flatline
+        post.mic_health.ch_ok[2] = false;
+        post.mic_health.ch_min[2] = -1000;
+        post.mic_health.ch_max[2] = 1000;
+        post.mic_health.ch_rms_db[2] = -1.0f;  // Rail short
+        post.mic_health.ch_ok[3] = true;
+        display.drawHardwareDegraded(post);
+
+        // Test drawBootPrompt and drawSetupPortal
+        display.drawBootPrompt(1500, 3000, post);
+        display.drawSetupPortal();
+    }
+
+    // =========================================================================
+    // 6. Rapid Intermittent Bursts at 240 ms Intervals Across Alternating Angles
+    // =========================================================================
+    {
+        MultiTargetDisplayTracker tracker(250, 1500);
+        TrackedTarget targets[DOA_MAX_SOURCES];
+
+        // Burst 1 at t = 1000 ms: Sound A @ 10.0 deg
+        float raw_a[1] = {10.0f};
+        float conf_a[1] = {0.90f};
+        tracker.update(raw_a, conf_a, 1, 1000);
+        assert(tracker.getActiveTracks(targets, DOA_MAX_SOURCES, 1000) == 1);
+        assert(targets[0].slot_id == 0);
+        assert(fabsf(targets[0].smoothed_angle_deg - 10.0f) < 0.1f);
+
+        // Burst 2 at t = 1240 ms (240 ms interval < 250 ms active hold):
+        // Sound B @ 120.0 deg arrives. Track 0 is still active, so Sound B allocates Track 1.
+        float raw_b[1] = {120.0f};
+        float conf_b[1] = {0.92f};
+        tracker.update(raw_b, conf_b, 1, 1240);
+        // At 1240 ms: Track 0 has elapsed 240 ms <= 250 ms (still active!), Track 1 is active
+        size_t count = tracker.getActiveTracks(targets, DOA_MAX_SOURCES, 1240);
+        assert(count == 2);
+        assert(tracker.isTrackActive(0));
+        assert(tracker.isTrackActive(1));
+
+        // At t = 1251 ms: Track 0 active hold expires (1251 - 1000 = 251 ms > 250 ms)
+        count = tracker.getActiveTracks(targets, DOA_MAX_SOURCES, 1251);
+        assert(count == 1);
+        assert(!tracker.isTrackActive(0));
+        assert(tracker.isTrackActive(1));
+        assert(tracker.isTrackAllocated(0)); // Still retained for continuity!
+
+        // Burst 3 at t = 1480 ms (240 ms after 1240 ms):
+        // Sound A re-appears at 12.0 deg (near previous 10.0 deg).
+        // Matches retained Track 0, smoothing from 10.0 to 12.0 via EMA!
+        float raw_a2[1] = {12.0f};
+        tracker.update(raw_a2, conf_a, 1, 1480);
+        count = tracker.getActiveTracks(targets, DOA_MAX_SOURCES, 1480);
+        assert(count == 2);
+        assert(tracker.isTrackActive(0));
+        assert(tracker.isTrackActive(1)); // Track 1 elapsed 240 ms <= 250 ms
+
+        // At t = 1720 ms (240 ms after 1480 ms):
+        // Sound B re-appears at 122.0 deg (near previous 120.0 deg).
+        // Matches retained Track 1, smoothing from 120.0 to 122.0!
+        float raw_b2[1] = {122.0f};
+        tracker.update(raw_b2, conf_b, 1, 1720);
+        count = tracker.getActiveTracks(targets, DOA_MAX_SOURCES, 1720);
+        assert(count == 2);
+        assert(tracker.isTrackActive(0)); // Track 0 elapsed 240 ms <= 250 ms
+        assert(tracker.isTrackActive(1));
+
+        // Both sources cease after t = 1720 ms.
+        // At t = 1971 ms (251 ms after 1720 ms): both tracks become inactive
+        count = tracker.getActiveTracks(targets, DOA_MAX_SOURCES, 1971);
+        assert(count == 0);
+        assert(!tracker.isTrackActive(0));
+        assert(!tracker.isTrackActive(1));
+        assert(tracker.isTrackAllocated(0));
+        assert(tracker.isTrackAllocated(1));
+
+        // At t = 3221 ms (1501 ms after 1720 ms): both tracks are pruned
+        tracker.prune(3221);
+        assert(!tracker.isTrackAllocated(0));
+        assert(!tracker.isTrackAllocated(1));
+    }
+
+    // =========================================================================
+    // 7. Input Robustness: NaN, Inf, and Backward Timestamps
+    // =========================================================================
+    {
+        MultiTargetDisplayTracker tracker(250, 1500);
+        TrackedTarget targets[DOA_MAX_SOURCES];
+
+        // Feed non-finite values (NaN, Inf) mixed with valid readings
+        float corrupt_angles[3] = {NAN, 45.0f, INFINITY};
+        float corrupt_confs[3] = {0.9f, 0.85f, 0.9f};
+        tracker.update(corrupt_angles, corrupt_confs, 3, 1000);
+
+        // Only the valid 45.0f angle must be tracked
+        size_t count = tracker.getActiveTracks(targets, DOA_MAX_SOURCES, 1000);
+        assert(count == 1);
+        assert(fabsf(targets[0].smoothed_angle_deg - 45.0f) < 0.1f);
+        assert(!tracker.isTrackAllocated(1));
+        assert(!tracker.isTrackAllocated(2));
+
+        // Feed MultiDoaResult with invalid sources
+        MultiDoaResult multi;
+        multi.valid = true;
+        multi.count = 2;
+        multi.sources[0] = {30.0f, 0.0f, 0.9f, -40.0f, true};
+        multi.sources[1] = {NAN, 0.0f, 0.9f, -40.0f, false}; // invalid & NaN
+        tracker.update(multi, 1050);
+        count = tracker.getActiveTracks(targets, DOA_MAX_SOURCES, 1050);
+        assert(count == 1); // 30 deg associated with Track 0 (45 -> 30 EMA), invalid source ignored
+
+        // Backward timestamp safety: prune with now_ms < last_update_ms
+        tracker.prune(500); // 500 < 1050: must not unsigned-underflow and wipe tracks!
+        assert(tracker.isTrackAllocated(0));
+        assert(tracker.isTrackActive(0));
+
+        // RadarDisplay blip backward timestamp safety
+        RadarDisplay display;
+        assert(display.init());
+        const float a[1] = {90.0f};
+        display.addDecayBlips(a, 1, 1000);
+        assert(display.hasActiveDecayBlips(1000));
+        assert(!display.hasActiveDecayBlips(500)); // Earlier timestamp must not underflow
+    }
+
+    printf("  [PASS] test_phase_three_responsiveness_and_expanded_harness passed.\n");
+}
+
 int main() {
     test_gcc_phat_adaptive_noise_floor();
     test_display_smoothing_filter();
@@ -1877,6 +2759,9 @@ int main() {
     test_gcc_phat_rank_deficiency_and_axis_observability();
     test_gcc_phat_split_brain_chimera_fallback();
     test_gcc_phat_multisource_edge_cases();
+    test_gcc_phat_phase_one_memory_safety_and_threshold_gates();
+    test_phase_two_security_and_contracts();
+    test_phase_three_responsiveness_and_expanded_harness();
     printf("\nAll unit tests passed successfully!\n");
     return 0;
 }

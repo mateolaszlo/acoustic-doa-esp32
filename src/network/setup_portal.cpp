@@ -6,10 +6,10 @@ String SetupPortal::generateHtmlPage(const DeviceConfig &config) {
     page += "<!doctype html><html><head><meta name='viewport' content='width=device-width'>";
     page += "<title>Acoustic Locator Setup</title></head><body>";
     page += "<h1>Acoustic Locator Setup</h1><form method='POST' action='/save'>";
-    page += "Wi-Fi SSID<br><input name='wifi_ssid' value='" + config.wifi_ssid + "'><br>";
+    page += "Wi-Fi SSID<br><input name='wifi_ssid' value='" + escapeHtmlAttr(config.wifi_ssid) + "'><br>";
     const String pass_hint = config.wifi_password.length() > 0 ? " (leave blank to retain stored)" : "";
     page += "Wi-Fi password" + pass_hint + "<br><input type='password' name='wifi_password'><br>";
-    page += "API URL<br><input name='api_url' value='" + config.api_url + "'><br>";
+    page += "API URL<br><input name='api_url' value='" + escapeHtmlAttr(config.api_url) + "'><br>";
     const String api_key_hint = config.api_key.length() > 0 ? " (leave blank to retain stored)" : "";
     page += "API key" + api_key_hint + "<br><input type='password' name='api_key'><br>";
     page += "Device ID<br><input type='number' name='device_id' value='" +
@@ -67,61 +67,46 @@ void SetupPortal::enter(DeviceConfig &config, RadarDisplay &radar,
             return;
         }
 
+        DeviceConfig candidate = config;
+        candidate.wifi_ssid = web_server.arg("wifi_ssid");
         String wifi_password = web_server.arg("wifi_password");
-        String api_key = web_server.arg("api_key");
-        config.wifi_ssid = web_server.arg("wifi_ssid");
         if (wifi_password.length() > 0) {
-            config.wifi_password = wifi_password;
+            candidate.wifi_password = wifi_password;
         }
+        candidate.api_url = web_server.arg("api_url");
+        String api_key = web_server.arg("api_key");
         if (api_key.length() > 0) {
-            config.api_key = api_key;
+            candidate.api_key = api_key;
         }
-        config.api_url = web_server.arg("api_url");
-        config.device_id = web_server.arg("device_id").toInt();
-        config.microphone_distance_m = web_server.arg("mic_distance").toFloat();
-        config.db_spl_offset = web_server.arg("spl_offset").toFloat();
+        const long raw_device_id = web_server.arg("device_id").toInt();
+        if (raw_device_id <= 0) {
+            web_server.send(400, "text/plain", "Invalid device ID");
+            return;
+        }
+        candidate.device_id = static_cast<uint32_t>(raw_device_id);
+        candidate.microphone_distance_m = web_server.arg("mic_distance").toFloat();
+        candidate.db_spl_offset = web_server.arg("spl_offset").toFloat();
 
-        config.adaptive_threshold_enabled = web_server.hasArg("adapt_thresh");
+        candidate.adaptive_threshold_enabled = web_server.hasArg("adapt_thresh");
         if (web_server.hasArg("snr_margin")) {
-            float snr = web_server.arg("snr_margin").toFloat();
-            if (std::isfinite(snr) && snr >= SNR_MARGIN_MIN_DB && snr <= SNR_MARGIN_MAX_DB) {
-                config.snr_margin_db = snr;
-            } else {
-                web_server.send(400, "text/plain", "Invalid SNR margin (must be 0-60 dB)");
-                return;
-            }
+            candidate.snr_margin_db = web_server.arg("snr_margin").toFloat();
         }
         if (web_server.hasArg("spl_threshold")) {
-            float spl = web_server.arg("spl_threshold").toFloat();
-            if (std::isfinite(spl) && spl >= SPL_THRESHOLD_MIN_DB && spl <= SPL_THRESHOLD_MAX_DB) {
-                config.sound_level_threshold_db_spl = spl;
-            }
+            candidate.sound_level_threshold_db_spl = web_server.arg("spl_threshold").toFloat();
         }
         if (web_server.hasArg("corr_threshold")) {
-            float corr = web_server.arg("corr_threshold").toFloat();
-            if (std::isfinite(corr) && corr >= 0.10f && corr <= 1.0f) {
-                config.correlation_threshold = corr;
-            }
+            candidate.correlation_threshold = web_server.arg("corr_threshold").toFloat();
         }
         if (web_server.hasArg("ang_offset")) {
-            float ang = web_server.arg("ang_offset").toFloat();
-            if (std::isfinite(ang) && ang >= ANGLE_OFFSET_MIN_DEG && ang <= ANGLE_OFFSET_MAX_DEG) {
-                config.angle_offset_deg = ang;
-            } else {
-                web_server.send(400, "text/plain", "Invalid angle offset (must be -180 to +180 deg)");
-                return;
-            }
+            candidate.angle_offset_deg = web_server.arg("ang_offset").toFloat();
         }
 
-        if (config.wifi_ssid.length() == 0 ||
-            config.api_url.length() == 0 ||
-            config.api_key.length() == 0 ||
-            config.device_id == 0 ||
-            config.microphone_distance_m <= 0.0f) {
+        if (!validate_device_config(candidate) || !is_device_configured(candidate)) {
             web_server.send(400, "text/plain", "Invalid configuration");
             return;
         }
 
+        config = candidate;
         if (on_save) {
             on_save(config);
         }

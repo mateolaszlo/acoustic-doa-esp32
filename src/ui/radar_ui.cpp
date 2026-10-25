@@ -61,14 +61,43 @@ bool RadarDisplay::init() {
     return true;
 }
 
+void RadarDisplay::addDecayBlips(const float* angles_deg, size_t count, uint32_t now_ms) {
+    if (angles_deg == nullptr || count == 0) return;
+    const size_t num_needles = (count > DOA_MAX_SOURCES) ? DOA_MAX_SOURCES : count;
+    for (size_t s = 0; s < num_needles; ++s) {
+        const float angle = angles_deg[s];
+        if (!std::isfinite(angle)) continue;
+        bool duplicate = false;
+        for (size_t b = 0; b < MAX_DECAY_BLIPS; ++b) {
+            if (hit_blips[b].active &&
+                now_ms >= hit_blips[b].timestamp_ms &&
+                (now_ms - hit_blips[b].timestamp_ms < 150)) {
+                float diff = fabsf(hit_blips[b].angle_deg - angle);
+                if (diff > 180.0f) diff = 360.0f - diff;
+                if (diff < 8.0f) {
+                    duplicate = true;
+                    hit_blips[b].timestamp_ms = now_ms; // Osveži trajanje dokler zvok traja
+                    break;
+                }
+            }
+        }
+        if (!duplicate) {
+            hit_blips[hit_blip_head] = { angle, now_ms, true };
+            hit_blip_head = (hit_blip_head + 1) % MAX_DECAY_BLIPS;
+        }
+    }
+}
+
 void RadarDisplay::drawRadar(float angle_deg, float temp_c, float hum, float pres, float c_sound,
                             float db_spl, bool api_available, bool adaptive_active,
                             float snr_db, float snr_margin_db,
                             uint32_t sample_rate) {
     const float angles[1] = { angle_deg };
     const float confs[1] = { 1.0f };
+    const uint32_t now = millis();
+    addDecayBlips(angles, 1, now);
     drawRadarMulti(angles, confs, 1, temp_c, hum, pres, c_sound, db_spl, api_available, adaptive_active,
-                   snr_db, snr_margin_db, nullptr, sample_rate);
+                   snr_db, snr_margin_db, nullptr, sample_rate, now);
 }
 
 void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confidences, size_t count,
@@ -76,9 +105,14 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
                                  float db_spl, bool api_available, bool adaptive_active,
                                  float snr_db, float snr_margin_db,
                                  const uint8_t* slot_ids,
-                                 uint32_t sample_rate) {
+                                 uint32_t sample_rate,
+                                 uint32_t now_ms) {
+    (void)confidences;
     if (!initialized) return;
     canvas.fillScreen(ST77XX_BLACK);
+
+    const size_t num_needles = (count > DOA_MAX_SOURCES) ? DOA_MAX_SOURCES : count;
+    const uint32_t current_time_ms = (now_ms > 0) ? now_ms : millis();
 
     // 1. Izris 360-stopinjskega krožnega radarja (cx = 64, cy = 44, r = 34)
     const int cx = RADAR_CENTER_X;
@@ -132,34 +166,10 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
     canvas.print("180");
 
     // 2. Izris razpadajočih fosfornih sledi (phosphor decay trail za hipne zvoke)
-    const size_t num_needles = (count > DOA_MAX_SOURCES) ? DOA_MAX_SOURCES : count;
-    const uint32_t now_ms = millis();
-    if (angles_deg != nullptr && count > 0) {
-        for (size_t s = 0; s < num_needles; ++s) {
-            const float angle = angles_deg[s];
-            bool duplicate = false;
-            for (size_t b = 0; b < MAX_DECAY_BLIPS; ++b) {
-                if (hit_blips[b].active && (now_ms - hit_blips[b].timestamp_ms < 150)) {
-                    float diff = fabsf(hit_blips[b].angle_deg - angle);
-                    if (diff > 180.0f) diff = 360.0f - diff;
-                    if (diff < 8.0f) {
-                        duplicate = true;
-                        hit_blips[b].timestamp_ms = now_ms; // Osveži trajanje dokler zvok traja
-                        break;
-                    }
-                }
-            }
-            if (!duplicate) {
-                hit_blips[hit_blip_head] = { angle, now_ms, true };
-                hit_blip_head = (hit_blip_head + 1) % MAX_DECAY_BLIPS;
-            }
-        }
-    }
-
     // Izris fosfornih sledi z visokokontrastno P31 zeleno barvno lestvico (hitro 500ms praznjenje)
     for (size_t b = 0; b < MAX_DECAY_BLIPS; ++b) {
         if (!hit_blips[b].active) continue;
-        const uint32_t age_ms = now_ms - hit_blips[b].timestamp_ms;
+        const uint32_t age_ms = (current_time_ms >= hit_blips[b].timestamp_ms) ? (current_time_ms - hit_blips[b].timestamp_ms) : 0;
         if (age_ms > PHOSPHOR_DECAY_DURATION_MS) {
             hit_blips[b].active = false;
             continue;
@@ -355,7 +365,9 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
 
 bool RadarDisplay::hasActiveDecayBlips(uint32_t now_ms) const {
     for (size_t b = 0; b < MAX_DECAY_BLIPS; ++b) {
-        if (hit_blips[b].active && (now_ms - hit_blips[b].timestamp_ms <= PHOSPHOR_DECAY_DURATION_MS)) {
+        if (hit_blips[b].active &&
+            now_ms >= hit_blips[b].timestamp_ms &&
+            (now_ms - hit_blips[b].timestamp_ms <= PHOSPHOR_DECAY_DURATION_MS)) {
             return true;
         }
     }
@@ -552,7 +564,9 @@ void RadarDisplay::drawHardwareDegraded(const BootSelfTestResult &post) {
         const int y = 36 + static_cast<int>(c) * 11;
         canvas.setCursor(8, y);
         if (!post.mic_health.ch_ok[c]) {
-            const char* reason = (post.mic_health.ch_min[c] == post.mic_health.ch_max[c]) ? "FLATLINE" : "RAIL SHORT";
+            const bool is_flatline = (post.mic_health.ch_min[c] == post.mic_health.ch_max[c]) ||
+                                     (post.mic_health.ch_rms_db[c] <= POST_MIC_FLATLINE_RMS_DB);
+            const char* reason = is_flatline ? "FLATLINE" : "RAIL SHORT";
             canvas.setTextColor(ST77XX_RED);
             canvas.printf("%s    : [FAIL] %s", mic_names[c], reason);
         } else {

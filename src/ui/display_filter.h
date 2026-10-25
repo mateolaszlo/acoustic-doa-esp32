@@ -37,6 +37,8 @@ public:
     float getSmoothedAngle() const;
     bool isInitialized() const;
     uint8_t getConsecutiveOutliers() const;
+    uint32_t getResetSilenceMs() const { return reset_silence_ms; }
+    void setResetSilenceMs(uint32_t ms);
 
     void reset();
 
@@ -69,7 +71,11 @@ struct TrackedTarget {
  */
 class MultiTargetDisplayTracker {
 public:
-    MultiTargetDisplayTracker();
+    static constexpr uint32_t DEFAULT_TRACK_HOLD_MS = 250;
+    static constexpr uint32_t DEFAULT_RESET_SILENCE_MS = DisplaySmoothingFilter::DEFAULT_RESET_SILENCE_MS;
+
+    MultiTargetDisplayTracker(uint32_t hold_timeout_ms = DEFAULT_TRACK_HOLD_MS,
+                              uint32_t reset_silence_ms = DEFAULT_RESET_SILENCE_MS);
 
     void update(const float* raw_angles, const float* confidences, size_t count, uint32_t now_ms);
     void update(const MultiDoaResult& multi_res, uint32_t now_ms);
@@ -77,13 +83,25 @@ public:
     void prune(uint32_t now_ms);
     size_t getActiveTracks(TrackedTarget* out_targets, size_t max_targets, uint32_t now_ms = 0);
     size_t getActiveTracks(TrackedTarget* out_targets, size_t max_targets) const;
+    size_t getRetainedTracks(TrackedTarget* out_targets, size_t max_targets) const;
+
+    bool isTrackActive(size_t slot_id) const;
+    bool isTrackAllocated(size_t slot_id) const;
+    uint32_t getHoldTimeoutMs() const { return hold_timeout_ms; }
+    void setHoldTimeoutMs(uint32_t ms) { hold_timeout_ms = ms; }
+    uint32_t getResetSilenceMs() const { return reset_silence_ms; }
+    void setResetSilenceMs(uint32_t ms);
+
     void reset();
 
 private:
     DisplaySmoothingFilter filters[DOA_MAX_SOURCES];
     float last_confidence[DOA_MAX_SOURCES];
     uint32_t last_update_ms[DOA_MAX_SOURCES];
+    bool track_allocated[DOA_MAX_SOURCES];
     bool track_active[DOA_MAX_SOURCES];
+    uint32_t hold_timeout_ms;
+    uint32_t reset_silence_ms;
 };
 
 inline float wrapAngle180(float deg) {

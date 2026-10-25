@@ -30,7 +30,7 @@ When running off-target, the tests link against lightweight, bit-exact mocks loc
 
 ## 3. Test Suites Overview
 
-The test harness in [`test/test_adaptive_and_smoothing.cpp`](../test/test_adaptive_and_smoothing.cpp) covers 18 specialized test suites:
+The test harness in [`test/test_adaptive_and_smoothing.cpp`](../test/test_adaptive_and_smoothing.cpp) covers 21 specialized test suites:
 
 1. **`test_gcc_phat_adaptive_noise_floor`**:
    - Verifies the asymmetric attack/decay tracking ($3\text{ dB/s}$ upward creep vs. $30\text{ dB/s}$ fast downward recovery).
@@ -81,6 +81,22 @@ The test harness in [`test/test_adaptive_and_smoothing.cpp`](../test/test_adapti
     - Validates that Pass-0 SRP-PHAT fallback seamlessly recovers the dominant talker and resolves both simultaneous orthogonal speakers ($0^\circ$ and $90^\circ$).
 18. **`test_gcc_phat_multisource_edge_cases`**:
     - Validates sub-threshold CLEAN stopping ($< 0.20$), close-angle candidate suppression ($< 30^\circ$ spatial separation gate), and full 3-source extraction (`DOA_MAX_SOURCES = 3`) at $[0.0^\circ, +75.0^\circ, -135.0^\circ]$.
+19. **`test_gcc_phat_phase_one_memory_safety_and_threshold_gates`**:
+    - Verifies lag bounds clamping (`PAIR_CORR_RADIUS`) preventing stack buffer out-of-bounds reads (`CRIT-01`).
+    - Validates Pass-0 primary fallback correlation threshold gating (`CRIT-02`).
+    - Validates null pointer and out-of-bounds geometry memory safety under AddressSanitizer and UndefinedBehaviorSanitizer.
+20. **`test_phase_two_security_and_contracts`**:
+    - Verifies `DeviceConfig` bounds checking, float `NaN`/`Inf` rejection, and sanitization (`MED-02`).
+    - Verifies HTML attribute escaping for SSID/URL strings preventing injection and XSS (`MED-02`).
+    - Validates multi-source confidence descending sorting, primary diagnostic preservation, and POST flatline diagnosis (`MED-03`).
+21. **`test_phase_three_responsiveness_and_expanded_harness`**:
+    - Verifies decoupled active track hold ($250\text{ ms}$) vs. EMA filter retention ($1500\text{ ms}$) and inactive slot reclamation (`MED-01`).
+    - Validates rapid intermittent sound bursts at $240\text{ ms}$ intervals across alternating angles without jitter or track deallocation.
+    - Validates `RadarDisplay` phosphor blip decay ($500\text{ ms}$), duplicate blip suppression, multi-needle rendering, and degraded hardware alert screens.
+    - Validates tracker and UI robustness against non-finite floats (`NaN`, `Inf`) and clock wrap / negative timestamps.
+    - Validates expanded array geometries ($d > 0.12\text{ m}$, up to $0.20\text{ m}$) under ASAN/UBSAN with zero stack/heap over-reads.
+    - Confirms rejection of single sources with confidence in $[0.20, \text{correlation\_threshold})$.
+    - Verifies non-monotonic batch timestamp clamping and server UTC clock offset stability.
 
 ---
 
@@ -106,12 +122,13 @@ Run the automated runner script:
 Compile and run directly using `g++` or `clang++`:
 ```bash
 mkdir -p bin
-g++ -std=gnu++11 -O2 -Wall -Wextra -Werror -fsanitize=address,undefined \
+g++ -std=gnu++11 -O1 -Wall -Wextra -Werror -fsanitize=address,undefined,float-divide-by-zero \
     -I test/mock_esp -I src \
     test/test_adaptive_and_smoothing.cpp \
     src/audio/gcc_phat.cpp \
     src/ui/display_filter.cpp \
     src/audio/post_checker.cpp \
+    src/ui/radar_ui.cpp \
     -o bin/test_host
 
 ./bin/test_host
@@ -123,7 +140,7 @@ g++ -std=gnu++11 -O2 -Wall -Wextra -Werror -fsanitize=address,undefined \
 
 | Task | Tool / Command | Purpose |
 |---|---|---|
-| **Off-Target Feature Verification & Regression Prevention** | `make test` or `./scripts/run_tests.sh` | Fast ($<100\text{ ms}$), hardware-free verification of DSP algorithms, WLS solver, health checks, and circular smoothing with ASAN/UBSAN memory guarantees. Runs automatically in CI on every push and PR. |
+| **Off-Target Feature Verification & Regression Prevention** | `make test` or `./scripts/run_tests.sh` | Fast ($<100\text{ ms}$), hardware-free verification of DSP algorithms, WLS solver, health checks, radar display rendering, and circular smoothing with ASAN/UBSAN memory guarantees. Runs automatically in CI on every push and PR. |
 | **Target Firmware Compilation & Link Verification** | `pio run` | Compiles the full embedded firmware (`src/main.cpp`, Arduino core, FreeRTOS tasks, Octal PSRAM configuration, TFT/BME280 libraries) for the physical ESP32-S3 SoC. Runs in CI after unit tests pass. |
 | **Flashing & Live Hardware Debugging** | `pio run -t upload && pio device monitor` | Flashes the firmware to a connected ESP32-S3 board and opens the 115200 baud serial monitor with exception decoding. |
 
@@ -135,7 +152,7 @@ The GitHub Actions workflow in [`.github/workflows/build.yml`](../.github/workfl
 
 1. **Host Unit Tests (`test` job)**:
    - Executes `make test` under `ubuntu-latest`.
-   - Validates all 18 unit test suites with AddressSanitizer and UndefinedBehaviorSanitizer enabled.
+   - Validates all 21 unit test suites with AddressSanitizer and UndefinedBehaviorSanitizer enabled.
    - Fails fast in $<2\text{ s}$ if algorithmic regressions, memory corruption, or boundary violations occur.
 2. **PlatformIO Firmware Build (`build` job)**:
    - Depends on the `test` job (`needs: test`).

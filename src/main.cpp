@@ -294,7 +294,8 @@ void dsp_task(void *param) {
             }
 
             const float sound_spl = multi_res.rms_db + db_spl_offset.load();
-            if (multi_res.valid && multi_res.count > 0 && sound_spl >= min_spl_threshold) {
+            const bool spl_gate_ok = adaptive_threshold_active.load() || (sound_spl >= min_spl_threshold);
+            if (multi_res.valid && multi_res.count > 0 && spl_gate_ok) {
                 enqueue_latest(display_queue, multi_res, display_queue_drops);
 
                 // Enqueue each detected source from this block with identical timestamp
@@ -316,33 +317,30 @@ void dsp_task(void *param) {
 static bool apply_dsp_calibration(float temperature_c,
                                   float humidity_pct = DEFAULT_HUMIDITY_PCT,
                                   float pressure_pa = DEFAULT_PRESSURE_PA) {
+    if (!std::isfinite(temperature_c) || !std::isfinite(humidity_pct) || !std::isfinite(pressure_pa)) {
+        Serial.println("Invalid environmental readings for calibration");
+        return false;
+    }
+
     if (xSemaphoreTake(config_mutex, pdMS_TO_TICKS(CONFIG_MUTEX_BLOCK_TIMEOUT_MS)) != pdTRUE) {
         Serial.println("Could not lock device configuration");
         return false;
     }
 
-    const float microphone_distance_m = device_config.microphone_distance_m;
-    const float correlation_threshold = (device_config.correlation_threshold < DEFAULT_CORRELATION_THRESHOLD)
-                                            ? DEFAULT_CORRELATION_THRESHOLD
-                                            : device_config.correlation_threshold;
-    const float sound_level_threshold_db_spl = device_config.sound_level_threshold_db_spl;
-    const float configured_offset = device_config.db_spl_offset;
-    const float angle_offset = device_config.angle_offset_deg;
-    const uint32_t sample_rate = device_config.sample_rate;
-    const uint32_t window_size = device_config.window_size;
-    const bool adaptive_enabled = device_config.adaptive_threshold_enabled;
-    const float snr_margin = device_config.snr_margin_db;
-    xSemaphoreGive(config_mutex);
-
-    if (microphone_distance_m <= 0.0f ||
-        correlation_threshold <= 0.0f ||
-        sound_level_threshold_db_spl < SPL_THRESHOLD_MIN_DB ||
-        !is_supported_audio_config(sample_rate, window_size) ||
-        !std::isfinite(snr_margin) || snr_margin < SNR_MARGIN_MIN_DB || snr_margin > SNR_MARGIN_MAX_DB ||
-        !std::isfinite(angle_offset) || angle_offset < ANGLE_OFFSET_MIN_DEG || angle_offset > ANGLE_OFFSET_MAX_DEG) {
+    if (!validate_device_config(device_config)) {
+        xSemaphoreGive(config_mutex);
         Serial.println("Invalid or unsupported remote calibration");
         return false;
     }
+
+    const float microphone_distance_m = device_config.microphone_distance_m;
+    const float correlation_threshold = device_config.correlation_threshold;
+    const float sound_level_threshold_db_spl = device_config.sound_level_threshold_db_spl;
+    const float configured_offset = device_config.db_spl_offset;
+    const float angle_offset = device_config.angle_offset_deg;
+    const bool adaptive_enabled = device_config.adaptive_threshold_enabled;
+    const float snr_margin = device_config.snr_margin_db;
+    xSemaphoreGive(config_mutex);
 
     if (xSemaphoreTake(doa_mutex, pdMS_TO_TICKS(DOA_MUTEX_BLOCK_TIMEOUT_MS)) != pdTRUE) {
         Serial.println("Could not lock DSP calibration");
@@ -495,6 +493,7 @@ void network_task(void *param) {
                 }
             }
             last_calibration_refresh = millis();
+            esp_task_wdt_reset();
         }
 
         size_t batch_count = 0;
@@ -531,9 +530,29 @@ void network_task(void *param) {
                 xSemaphoreGive(config_mutex);
             }
 
+            // Guarantee non-decreasing timestamps within the batch to absorb rare timer jitter
+            for (size_t i = 1; i < batch_count; ++i) {
+                if (batch[i].timestamp_ms < batch[i - 1].timestamp_ms) {
+                    batch[i].timestamp_ms = batch[i - 1].timestamp_ms;
+                }
+            }
+
+            constexpr size_t max_payload_size =
+                MEASUREMENT_BATCH_HEADER_SIZE +
+                NETWORK_BATCH_MAX_MEASUREMENTS * MEASUREMENT_RECORD_SIZE;
+            uint8_t payload[max_payload_size];
+            const size_t payload_size = serialize_measurement_batch(
+                batch, batch_count, payload, sizeof(payload), db_spl_offset.load());
+            if (payload_size == 0) {
+                Serial.println("Measurement batch serialization failed; dropping invalid batch");
+                continue;
+            }
+
             bool sent = false;
             for (int attempt = 1; attempt <= HTTP_RETRY_COUNT && !sent; ++attempt) {
-                sent = rest_client.sendBatch(batch, batch_count, current_api_url, current_api_key, db_spl_offset.load());
+                esp_task_wdt_reset();
+                sent = rest_client.sendBatch(payload, payload_size, current_api_url, current_api_key);
+                esp_task_wdt_reset();
                 if (!sent && attempt < HTTP_RETRY_COUNT) {
                     vTaskDelay(pdMS_TO_TICKS(1000 * attempt));
                 }
@@ -604,6 +623,7 @@ void update_environmental_compensation() {
 }
 
 void sensor_display_task(void *param) {
+    esp_task_wdt_add(nullptr);
     MultiDoaResult event;
     MultiDoaResult last_event;
     last_event.valid = false;
@@ -613,7 +633,7 @@ void sensor_display_task(void *param) {
         last_event.sources[s] = {0.0f, 0.0f, 0.0f, -100.0f, false};
     }
     bool last_server_available = server_available.load();
-    MultiTargetDisplayTracker tracker;
+    MultiTargetDisplayTracker tracker(DISPLAY_TRACK_HOLD_TIMEOUT_MS, DisplaySmoothingFilter::DEFAULT_RESET_SILENCE_MS);
     TrackedTarget tracked_targets[DOA_MAX_SOURCES];
     size_t prev_rendered_tracks = 0;
     bool prev_rendered_blips = false;
@@ -628,6 +648,11 @@ void sensor_display_task(void *param) {
         if (xQueueReceive(display_queue, &event, pdMS_TO_TICKS(DISPLAY_QUEUE_TIMEOUT_MS))) {
             last_event = event;
             tracker.update(event, now_ms);
+            float event_angles[DOA_MAX_SOURCES];
+            for (size_t s = 0; s < event.count && s < DOA_MAX_SOURCES; ++s) {
+                event_angles[s] = event.sources[s].angle_deg;
+            }
+            radar_display.addDecayBlips(event_angles, event.count, now_ms);
             needs_redraw = true;
             last_idle_refresh_ms = now_ms;
 
@@ -700,7 +725,8 @@ void sensor_display_task(void *param) {
                                         adaptive_threshold_active.load(),
                                         snr_db, current_snr_margin_db.load(),
                                         slot_ids,
-                                        current_sample_rate.load());
+                                        current_sample_rate.load(),
+                                        now_ms);
 
             prev_rendered_tracks = num_tracks;
             prev_rendered_blips = radar_display.hasActiveDecayBlips(now_ms);
@@ -718,6 +744,8 @@ void setup() {
     device_configured = load_device_config(device_config);
     current_snr_margin_db.store(device_config.snr_margin_db);
     current_sample_rate.store(device_config.sample_rate);
+    db_spl_offset.store(device_config.db_spl_offset);
+    adaptive_threshold_active.store(device_config.adaptive_threshold_enabled);
 
     // 1. Zagon zaslona in BME280 senzorja
     init_sensors_and_display();

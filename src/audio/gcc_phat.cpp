@@ -2,6 +2,7 @@
 #include <esp_log.h>
 #include <esp_heap_caps.h>
 #include <climits>
+#include <algorithm>
 
 static const char* TAG = "GCC_PHAT";
 
@@ -34,12 +35,21 @@ constexpr MicPairDescriptor MIC_PAIRS[AUDIO_NUM_PAIRS] = {
     {0, 2, true,  -1.0f,  1.0f, 0, 1}  // Pair 5: Diagonal RB -> LF (-X, +Y), 300-4500 Hz
 };
 
+static inline int clamp_corr_lag(int lag) {
+    if (lag < -PAIR_CORR_RADIUS) return -PAIR_CORR_RADIUS;
+    if (lag > PAIR_CORR_RADIUS) return PAIR_CORR_RADIUS;
+    return lag;
+}
+
 static float estimateLocalPeakAmplitude(const float pair_corr[PAIR_CORR_SIZE],
                                         float center_float_lag,
                                         int search_radius = 2) {
-    const int center_lag = static_cast<int>(roundf(center_float_lag));
+    if (pair_corr == nullptr || !std::isfinite(center_float_lag)) {
+        return 0.0f;
+    }
+    const int center_lag = clamp_corr_lag(static_cast<int>(roundf(center_float_lag)));
     int best_idx = center_lag;
-    float best_val = -1.0f;
+    float best_val = -INFINITY;
 
     for (int l = center_lag - search_radius; l <= center_lag + search_radius; ++l) {
         if (l < -PAIR_CORR_RADIUS || l > PAIR_CORR_RADIUS) continue;
@@ -51,8 +61,12 @@ static float estimateLocalPeakAmplitude(const float pair_corr[PAIR_CORR_SIZE],
         }
     }
 
-    const int l_m1 = (best_idx - 1 >= -PAIR_CORR_RADIUS) ? (best_idx - 1) : best_idx;
-    const int l_p1 = (best_idx + 1 <= PAIR_CORR_RADIUS) ? (best_idx + 1) : best_idx;
+    if (!std::isfinite(best_val)) {
+        return 0.0f;
+    }
+
+    const int l_m1 = clamp_corr_lag(best_idx - 1);
+    const int l_p1 = clamp_corr_lag(best_idx + 1);
     const float alpha = pair_corr[static_cast<size_t>(l_m1 + PAIR_CORR_RADIUS)];
     const float beta  = best_val;
     const float gamma = pair_corr[static_cast<size_t>(l_p1 + PAIR_CORR_RADIUS)];
@@ -75,7 +89,8 @@ static void subtractCleanKernel(float pair_corr[AUDIO_NUM_PAIRS][PAIR_CORR_SIZE]
                                 const float* kernel,
                                 float exact_lag,
                                 float amp) {
-    if (amp <= 0.05f || !std::isfinite(exact_lag) || !std::isfinite(amp)) {
+    if (pair_corr == nullptr || kernel == nullptr || p >= AUDIO_NUM_PAIRS ||
+        amp <= 0.05f || !std::isfinite(exact_lag) || !std::isfinite(amp)) {
         return;
     }
     const int base_lag = static_cast<int>(floorf(exact_lag));
@@ -490,7 +505,10 @@ void GccPhat::computePairCrossCorrelationIfft(size_t mic_i, size_t mic_j, const 
 }
 
 void GccPhat::populatePairCorrelations(float pair_corr[AUDIO_NUM_PAIRS][PAIR_CORR_SIZE]) {
-    if (pair_corr == nullptr || ccorr == nullptr || fft_size == 0) {
+    if (pair_corr == nullptr || ccorr == nullptr || fft_size == 0 ||
+        band_weight_edge == nullptr || band_weight_diag == nullptr ||
+        fft_ch[0] == nullptr || fft_ch[1] == nullptr ||
+        fft_ch[2] == nullptr || fft_ch[3] == nullptr) {
         return;
     }
     const int fft_size_int = static_cast<int>(fft_size);
@@ -517,7 +535,8 @@ float GccPhat::evaluateSrpPhat(const float pair_corr[AUDIO_NUM_PAIRS][PAIR_CORR_
     best_angle_deg = 0.0f;
     best_power = -1.0f;
 
-    if (pair_corr == nullptr || c_sound <= 0.0f || fs <= 0.0f || d <= 0.0f) {
+    if (pair_corr == nullptr || !std::isfinite(c_sound) || c_sound <= 0.0f ||
+        !std::isfinite(fs) || fs <= 0.0f || !std::isfinite(d) || d <= 0.0f) {
         return 0.0f;
     }
 
@@ -551,12 +570,7 @@ float GccPhat::evaluateSrpPhat(const float pair_corr[AUDIO_NUM_PAIRS][PAIR_CORR_
 
         float p_sum = 0.0f;
         for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) {
-            int round_lag = static_cast<int>(roundf(lags[p]));
-            if (round_lag < -PAIR_CORR_RADIUS) {
-                round_lag = -PAIR_CORR_RADIUS;
-            } else if (round_lag > PAIR_CORR_RADIUS) {
-                round_lag = PAIR_CORR_RADIUS;
-            }
+            const int round_lag = clamp_corr_lag(static_cast<int>(roundf(lags[p])));
             const size_t k = static_cast<size_t>(round_lag + PAIR_CORR_RADIUS);
             p_sum += pair_corr[p][k];
         }
@@ -578,6 +592,18 @@ DoaResult GccPhat::solveFromSrpSeed(const float pair_corr[AUDIO_NUM_PAIRS][PAIR_
                                     float min_confidence,
                                     float out_lags[AUDIO_NUM_PAIRS],
                                     float out_confs[AUDIO_NUM_PAIRS]) {
+    DoaResult result = {0.0f, 0.0f, 0.0f, rms_db, false};
+    if (out_lags != nullptr) {
+        for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) out_lags[p] = 0.0f;
+    }
+    if (out_confs != nullptr) {
+        for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) out_confs[p] = 0.0f;
+    }
+    if (pair_corr == nullptr || !std::isfinite(seed_angle) ||
+        !std::isfinite(scale) || scale <= 0.0f) {
+        return result;
+    }
+
     const float deg_to_rad = static_cast<float>(M_PI) / 180.0f;
     const float theta_rad = seed_angle * deg_to_rad;
     const float u_x = sinf(theta_rad);
@@ -598,11 +624,14 @@ DoaResult GccPhat::solveFromSrpSeed(const float pair_corr[AUDIO_NUM_PAIRS][PAIR_
     float confs[AUDIO_NUM_PAIRS];
 
     for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) {
-        const int center_lag = static_cast<int>(roundf(theo_lags[p]));
+        const float theo_lag = theo_lags[p];
+        const int center_lag = std::isfinite(theo_lag)
+            ? clamp_corr_lag(static_cast<int>(roundf(theo_lag)))
+            : 0;
         constexpr int search_radius = 3;
 
         int best_idx = center_lag;
-        float best_val = -1.0f;
+        float best_val = -INFINITY;
 
         for (int l = center_lag - search_radius; l <= center_lag + search_radius; ++l) {
             if (l < -PAIR_CORR_RADIUS || l > PAIR_CORR_RADIUS) {
@@ -616,9 +645,21 @@ DoaResult GccPhat::solveFromSrpSeed(const float pair_corr[AUDIO_NUM_PAIRS][PAIR_
             }
         }
 
+        if (!std::isfinite(best_val)) {
+            lags[p] = static_cast<float>(center_lag);
+            confs[p] = 0.0f;
+            if (out_lags != nullptr) {
+                out_lags[p] = lags[p];
+            }
+            if (out_confs != nullptr) {
+                out_confs[p] = confs[p];
+            }
+            continue;
+        }
+
         // 3-točkovna parabolična interpolacija okoli lokalnega vrha
-        const int l_m1 = (best_idx - 1 >= -PAIR_CORR_RADIUS) ? (best_idx - 1) : best_idx;
-        const int l_p1 = (best_idx + 1 <= PAIR_CORR_RADIUS) ? (best_idx + 1) : best_idx;
+        const int l_m1 = clamp_corr_lag(best_idx - 1);
+        const int l_p1 = clamp_corr_lag(best_idx + 1);
 
         const float alpha = pair_corr[p][static_cast<size_t>(l_m1 + PAIR_CORR_RADIUS)];
         const float beta  = best_val;
@@ -654,8 +695,9 @@ DoaResult GccPhat::solveFromSrpSeed(const float pair_corr[AUDIO_NUM_PAIRS][PAIR_
 }
 
 DoaResult GccPhat::process(const int32_t* left_channel, const int32_t* right_channel) {
-    // 2-channel compatibility wrapper: delegates to quad array processing by mirroring stereo channels
-    return process(left_channel, right_channel, left_channel, right_channel);
+    // 2-channel compatibility wrapper: delegates to quad array processing by mapping
+    // stereo left to left-side mics (M2 LF, M3 LB) and right to right-side mics (M0 RB, M1 RF).
+    return process(right_channel, right_channel, left_channel, left_channel);
 }
 
 DoaResult GccPhat::process(const int32_t* ch0, const int32_t* ch1,
@@ -685,7 +727,10 @@ MultiDoaResult GccPhat::processMulti(const int32_t* ch0, const int32_t* ch1,
         fft_size == 0 || window == nullptr ||
         band_weight_edge == nullptr || band_weight_diag == nullptr ||
         fft_ch[0] == nullptr || fft_ch[1] == nullptr ||
-        fft_ch[2] == nullptr || fft_ch[3] == nullptr || ccorr == nullptr) {
+        fft_ch[2] == nullptr || fft_ch[3] == nullptr || ccorr == nullptr ||
+        !std::isfinite(d) || d <= 0.0f ||
+        !std::isfinite(c_sound) || c_sound <= 0.0f ||
+        !std::isfinite(fs) || fs <= 0.0f) {
         return multi_res;
     }
 
@@ -784,7 +829,7 @@ MultiDoaResult GccPhat::processMulti(const int32_t* ch0, const int32_t* ch1,
         }
 
         int best_idx = 0;
-        float best_peak = -1.0f;
+        float best_peak = -INFINITY;
         for (int lag = -max_lag; lag <= max_lag; ++lag) {
             const int idx = (lag < 0) ? (fft_size_int + lag) : lag;
             const float val = ccorr[2 * idx] / norm_factor;
@@ -836,18 +881,28 @@ MultiDoaResult GccPhat::processMulti(const int32_t* ch0, const int32_t* ch1,
         float srp_seed_angle = 0.0f;
         float srp_seed_power = 0.0f;
         evaluateSrpPhat(pair_corr, srp_seed_angle, srp_seed_power);
-        if (srp_seed_power >= sec_threshold && std::isfinite(srp_seed_power)) {
-            primary = solveFromSrpSeed(pair_corr, srp_seed_angle, scale, multi_res.rms_db, sec_threshold);
+        if (srp_seed_power >= correlation_threshold && std::isfinite(srp_seed_power)) {
+            primary = solveFromSrpSeed(pair_corr, srp_seed_angle, scale, multi_res.rms_db, correlation_threshold);
         }
     }
 
     multi_res.sources[0] = primary;
-    if (!primary.valid || primary.confidence < sec_threshold) {
+    if (!primary.valid || primary.confidence < correlation_threshold) {
         return multi_res;
     }
 
     multi_res.count = 1;
     multi_res.valid = true;
+
+    // Preserve Pass-0 pairwise diagnostic arrays for the primary source
+    float saved_last_pair_lags[AUDIO_NUM_PAIRS];
+    float saved_last_pair_confs[AUDIO_NUM_PAIRS];
+    float saved_last_pair_psi[AUDIO_NUM_PAIRS];
+    float saved_last_pair_weights[AUDIO_NUM_PAIRS];
+    std::memcpy(saved_last_pair_lags, last_pair_lags_samples, sizeof(saved_last_pair_lags));
+    std::memcpy(saved_last_pair_confs, last_pair_confidences, sizeof(saved_last_pair_confs));
+    std::memcpy(saved_last_pair_psi, last_pair_psi, sizeof(saved_last_pair_psi));
+    std::memcpy(saved_last_pair_weights, last_pair_weights, sizeof(saved_last_pair_weights));
 
     // 7. CLEAN iterativna dekonvolucija za sekundarne in terciarne zvočne vire
     const float phi_raw = wrap_angle_180(primary.angle_deg + offset_deg);
@@ -916,6 +971,22 @@ MultiDoaResult GccPhat::processMulti(const int32_t* ch0, const int32_t* ch1,
         if (distinct && multi_res.count < DOA_MAX_SOURCES) {
             multi_res.sources[multi_res.count++] = candidate;
         }
+    }
+
+    // Restore Pass-0 pairwise diagnostic arrays so getters reflect the primary source
+    std::memcpy(last_pair_lags_samples, saved_last_pair_lags, sizeof(last_pair_lags_samples));
+    std::memcpy(last_pair_confidences, saved_last_pair_confs, sizeof(last_pair_confidences));
+    std::memcpy(last_pair_psi, saved_last_pair_psi, sizeof(last_pair_psi));
+    std::memcpy(last_pair_weights, saved_last_pair_weights, sizeof(last_pair_weights));
+
+    // Sort detected sources descending by confidence
+    if (multi_res.count > 1) {
+        std::sort(multi_res.sources, multi_res.sources + multi_res.count,
+                  [](const DoaResult &a, const DoaResult &b) {
+                      const float ca = std::isfinite(a.confidence) ? a.confidence : -1.0f;
+                      const float cb = std::isfinite(b.confidence) ? b.confidence : -1.0f;
+                      return ca > cb;
+                  });
     }
 
     return multi_res;

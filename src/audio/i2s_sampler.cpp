@@ -12,6 +12,7 @@
 
 static const char* TAG = "I2S_SAMPLER";
 static int32_t interleaved_buf[AUDIO_MAX_WINDOW_SIZE * 2];
+constexpr TickType_t I2S_READ_TIMEOUT_TICKS = pdMS_TO_TICKS(I2S_READ_TIMEOUT_MS);
 
 bool init_i2s_microphones(uint32_t sample_rate) {
     i2s_config_t master_config = {
@@ -109,8 +110,8 @@ bool init_i2s_microphones(uint32_t sample_rate) {
     for (int b = 0; b < POST_WARMUP_BLOCKS; ++b) {
         size_t bytes_read_0 = 0;
         size_t bytes_read_1 = 0;
-        esp_err_t res0 = i2s_read(I2S_MASTER_PORT, interleaved_buf, warmup_bytes, &bytes_read_0, portMAX_DELAY);
-        esp_err_t res1 = i2s_read(I2S_SLAVE_PORT, interleaved_buf, warmup_bytes, &bytes_read_1, portMAX_DELAY);
+        esp_err_t res0 = i2s_read(I2S_MASTER_PORT, interleaved_buf, warmup_bytes, &bytes_read_0, I2S_READ_TIMEOUT_TICKS);
+        esp_err_t res1 = i2s_read(I2S_SLAVE_PORT, interleaved_buf, warmup_bytes, &bytes_read_1, I2S_READ_TIMEOUT_TICKS);
         if (res0 != ESP_OK || res1 != ESP_OK ||
             bytes_read_0 != warmup_bytes || bytes_read_1 != warmup_bytes) {
             ESP_LOGE(TAG, "Failed I2S lockstep warmup read on block %d", b);
@@ -147,7 +148,7 @@ bool read_i2s_quad(int32_t* ch0, int32_t* ch1, int32_t* ch2, int32_t* ch3, size_
     size_t bytes_read_1 = 0;
 
     // 1. Read and demux Bus 0 (I2S0 Master RX -> Mic 0 Left, Mic 1 Right)
-    esp_err_t res0 = i2s_read(I2S_MASTER_PORT, interleaved_buf, bytes_requested, &bytes_read_0, portMAX_DELAY);
+    esp_err_t res0 = i2s_read(I2S_MASTER_PORT, interleaved_buf, bytes_requested, &bytes_read_0, I2S_READ_TIMEOUT_TICKS);
     if (res0 != ESP_OK || bytes_read_0 != bytes_requested) {
         resync_i2s_ports();
         return false;
@@ -158,7 +159,7 @@ bool read_i2s_quad(int32_t* ch0, int32_t* ch1, int32_t* ch2, int32_t* ch3, size_
     }
 
     // 2. Read and demux Bus 1 (I2S1 Slave RX -> Mic 2 Left, Mic 3 Right)
-    esp_err_t res1 = i2s_read(I2S_SLAVE_PORT, interleaved_buf, bytes_requested, &bytes_read_1, portMAX_DELAY);
+    esp_err_t res1 = i2s_read(I2S_SLAVE_PORT, interleaved_buf, bytes_requested, &bytes_read_1, I2S_READ_TIMEOUT_TICKS);
     if (res1 != ESP_OK || bytes_read_1 != bytes_requested) {
         resync_i2s_ports();
         return false;
@@ -181,7 +182,7 @@ bool read_i2s_stereo(int32_t* left, int32_t* right, size_t count) {
     size_t bytes_read_1 = 0;
     const size_t bytes_requested = count * 2 * sizeof(int32_t);
 
-    esp_err_t res0 = i2s_read(I2S_MASTER_PORT, interleaved_buf, bytes_requested, &bytes_read_0, portMAX_DELAY);
+    esp_err_t res0 = i2s_read(I2S_MASTER_PORT, interleaved_buf, bytes_requested, &bytes_read_0, I2S_READ_TIMEOUT_TICKS);
     if (res0 != ESP_OK || bytes_read_0 != bytes_requested) {
         resync_i2s_ports();
         return false;
@@ -194,7 +195,7 @@ bool read_i2s_stereo(int32_t* left, int32_t* right, size_t count) {
     }
 
     // Drain Slave RX DMA buffer in lockstep so Bus 1 does not stall or drift
-    esp_err_t res1 = i2s_read(I2S_SLAVE_PORT, interleaved_buf, bytes_requested, &bytes_read_1, portMAX_DELAY);
+    esp_err_t res1 = i2s_read(I2S_SLAVE_PORT, interleaved_buf, bytes_requested, &bytes_read_1, I2S_READ_TIMEOUT_TICKS);
     if (res1 != ESP_OK || bytes_read_1 != bytes_requested) {
         resync_i2s_ports();
         return false;

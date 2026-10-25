@@ -44,9 +44,11 @@ void SerialUI::printSelfTestReport(const BootSelfTestResult &res, uint32_t sampl
     };
     for (size_t c = 0; c < AUDIO_NUM_CHANNELS; ++c) {
         const bool ok = res.mic_health.ch_ok[c];
+        const bool is_flatline = (res.mic_health.ch_min[c] == res.mic_health.ch_max[c]) ||
+                                 (res.mic_health.ch_rms_db[c] <= POST_MIC_FLATLINE_RMS_DB);
         const char* state = ok
             ? "ACTIVE"
-            : (res.mic_health.ch_min[c] == res.mic_health.ch_max[c] ? "FLATLINE" : "OUT OF BOUNDS");
+            : (is_flatline ? "FLATLINE" : "RAIL SHORT");
         Serial.printf("[%s] %-13s: %s (RMS: %.1f dBFS, min=%ld, max=%ld)\n",
                       ok ? "PASS" : "FAIL", mic_labels[c], state,
                       res.mic_health.ch_rms_db[c],

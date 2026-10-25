@@ -77,6 +77,18 @@ public:
                               const float pair_confidences[AUDIO_NUM_PAIRS],
                               float rms_db,
                               float min_confidence = -1.0f);
+
+    /**
+     * @brief Extract candidate lags guided by SRP angular ray and solve azimuth via WLS.
+     * Evaluates local 3-point parabolic peak within +/- 3 samples of theoretical plane wave delays.
+     */
+    DoaResult solveFromSrpSeed(const float pair_corr[AUDIO_NUM_PAIRS][PAIR_CORR_SIZE],
+                               float seed_angle,
+                               float scale,
+                               float rms_db,
+                               float min_confidence,
+                               float out_lags[AUDIO_NUM_PAIRS] = nullptr,
+                               float out_confs[AUDIO_NUM_PAIRS] = nullptr);
     void updateCalibration(float distance_m, float temp_c, float humidity_pct,
                            float pressure_pa, float corr_thresh, float db_thresh,
                            bool adaptive_thresh = false,
@@ -149,16 +161,5 @@ private:
     bool updateNoiseFloorAndCheckGate(float rms_db);
     void computePairCrossCorrelationIfft(size_t mic_i, size_t mic_j, const float* weights);
     void precomputeCleanKernels();
-    /**
-     * @brief Extract candidate lags guided by SRP angular ray and solve azimuth via WLS.
-     * Evaluates local 3-point parabolic peak within +/- 3 samples of theoretical plane wave delays.
-     */
-    DoaResult solveFromSrpSeed(const float pair_corr[AUDIO_NUM_PAIRS][PAIR_CORR_SIZE],
-                               float seed_angle,
-                               float scale,
-                               float rms_db,
-                               float min_confidence,
-                               float out_lags[AUDIO_NUM_PAIRS] = nullptr,
-                               float out_confs[AUDIO_NUM_PAIRS] = nullptr);
     void releaseBuffers();
 };
