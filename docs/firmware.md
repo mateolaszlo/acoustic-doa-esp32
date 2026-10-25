@@ -21,7 +21,7 @@
 
 ## Audio processing (4-Microphone Square Array & 6-Pair WLS Fusion)
 
-The DSP task reads a synchronized 4-channel audio block via `read_i2s_quad()`. The default is 1024 samples at 44100 Hz. Supported sample rates are 44100 and 48000 Hz; supported FFT/window sizes are 512, 1024, and 2048 samples. The four microphones form a horizontal planar square of side length $d = 0.082\text{ m}$ (`Mic 0` Right-Back, `Mic 1` Right-Front, `Mic 2` Left-Front, `Mic 3` Left-Back). Each block is processed as follows:
+The audio processing pipeline operates on a fixed 1024-sample FFT window (`AUDIO_FFT_WINDOW_SIZE = 1024`). Supported sample rates are 44100 and 48000 Hz. Locking the window size to 1024 samples reclaims 24 KB of static internal SRAM (`interleaved_buf` and per-channel DMA staging buffers) and eliminates dynamic heap reallocation or PSRAM fallback during runtime reconfiguration. The four microphones form a horizontal planar square of side length $d = 0.082\text{ m}$ (`Mic 0` Right-Back, `Mic 1` Right-Front, `Mic 2` Left-Front, `Mic 3` Left-Back). Each block is processed as follows:
 
 1. **DC Offset Removal & Omnidirectional RMS**: Subtract the per-channel mean in 64-bit integer precision (`int64_t`), convert to normalized floating-point values, and compute the unwindowed 4-channel omnidirectional RMS level (`0.25f * sum(raw_s[0..3]^2)`).
 2. **Adaptive Noise Floor Gating**: Evaluate the block RMS against the effective threshold (adaptive noise floor + SNR margin, or fixed threshold). Quiet frames return early without running FFTs.
@@ -213,19 +213,17 @@ Configuration is loaded from ESP32 NVS namespace `acoustic`. It contains:
 - dB SPL offset.
 - Zero angle rotational offset (`ang_offset`, -180.0 to +180.0 deg).
 - Adaptive noise floor tracking state and SNR margin.
-- Sample rate and FFT window size.
+- Audio sample rate (the FFT window size is fixed to 1024 samples).
 
-The sample rate and window size are validated against a whitelist:
+The audio configuration is validated against the supported parameter whitelist:
 
 | Setting | Supported values |
 |---|---|
 | Sample rate | 44100 Hz, 48000 Hz |
-| FFT/window size | 512, 1024, 2048 samples |
+| FFT/window size | 1024 samples (fixed) |
 
-Remote changes are applied by reinitializing the GCC-PHAT buffers and dual I2S
-drivers while processing is synchronized. Invalid settings or failed
-reconfiguration are rejected and the previous valid configuration is retained.
-The active processing deadline is `window_size / sample_rate`.
+Remote changes to sample rate are applied in-place to the dual I2S drivers and GCC-PHAT band weights while processing is synchronized, requiring zero heap reallocation. Payloads with unsupported sample rates or window sizes different from 1024 are rejected and the previous valid configuration is retained.
+The active processing deadline is `AUDIO_FFT_WINDOW_SIZE / sample_rate` (e.g. 23.2 ms at 44.1 kHz, 21.3 ms at 48 kHz).
 
 Every ten seconds, the DSP task emits a rate-limited summary similar to:
 
@@ -255,6 +253,6 @@ The 128x160 color SPI TFT (ST7735 / KMR-1.8) shows a full $360^\circ$ circular r
   - Heading Row ($y = 85$): Displays large `%+6.1f deg` when tracking a single source, or compact color-coded target chips (`1:+36°`, `2:-64°`, `3:+120°`) matching needle colors when multiple sources are active. When all tracks exceed the 1500 ms silence timeout, it displays `---.- deg` in muted gray.
   - Sound Level & Dynamic Bar ($y = 104$): Displays digital sound level in dB SPL alongside a 72-pixel mini horizontal dynamic range bar with a white trigger gate notch and a 3x5 micro-font readout of the runtime SNR margin (`current_snr_margin_db` from NVS or captive portal) positioned below the notch. The bar is color-coded by signal quality: muted gray for sub-threshold ambient noise below the gate, yellow for active triggers ($\ge \text{margin}$), and bright green for optimal high-confidence SNR ($\ge 20\text{ dB}$).
   - Environmental Compensation ($y = 117$): Consolidated live moist air sound speed, ambient temperature, and relative humidity (`c:%.1fm/s %.0fC %.0f%%`).
-  - System Telemetry ($y = 130$): Barometric pressure and audio block configuration (e.g. `P:%.0fhPa 44k/1024` or `48k/2048`).
+  - System Telemetry ($y = 130$): Barometric pressure and audio block configuration (e.g. `P:%.0fhPa 44k/1024` or `48k/1024`).
   - Connectivity ($y = 145$): Color-coded status indicator and live API state (`API ONLINE` in green / `API OFFLINE` in red).
 - The display is refreshed immediately when a valid event arrives from `display_queue`, on backend reachability transitions, and at a 2 Hz idle cadence (500 ms) during silence to track background noise floor and BME280 metrics without excessive CPU or SPI bus overhead.

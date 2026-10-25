@@ -83,12 +83,12 @@ The firmware validates:
 - A sound-level threshold above -200 dB.
 - Finite floating-point values.
 - A supported sample rate: 44100 or 48000 Hz.
-- A supported window size: 512, 1024, or 2048 samples.
+- A supported window size: 1024 samples (fixed; other sizes are rejected).
 - Non-negative, finite SNR margin ($0.0 \le \text{SNR}_{\text{margin}} \le 60.0\text{ dB}$, via `snr_margin_db`).
 - Finite zero-angle offset within full-circle bounds ($-180.0^\circ \le \phi_{\text{offset}} \le +180.0^\circ$, via `angle_offset_deg`).
 
 Invalid responses are rejected and the previous local configuration remains active.
-Supported sample-rate/window changes reinitialize the audio and DSP path. If
+Supported sample-rate changes update the audio and DSP path in-place. If
 reinitialization fails, the previous configuration remains active.
 
 ## Measurement upload

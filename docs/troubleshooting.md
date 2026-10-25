@@ -76,8 +76,8 @@ Check:
 - Microphones are mechanically fixed and have a common ground.
 
 The firmware ignores incomplete I2S reads and processes only complete blocks.
-The default is 1024 samples, while 512, 1024, and 2048 sample blocks are
-supported at 44100 or 48000 Hz.
+The firmware operates on fixed 1024-sample blocks (`AUDIO_FFT_WINDOW_SIZE = 1024`)
+at 44100 or 48000 Hz.
 
 ## Radar needle is biased toward one side (e.g. +7° offset)
 
@@ -112,7 +112,7 @@ the body length against the record count.
 
 ## Calibration is rejected
 
-The response must contain valid numeric values for distance, correlation threshold, sound threshold, sample rate, and window size. The firmware accepts only 44100 or 48000 Hz and window sizes 512, 1024, or 2048.
+The response must contain valid numeric values for distance, correlation threshold, sound threshold, sample rate, and window size. The firmware accepts sample rates of 44100 or 48000 Hz and requires a window size of 1024 (other window sizes are rejected).
 
 Ambient temperature is intentionally not required in the response because the local BME280 supplies it.
 

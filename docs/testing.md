@@ -45,7 +45,7 @@ The test harness in [`test/test_adaptive_and_smoothing.cpp`](../test/test_adapti
 5. **`test_gcc_phat_angle_offset`**:
    - Verifies hardware rotational offset trim compensation and wrap-around arithmetic.
 6. **`test_app_config_consistency`**:
-   - Verifies central configuration constants: array edge length ($d = 82\text{ mm}$), sample rates ($44100 / 48000\text{ Hz}$), window sizes ($512 / 1024 / 2048$), I2S pin assignments (`BCLK = 5`, `WS = 4`, `DIN0 = 6`, `DIN1 = 7`), and filter cutoff constants.
+   - Verifies central configuration constants: array edge length ($d = 82\text{ mm}$), sample rates ($44100 / 48000\text{ Hz}$), window size locking ($1024$ samples, rejecting 512 and 2048), I2S pin assignments (`BCLK = 5`, `WS = 4`, `DIN0 = 6`, `DIN1 = 7`), and filter cutoff constants.
 7. **`test_gcc_phat_dual_band_weights`**:
    - Verifies precomputed raised-cosine frequency weight tables:
      - 4 Edge pairs: $300\text{--}5000\text{ Hz}$ with $100\text{ Hz}$ ramps.

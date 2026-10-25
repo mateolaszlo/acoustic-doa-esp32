@@ -54,7 +54,7 @@ See [Testing documentation](docs/testing.md) for mock details and full suite des
 
 ## Important current limitations
 
-- The DSP defaults to 44100 Hz with a 1024-sample FFT window. Supported remote values are 44100 or 48000 Hz and 512, 1024, or 2048 samples; other values are rejected.
+- The DSP operates at a fixed 1024-sample FFT window and defaults to 44100 Hz. Supported remote sample rates are 44100 or 48000 Hz; remote window size must be 1024 samples (other sizes are rejected).
 - The DSP reports raw signal level internally as dBFS. The uploaded `raven_zvoka_db` value is calculated as dBFS plus a user-provided offset and should only be called dB SPL after that offset has been calibrated.
 - Measurements are sent in timestamped binary batches of up to 24 records, with
   a target limit of five requests per second. Failed batches are retried in RAM
