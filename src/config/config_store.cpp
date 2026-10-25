@@ -36,7 +36,7 @@ bool load_device_config(DeviceConfig &config) {
     }
 
     config.sample_rate = preferences.getUInt("sample_rate", config.sample_rate);
-    config.window_size = preferences.getUInt("window_size", config.window_size);
+    config.window_size = DEFAULT_WINDOW_SIZE;
     config.adaptive_threshold_enabled =
         preferences.isKey("adapt_thresh") ? preferences.getBool("adapt_thresh") : config.adaptive_threshold_enabled;
     config.snr_margin_db = get_preference_float("snr_margin", config.snr_margin_db);

@@ -42,7 +42,6 @@ static std::atomic<float> current_momentary_rms_db(-100.0f);
 static std::atomic<bool> adaptive_threshold_active(DEFAULT_ADAPTIVE_THRESHOLD_ENABLED);
 static std::atomic<float> current_snr_margin_db(DEFAULT_SNR_MARGIN_DB);
 static std::atomic<uint32_t> current_sample_rate(DEFAULT_SAMPLE_RATE);
-static std::atomic<uint32_t> current_window_size(DEFAULT_WINDOW_SIZE);
 
 // Diagnostični števci
 static std::atomic<uint32_t> dsp_deadline_misses(0);
@@ -63,9 +62,9 @@ static SemaphoreHandle_t doa_mutex = nullptr;
 static SemaphoreHandle_t config_mutex = nullptr;
 static SemaphoreHandle_t i2s_mutex = nullptr;
 
-static uint32_t audio_block_duration_us(uint32_t sample_rate, uint32_t window_size) {
+static uint32_t audio_block_duration_us(uint32_t sample_rate) {
     return static_cast<uint32_t>(
-        (static_cast<uint64_t>(window_size) * 1000000ULL) / sample_rate);
+        (static_cast<uint64_t>(AUDIO_FFT_WINDOW_SIZE) * 1000000ULL) / sample_rate);
 }
 
 static BootSelfTestResult run_boot_self_test(uint32_t sample_rate) {
@@ -223,19 +222,17 @@ static void log_dsp_diagnostics() {
     last_log_ms = now;
 
     uint32_t sample_rate;
-    uint32_t window_size;
     if (xSemaphoreTake(config_mutex, pdMS_TO_TICKS(10)) != pdTRUE) {
         return;
     }
     sample_rate = device_config.sample_rate;
-    window_size = device_config.window_size;
     xSemaphoreGive(config_mutex);
 
     SerialUI::printDspDiagnostics(
         dsp_blocks_processed.load(),
         dsp_deadline_misses.load(),
         dsp_max_processing_us.load(),
-        audio_block_duration_us(sample_rate, window_size),
+        audio_block_duration_us(sample_rate),
         dsp_i2s_read_failures.load(),
         display_queue_drops.load(),
         network_queue_drops.load(),
@@ -258,7 +255,6 @@ void dsp_task(void *param) {
     esp_task_wdt_add(nullptr);
 
     while (true) {
-        uint32_t window_size;
         uint32_t sample_rate;
         float min_spl_threshold;
         if (xSemaphoreTake(config_mutex, pdMS_TO_TICKS(CONFIG_MUTEX_FAST_TIMEOUT_MS)) != pdTRUE) {
@@ -266,13 +262,12 @@ void dsp_task(void *param) {
             continue;
         }
         sample_rate = device_config.sample_rate;
-        window_size = device_config.window_size;
         min_spl_threshold = device_config.sound_level_threshold_db_spl;
         xSemaphoreGive(config_mutex);
 
         bool read_ok = false;
         if (xSemaphoreTake(i2s_mutex, portMAX_DELAY) == pdTRUE) {
-            read_ok = read_i2s_quad(ch0_buf, ch1_buf, ch2_buf, ch3_buf, window_size);
+            read_ok = read_i2s_quad(ch0_buf, ch1_buf, ch2_buf, ch3_buf, AUDIO_FFT_WINDOW_SIZE);
             xSemaphoreGive(i2s_mutex);
         }
         if (read_ok) {
@@ -288,7 +283,7 @@ void dsp_task(void *param) {
             current_momentary_rms_db.store(multi_res.rms_db);
 
             const uint32_t processing_us = micros() - process_start;
-            const uint32_t block_budget_us = audio_block_duration_us(sample_rate, window_size);
+            const uint32_t block_budget_us = audio_block_duration_us(sample_rate);
             dsp_blocks_processed.fetch_add(1);
             uint32_t previous_max = dsp_max_processing_us.load();
             while (processing_us > previous_max &&
@@ -371,29 +366,26 @@ static bool apply_dsp_calibration(float temperature_c,
     return true;
 }
 
-static bool reconfigure_audio(uint32_t sample_rate, uint32_t window_size) {
-    if (!is_supported_audio_config(sample_rate, window_size)) {
-        Serial.printf("Unsupported audio configuration: rate=%lu, window=%lu\n",
-                      static_cast<unsigned long>(sample_rate),
-                      static_cast<unsigned long>(window_size));
+static bool reconfigure_audio(uint32_t sample_rate) {
+    if (sample_rate != 44100 && sample_rate != 48000) {
+        Serial.printf("Unsupported audio sample rate: %lu\n",
+                      static_cast<unsigned long>(sample_rate));
         return false;
     }
 
     uint32_t previous_rate;
-    uint32_t previous_window;
     if (xSemaphoreTake(config_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
         Serial.println("Could not lock configuration for audio reconfiguration");
         return false;
     }
     previous_rate = device_config.sample_rate;
-    previous_window = device_config.window_size;
     xSemaphoreGive(config_mutex);
 
     if (xSemaphoreTake(doa_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
         Serial.println("Could not lock DSP for audio reconfiguration");
         return false;
     }
-    const bool dsp_ready = doa.configure(static_cast<float>(sample_rate), window_size);
+    const bool dsp_ready = doa.configure(static_cast<float>(sample_rate));
     xSemaphoreGive(doa_mutex);
     if (!dsp_ready) {
         Serial.println("GCC-PHAT rejected audio reconfiguration");
@@ -403,7 +395,7 @@ static bool reconfigure_audio(uint32_t sample_rate, uint32_t window_size) {
     if (xSemaphoreTake(i2s_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
         Serial.println("Could not lock I2S for audio reconfiguration");
         xSemaphoreTake(doa_mutex, portMAX_DELAY);
-        doa.configure(static_cast<float>(previous_rate), previous_window);
+        doa.configure(static_cast<float>(previous_rate));
         xSemaphoreGive(doa_mutex);
         return false;
     }
@@ -416,7 +408,7 @@ static bool reconfigure_audio(uint32_t sample_rate, uint32_t window_size) {
 
     Serial.println("I2S rejected audio reconfiguration; rolling back");
     xSemaphoreTake(doa_mutex, portMAX_DELAY);
-    const bool dsp_rollback = doa.configure(static_cast<float>(previous_rate), previous_window);
+    const bool dsp_rollback = doa.configure(static_cast<float>(previous_rate));
     xSemaphoreGive(doa_mutex);
     if (xSemaphoreTake(i2s_mutex, portMAX_DELAY) == pdTRUE) {
         init_i2s_microphones(previous_rate);
@@ -477,16 +469,16 @@ void network_task(void *param) {
                 xSemaphoreGive(config_mutex);
 
                 bool reconfig_ok = true;
-                if (remote_cfg.sample_rate != previous.sample_rate || remote_cfg.window_size != previous.window_size) {
-                    reconfig_ok = reconfigure_audio(remote_cfg.sample_rate, remote_cfg.window_size);
+                if (remote_cfg.sample_rate != previous.sample_rate) {
+                    reconfig_ok = reconfigure_audio(remote_cfg.sample_rate);
                 }
 
                 if (reconfig_ok) {
                     xSemaphoreTake(config_mutex, portMAX_DELAY);
                     device_config = remote_cfg;
+                    device_config.window_size = AUDIO_FFT_WINDOW_SIZE;
                     xSemaphoreGive(config_mutex);
                     current_sample_rate.store(remote_cfg.sample_rate);
-                    current_window_size.store(remote_cfg.window_size);
 
                     if (apply_dsp_calibration(current_temperature.load(),
                                               current_humidity.load(),
@@ -498,8 +490,7 @@ void network_task(void *param) {
                         device_config = previous;
                         xSemaphoreGive(config_mutex);
                         current_sample_rate.store(previous.sample_rate);
-                        current_window_size.store(previous.window_size);
-                        reconfigure_audio(previous.sample_rate, previous.window_size);
+                        reconfigure_audio(previous.sample_rate);
                     }
                 }
             }
@@ -709,8 +700,7 @@ void sensor_display_task(void *param) {
                                         adaptive_threshold_active.load(),
                                         snr_db, current_snr_margin_db.load(),
                                         slot_ids,
-                                        current_sample_rate.load(),
-                                        current_window_size.load());
+                                        current_sample_rate.load());
 
             prev_rendered_tracks = num_tracks;
             prev_rendered_blips = radar_display.hasActiveDecayBlips(now_ms);
@@ -728,7 +718,6 @@ void setup() {
     device_configured = load_device_config(device_config);
     current_snr_margin_db.store(device_config.snr_margin_db);
     current_sample_rate.store(device_config.sample_rate);
-    current_window_size.store(device_config.window_size);
 
     // 1. Zagon zaslona in BME280 senzorja
     init_sensors_and_display();
@@ -751,8 +740,7 @@ void setup() {
                                 server_available.load(),
                                 adaptive_threshold_active.load(),
                                 0.0f, current_snr_margin_db.load(),
-                                current_sample_rate.load(),
-                                current_window_size.load());
+                                current_sample_rate.load());
     }
 
     // Ustvari FreeRTOS objekte za prenos rezultatov in zaščito DSP konfiguracije
@@ -777,10 +765,8 @@ void setup() {
         device_config.sample_rate = DEFAULT_SAMPLE_RATE;
         device_config.window_size = DEFAULT_WINDOW_SIZE;
         current_sample_rate.store(DEFAULT_SAMPLE_RATE);
-        current_window_size.store(DEFAULT_WINDOW_SIZE);
     }
-    if (!doa.configure(static_cast<float>(device_config.sample_rate),
-                       device_config.window_size)) {
+    if (!doa.configure(static_cast<float>(device_config.sample_rate))) {
         Serial.println("GCC-PHAT inicializacija ni uspela!");
         while (true) {
             delay(1000);
