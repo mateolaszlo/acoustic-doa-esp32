@@ -681,8 +681,8 @@ void sensor_display_task(void *param) {
 
             const float current_noise = current_noise_floor_db.load();
             const float offset = db_spl_offset.load();
-            float current_rms = (num_tracks > 0) ? last_event.rms_db : current_noise;
-            if (current_rms < -100.0f) current_rms = current_noise;
+            float current_rms = (num_tracks > 0) ? last_event.rms_db : current_momentary_rms_db.load();
+            if (current_rms < -100.0f || !std::isfinite(current_rms)) current_rms = current_noise;
             const float calibrated_db = current_rms + offset;
 
             const bool has_detection = (num_tracks > 0);
