@@ -265,11 +265,13 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
     canvas.setTextColor(ST77XX_YELLOW);
     canvas.printf("%2.0fdB", (db_spl > 0.0f) ? db_spl : 0.0f);
 
+    const bool has_detection = (count > 0);
+
     // Numerični izpis SNR (+XX dB)
     canvas.setCursor(28, 103);
-    if (snr_db >= 20.0f) {
+    if (has_detection && snr_db >= 20.0f) {
         canvas.setTextColor(ST77XX_GREEN);
-    } else if (snr_db >= snr_margin_db) {
+    } else if (has_detection && snr_db >= snr_margin_db) {
         canvas.setTextColor(ST77XX_YELLOW);
     } else {
         canvas.setTextColor(COLOR_MUTED_GRAY);
@@ -283,18 +285,27 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
     constexpr int bar_h = 7;
     canvas.drawRect(bar_x, bar_y, bar_w, bar_h, COLOR_MUTED_GRAY);
 
-    // Pretvorba SNR v širino stolpca (dinamični razpon 0..30 dB SNR)
+    // Oznaka adaptivnega praga sprožitve (gate) na SNR merilniku
     constexpr float max_snr_db = 30.0f;
+    const int gate_offset = static_cast<int>(roundf((snr_margin_db / max_snr_db) * (bar_w - 2)));
+    const int gate_x = bar_x + gate_offset;
+
+    // Pretvorba SNR v širino stolpca (dinamični razpon 0..30 dB SNR)
     float norm_snr = snr_db / max_snr_db;
     if (norm_snr < 0.0f) norm_snr = 0.0f;
     if (norm_snr > 1.0f) norm_snr = 1.0f;
-    const int fill_w = static_cast<int>(roundf(norm_snr * (bar_w - 2)));
+    int fill_w = static_cast<int>(roundf(norm_snr * (bar_w - 2)));
+
+    // Če ni aktivnih zaznav, je stolpec strogo omejen pod prag (nikoli ne prečka bele zareze)
+    if (!has_detection && fill_w >= gate_offset) {
+        fill_w = (gate_offset > 1) ? (gate_offset - 1) : 0;
+    }
 
     if (fill_w > 0) {
         uint16_t bar_color;
-        if (snr_db >= 20.0f) {
+        if (has_detection && snr_db >= 20.0f) {
             bar_color = ST77XX_GREEN; // Odličen SNR / visoka natančnost lokacije
-        } else if (snr_db >= snr_margin_db) {
+        } else if (has_detection && snr_db >= snr_margin_db) {
             bar_color = ST77XX_YELLOW; // Zaznava nad pragom / zmeren SNR
         } else {
             bar_color = COLOR_MUTED_GRAY; // Šum okolice pod pragom zaznave
@@ -302,8 +313,6 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
         canvas.fillRect(bar_x + 1, bar_y + 1, fill_w, bar_h - 2, bar_color);
     }
 
-    // Oznaka adaptivnega praga sprožitve (gate) na SNR merilniku
-    const int gate_x = bar_x + static_cast<int>(roundf((snr_margin_db / max_snr_db) * (bar_w - 2)));
     canvas.drawFastVLine(gate_x, bar_y - 1, bar_h + 2, ST77XX_WHITE);
 
     // Izpis vrednosti praga z mikro pisavo 3x5 pik tik pod zarezo

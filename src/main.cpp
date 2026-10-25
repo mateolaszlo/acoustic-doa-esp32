@@ -685,12 +685,20 @@ void sensor_display_task(void *param) {
             if (current_rms < -100.0f) current_rms = current_noise;
             const float calibrated_db = current_rms + offset;
 
+            const bool has_detection = (num_tracks > 0);
             float snr_db = 0.0f;
-            if (current_noise > -99.0f) {
-                const float active_rms = (num_tracks > 0) ? last_event.rms_db : current_momentary_rms_db.load();
-                if (active_rms > -99.0f) {
-                    snr_db = active_rms - current_noise;
+            if (has_detection) {
+                if (current_noise > -99.0f) {
+                    snr_db = last_event.rms_db - current_noise;
                     if (snr_db < 0.0f) snr_db = 0.0f;
+                }
+            } else if (current_noise > -99.0f) {
+                const float raw_idle = current_momentary_rms_db.load() - current_noise;
+                const float max_idle_snr = current_snr_margin_db.load() - 0.5f;
+                if (raw_idle > max_idle_snr) {
+                    snr_db = (max_idle_snr > 0.0f) ? max_idle_snr : 0.0f;
+                } else if (raw_idle > 0.0f) {
+                    snr_db = raw_idle;
                 }
             }
 
