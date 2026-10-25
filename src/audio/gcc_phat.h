@@ -34,12 +34,13 @@ public:
             float pressure_pa = DEFAULT_PRESSURE_PA);
     ~GccPhat();
 
-    // Initializes the default window (or the size supplied to the
-    // size-aware constructor).
+    // Initializes the fixed 1024-sample FFT window and working buffers in internal SRAM.
     bool init();
-    // Initializes the FFT and all working buffers for a power-of-two window.
+    // Initializes the FFT and all working buffers (window_size must be AUDIO_FFT_WINDOW_SIZE).
     bool init(size_t window_size);
-    // Atomically switches the sample rate and FFT size after successful setup.
+    // In-place sample rate reconfiguration (44.1k <-> 48k) without heap churn.
+    bool configure(float sample_rate);
+    // Backward-compatible configure taking window_size (must be AUDIO_FFT_WINDOW_SIZE).
     bool configure(float sample_rate, size_t window_size);
     DoaResult process(const int32_t* left_channel, const int32_t* right_channel);
     DoaResult process(const int32_t* ch0, const int32_t* ch1,

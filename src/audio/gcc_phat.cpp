@@ -270,97 +270,75 @@ void GccPhat::resetNoiseFloor(float initial_db) {
 }
 
 bool GccPhat::init() {
-    return init(fft_size != 0 ? fft_size : N_SAMPLES);
+    return init(AUDIO_FFT_WINDOW_SIZE);
 }
 
 bool GccPhat::init(size_t window_size) {
+    if (window_size != AUDIO_FFT_WINDOW_SIZE) {
+        ESP_LOGE(TAG, "Nepodprta velikost FFT okna: %u (podprto samo %u)",
+                 static_cast<unsigned>(window_size),
+                 static_cast<unsigned>(AUDIO_FFT_WINDOW_SIZE));
+        return false;
+    }
     return configure(fs, window_size);
+}
+
+bool GccPhat::configure(float sample_rate) {
+    return configure(sample_rate, AUDIO_FFT_WINDOW_SIZE);
 }
 
 bool GccPhat::configure(float sample_rate, size_t window_size) {
     if (!std::isfinite(sample_rate) || sample_rate <= 0.0f ||
-        window_size < 2 || window_size > static_cast<size_t>(INT_MAX) ||
-        (window_size & (window_size - 1)) != 0) {
+        window_size != AUDIO_FFT_WINDOW_SIZE) {
         ESP_LOGE(TAG, "Neveljavna sample rate/FFT velikost: %.3f/%u",
                  sample_rate, static_cast<unsigned>(window_size));
         return false;
     }
 
-    const size_t real_bytes = window_size * sizeof(float);
-    const size_t complex_bytes = window_size * 2 * sizeof(float);
+    // Enkratna rezervacija medpomnilnikov v notranjem SRAM pomnilniku ob zagonu
+    if (window == nullptr) {
+        const size_t real_bytes = AUDIO_FFT_WINDOW_SIZE * sizeof(float);
+        const size_t complex_bytes = AUDIO_FFT_WINDOW_SIZE * 2 * sizeof(float);
 
-    float* new_window = static_cast<float*>(
-        heap_caps_malloc(real_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-    float* new_band_weight_edge = static_cast<float*>(
-        heap_caps_malloc(real_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-    float* new_band_weight_diag = static_cast<float*>(
-        heap_caps_malloc(real_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-    float* new_fft_ch[AUDIO_NUM_CHANNELS] = {nullptr, nullptr, nullptr, nullptr};
-    for (size_t c = 0; c < AUDIO_NUM_CHANNELS; ++c) {
-        new_fft_ch[c] = static_cast<float*>(
-            heap_caps_malloc(complex_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-    }
-    float* new_ccorr = static_cast<float*>(
-        heap_caps_malloc(complex_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-
-    // Large windows may not fit in internal RAM. Keep the preferred allocation
-    // above, but use PSRAM for any buffer that could not be allocated there.
-    auto allocate_psram = [](float* current, size_t bytes) -> float* {
-        return current != nullptr
-            ? current
-            : static_cast<float*>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    };
-    new_window = allocate_psram(new_window, real_bytes);
-    new_band_weight_edge = allocate_psram(new_band_weight_edge, real_bytes);
-    new_band_weight_diag = allocate_psram(new_band_weight_diag, real_bytes);
-    for (size_t c = 0; c < AUDIO_NUM_CHANNELS; ++c) {
-        new_fft_ch[c] = allocate_psram(new_fft_ch[c], complex_bytes);
-    }
-    new_ccorr = allocate_psram(new_ccorr, complex_bytes);
-
-    auto free_new_buffers = [&]() {
-        heap_caps_free(new_window);
-        heap_caps_free(new_band_weight_edge);
-        heap_caps_free(new_band_weight_diag);
+        window = static_cast<float*>(
+            heap_caps_malloc(real_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        band_weight_edge = static_cast<float*>(
+            heap_caps_malloc(real_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        band_weight_diag = static_cast<float*>(
+            heap_caps_malloc(real_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
         for (size_t c = 0; c < AUDIO_NUM_CHANNELS; ++c) {
-            heap_caps_free(new_fft_ch[c]);
+            fft_ch[c] = static_cast<float*>(
+                heap_caps_malloc(complex_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
         }
-        heap_caps_free(new_ccorr);
-    };
+        ccorr = static_cast<float*>(
+            heap_caps_malloc(complex_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
 
-    if (new_window == nullptr || new_band_weight_edge == nullptr ||
-        new_band_weight_diag == nullptr || new_fft_ch[0] == nullptr ||
-        new_fft_ch[1] == nullptr || new_fft_ch[2] == nullptr ||
-        new_fft_ch[3] == nullptr || new_ccorr == nullptr) {
-        free_new_buffers();
-        ESP_LOGE(TAG, "Pomnilnika za FFT velikost %u ni mogoče rezervirati",
-                 static_cast<unsigned>(window_size));
-        return false;
+        if (window == nullptr || band_weight_edge == nullptr ||
+            band_weight_diag == nullptr || fft_ch[0] == nullptr ||
+            fft_ch[1] == nullptr || fft_ch[2] == nullptr ||
+            fft_ch[3] == nullptr || ccorr == nullptr) {
+            releaseBuffers();
+            ESP_LOGE(TAG, "Pomnilnika za FFT velikost %u ni mogoče rezervirati",
+                     static_cast<unsigned>(AUDIO_FFT_WINDOW_SIZE));
+            return false;
+        }
+
+        // Inicializacija FFT tabel v ESP-DSP (vektorska pospešitev)
+        esp_err_t ret = dsps_fft2r_init_fc32(NULL, static_cast<int>(AUDIO_FFT_WINDOW_SIZE));
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Napaka pri inicializaciji FFT2R: %d", ret);
+            releaseBuffers();
+            return false;
+        }
+
+        // Priprava Hannovega okna (fiksno 1024 vzorcev)
+        dsps_wind_hann_f32(window, static_cast<int>(AUDIO_FFT_WINDOW_SIZE));
+        fft_size = AUDIO_FFT_WINDOW_SIZE;
     }
 
-    // Inicializacija FFT tabel v ESP-DSP (vektorska pospešitev)
-    esp_err_t ret = dsps_fft2r_init_fc32(NULL, static_cast<int>(window_size));
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Napaka pri inicializaciji FFT2R: %d", ret);
-        free_new_buffers();
-        return false;
-    }
-
-    releaseBuffers();
-    window = new_window;
-    band_weight_edge = new_band_weight_edge;
-    band_weight_diag = new_band_weight_diag;
-    for (size_t c = 0; c < AUDIO_NUM_CHANNELS; ++c) {
-        fft_ch[c] = new_fft_ch[c];
-    }
-    ccorr = new_ccorr;
     fs = sample_rate;
-    fft_size = window_size;
 
-    // Priprava Hannovega okna
-    dsps_wind_hann_f32(window, static_cast<int>(fft_size));
-
-    // Predizračun dvopasovnih uteži (300-5000 Hz za robne pare, 300-4500 Hz za diagonali)
+    // Predizračun dvopasovnih uteži za novo vzorčevalno frekvenco na obstoječih tabelah (brez alokacij)
     const float bin_hz = fs / static_cast<float>(fft_size);
     weight_sum_edge = 0.0f;
     weight_sum_diag = 0.0f;

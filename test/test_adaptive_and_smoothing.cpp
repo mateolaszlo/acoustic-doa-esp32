@@ -119,7 +119,7 @@ void test_gcc_phat_adaptive_noise_floor() {
     printf("[TEST] Running test_gcc_phat_adaptive_noise_floor...\n");
 
     GccPhat doa(44100.0f, 0.08f, 20.0f);
-    assert(doa.init(512));
+    assert(doa.init(1024));
 
     // Initially adaptive threshold is disabled by default in GccPhat
     assert(!doa.isAdaptiveThresholdEnabled());
@@ -131,14 +131,14 @@ void test_gcc_phat_adaptive_noise_floor() {
     assert(doa.isAdaptiveThresholdEnabled());
     assert(doa.getSnrMarginDb() == 10.0f);
 
-    std::vector<int32_t> left(512, 0);
-    std::vector<int32_t> right(512, 0);
+    std::vector<int32_t> left(1024, 0);
+    std::vector<int32_t> right(1024, 0);
 
     // Initial noise floor starts at -100 dBFS
     assert(doa.getNoiseFloorDb() == -100.0f);
 
     // Edge case: Feed absolute silence (< -95 dBFS). Should NOT initialize or clamp prematurely
-    for (int i = 0; i < 512; i++) {
+    for (int i = 0; i < 1024; i++) {
         left[i] = 0;
         right[i] = 0;
     }
@@ -150,7 +150,7 @@ void test_gcc_phat_adaptive_noise_floor() {
     // Now feed quiet noise (~ -60 dBFS)
     // 2147483648.0 * 10^(-60/20) = 2147483.6
     int32_t quiet_sample = 2147484;
-    for (int i = 0; i < 512; i++) {
+    for (int i = 0; i < 1024; i++) {
         left[i] = (i % 2 == 0) ? quiet_sample : -quiet_sample;
         right[i] = left[i];
     }
@@ -167,7 +167,7 @@ void test_gcc_phat_adaptive_noise_floor() {
 
     // Now feed a loud signal (above noise floor + 10dB, e.g. -40 dBFS)
     int32_t loud_sample = 21474836;
-    for (int i = 0; i < 512; i++) {
+    for (int i = 0; i < 1024; i++) {
         left[i] = (i % 2 == 0) ? loud_sample : -loud_sample;
         right[i] = left[i];
     }
@@ -200,7 +200,7 @@ void test_gcc_phat_adaptive_noise_floor() {
 
     // feed -70 dBFS signal
     int32_t lower_sample = 679093; // approx -70 dBFS
-    for (int i = 0; i < 512; i++) {
+    for (int i = 0; i < 1024; i++) {
         left[i] = (i % 2 == 0) ? lower_sample : -lower_sample;
         right[i] = left[i];
     }
@@ -213,7 +213,7 @@ void test_gcc_phat_adaptive_noise_floor() {
     float pre_up = doa.getNoiseFloorDb();
     // feed signal above pre_up (+4.0 dB) but below trigger threshold (pre_up + 7.5 dB)
     int32_t creep_sample = static_cast<int32_t>(2147483648.0 * powf(10.0f, (pre_up + 4.0f) / 20.0f));
-    for (int i = 0; i < 512; i++) {
+    for (int i = 0; i < 1024; i++) {
         left[i] = (i % 2 == 0) ? creep_sample : -creep_sample;
         right[i] = left[i];
     }
@@ -230,12 +230,12 @@ void test_gcc_phat_adaptive_noise_floor() {
     assert(doa.getSnrMarginDb() == 7.5f); // Unchanged
 
     // 4. Stereo RMS symmetry (Left-only vs Right-only must produce identical RMS)
-    for (int i = 0; i < 512; i++) {
+    for (int i = 0; i < 1024; i++) {
         left[i] = (i % 2 == 0) ? loud_sample : -loud_sample;
         right[i] = 0;
     }
     DoaResult r_left_only = doa.process(left.data(), right.data());
-    for (int i = 0; i < 512; i++) {
+    for (int i = 0; i < 1024; i++) {
         left[i] = 0;
         right[i] = (i % 2 == 0) ? loud_sample : -loud_sample;
     }
@@ -247,7 +247,7 @@ void test_gcc_phat_adaptive_noise_floor() {
     assert(!doa.isNoiseFloorInitialized());
     doa.updateCalibration(0.08f, 22.0f, 0.40f, -45.0f, true, 8.0f);
     int32_t cold_loud = static_cast<int32_t>(2147483648.0 * powf(10.0f, -25.0f / 20.0f));
-    for (int i = 0; i < 512; i++) {
+    for (int i = 0; i < 1024; i++) {
         left[i] = (i % 2 == 0) ? cold_loud : -cold_loud;
         right[i] = left[i];
     }
@@ -738,17 +738,17 @@ static void test_gcc_phat_dual_band_weights() {
     assert(GccPhat::computeBandWeight(1000.0f, 2000.0f, 500.0f) == 0.0f);
     assert(GccPhat::computeBandWeight(1000.0f, 300.0f, 2200.0f, 0.0f) == 0.0f);
 
-    // 2. Verify precomputed tables and normalization sums across supported sample rates & window sizes
+    // 2. Verify precomputed tables and normalization sums across supported sample rates for 1024 window
     const uint32_t rates[2] = {44100, 48000};
-    const size_t windows[3] = {512, 1024, 2048};
+    const size_t n = AUDIO_FFT_WINDOW_SIZE;
 
     GccPhat doa;
     for (size_t r = 0; r < 2; ++r) {
-        for (size_t w = 0; w < 3; ++w) {
-            const float fs = static_cast<float>(rates[r]);
-            const size_t n = windows[w];
-            assert(doa.configure(fs, n));
-            assert(doa.getFftSize() == n);
+        const float fs = static_cast<float>(rates[r]);
+        assert(doa.configure(fs));
+        assert(doa.getFftSize() == n);
+        assert(!doa.configure(fs, 512));
+        assert(!doa.configure(fs, 2048));
 
             const float* w_edge = doa.getEdgeBandWeights();
             const float* w_diag = doa.getDiagBandWeights();
@@ -798,7 +798,6 @@ static void test_gcc_phat_dual_band_weights() {
             assert(fabsf(doa.getDiagWeightSum() - sum_diag) < 1e-4f);
             assert(doa.getEdgeWeightSum() > doa.getDiagWeightSum());
             assert(doa.getDiagWeightSum() > 0.0f);
-        }
     }
 
     printf("  [PASS] test_gcc_phat_dual_band_weights passed.\n");
@@ -911,33 +910,31 @@ static void test_gcc_phat_quad_rms_and_pipeline() {
     assert(r_edge_only.confidence > 0.15f && r_edge_only.confidence < 0.45f);
     assert(r_active.confidence > r_edge_only.confidence + 0.5f);
 
-    // 6. Verify configure() SPIRAM fallback and clean rollback on allocation / FFT init failure
+    // 6. Verify in-place configure(48000) with zero heap churn, and window size validation
+    const float* initial_edge_ptr = doa.getEdgeBandWeights();
     g_mock_internal_alloc_calls = 0;
-    g_mock_spiram_alloc_calls = 0;
-    g_mock_fail_internal_after = 3; // Allow first 3 buffers in internal RAM, force remaining 5 to SPIRAM
-    assert(doa.configure(48000.0f, 2048));
-    assert(g_mock_spiram_alloc_calls == 5);
-    assert(doa.getFftSize() == 2048);
-    g_mock_fail_internal_after = -1;
+    assert(doa.configure(48000.0f));
+    assert(doa.getFftSize() == 1024);
+    // Buffer pointer must be identical (zero heap reallocation!)
+    assert(doa.getEdgeBandWeights() == initial_edge_ptr);
+    assert(g_mock_internal_alloc_calls == 0);
 
-    // Now force total allocation failure mid-way through configure(44100, 512):
-    // Previous valid state (48000 Hz, 2048 samples) must remain intact with zero leaks!
-    const float prev_edge_sum = doa.getEdgeWeightSum();
-    const float* prev_edge_ptr = doa.getEdgeBandWeights();
-    g_mock_internal_alloc_calls = 0;
-    g_mock_fail_all_after = 4; // Fail after 4 allocations
+    // Unsupported window sizes (512 and 2048) must be rejected cleanly
     assert(!doa.configure(44100.0f, 512));
+    assert(!doa.configure(44100.0f, 2048));
+    assert(doa.getFftSize() == 1024);
+
+    // Initial allocation failure on fresh instance must be cleaned up safely
+    GccPhat doa_fresh;
+    g_mock_fail_all_after = 3;
+    assert(!doa_fresh.init());
     g_mock_fail_all_after = -1;
-    assert(doa.getFftSize() == 2048);
-    assert(doa.getEdgeBandWeights() == prev_edge_ptr);
-    assert(fabsf(doa.getEdgeWeightSum() - prev_edge_sum) < 1e-5f);
 
-    // Force dsps_fft2r_init_fc32 failure: buffers must be freed and previous state preserved
+    // Initial FFT table init failure on fresh instance must be cleaned up safely
+    GccPhat doa_fresh2;
     g_mock_fft_init_ret = -1;
-    assert(!doa.configure(44100.0f, 512));
+    assert(!doa_fresh2.init());
     g_mock_fft_init_ret = 0;
-    assert(doa.getFftSize() == 2048);
-    assert(doa.getEdgeBandWeights() == prev_edge_ptr);
 
     printf("  [PASS] test_gcc_phat_quad_rms_and_pipeline passed.\n");
 }
