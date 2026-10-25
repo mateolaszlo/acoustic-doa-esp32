@@ -636,11 +636,13 @@ static void test_app_config_consistency() {
     assert(DOA_WLS_MIN_UNREG_DET > 0.0f);
     assert(DISPLAY_IDLE_REFRESH_INTERVAL_MS == 500);
 
-    // Audio config whitelist validator
-    assert(is_supported_audio_config(44100, 512));
+    // Audio config whitelist validator: only 1024 samples supported
+    assert(!is_supported_audio_config(44100, 512));
     assert(is_supported_audio_config(44100, 1024));
-    assert(is_supported_audio_config(44100, 2048));
+    assert(!is_supported_audio_config(44100, 2048));
     assert(is_supported_audio_config(48000, 1024));
+    assert(!is_supported_audio_config(48000, 512));
+    assert(!is_supported_audio_config(48000, 2048));
     assert(!is_supported_audio_config(96000, 1024));
     assert(!is_supported_audio_config(44100, 256));
     assert(!is_supported_audio_config(44100, 4096));

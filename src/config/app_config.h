@@ -41,8 +41,9 @@ constexpr int SETUP_BUTTON_PIN          = 0;
 // ==============================================================================
 constexpr size_t AUDIO_NUM_CHANNELS          = 4;    // 4-mic planar square array
 constexpr size_t AUDIO_NUM_PAIRS             = 6;    // C(4, 2) = 6 unique baselines
-constexpr size_t AUDIO_MAX_WINDOW_SIZE       = 2048; // Max DMA and DSP buffer capacity
-constexpr size_t DEFAULT_WINDOW_SIZE         = 1024;
+constexpr size_t AUDIO_FFT_WINDOW_SIZE       = 1024; // Fixed 1024-sample FFT window
+constexpr size_t AUDIO_MAX_WINDOW_SIZE       = AUDIO_FFT_WINDOW_SIZE;
+constexpr size_t DEFAULT_WINDOW_SIZE         = AUDIO_FFT_WINDOW_SIZE;
 constexpr size_t AUDIO_DEFAULT_WINDOW_SIZE   = DEFAULT_WINDOW_SIZE;
 constexpr uint32_t DEFAULT_SAMPLE_RATE       = 44100;
 constexpr uint32_t AUDIO_DEFAULT_SAMPLE_RATE = DEFAULT_SAMPLE_RATE;
@@ -51,7 +52,7 @@ constexpr float PCM_INT32_TO_FLOAT_SCALE     = 2147483648.0f; // 2^31
 // Supported Audio Configuration Whitelist
 inline bool is_supported_audio_config(uint32_t sample_rate, uint32_t window_size) {
     return (sample_rate == 44100 || sample_rate == 48000) &&
-           (window_size == 512 || window_size == 1024 || window_size == 2048);
+           (window_size == AUDIO_FFT_WINDOW_SIZE);
 }
 
 // ==============================================================================
