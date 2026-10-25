@@ -267,8 +267,10 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
 
     // Numerični izpis SNR (+XX dB)
     canvas.setCursor(28, 103);
-    if (snr_db >= snr_margin_db) {
+    if (snr_db >= 20.0f) {
         canvas.setTextColor(ST77XX_GREEN);
+    } else if (snr_db >= snr_margin_db) {
+        canvas.setTextColor(ST77XX_YELLOW);
     } else {
         canvas.setTextColor(COLOR_MUTED_GRAY);
     }
@@ -291,11 +293,11 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
     if (fill_w > 0) {
         uint16_t bar_color;
         if (snr_db >= 20.0f) {
-            bar_color = ST77XX_RED;
+            bar_color = ST77XX_GREEN; // Odličen SNR / visoka natančnost lokacije
         } else if (snr_db >= snr_margin_db) {
-            bar_color = ST77XX_YELLOW;
+            bar_color = ST77XX_YELLOW; // Zaznava nad pragom / zmeren SNR
         } else {
-            bar_color = ST77XX_GREEN; // pod pragom zaznave (šum okolice)
+            bar_color = COLOR_MUTED_GRAY; // Šum okolice pod pragom zaznave
         }
         canvas.fillRect(bar_x + 1, bar_y + 1, fill_w, bar_h - 2, bar_color);
     }

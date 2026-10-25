@@ -38,6 +38,7 @@ static std::atomic<bool> ntp_time_valid(false);
 static std::atomic<int64_t> server_utc_offset_ms(0);
 static std::atomic<bool> server_time_valid(false);
 static std::atomic<float> current_noise_floor_db(-100.0f);
+static std::atomic<float> current_momentary_rms_db(-100.0f);
 static std::atomic<bool> adaptive_threshold_active(DEFAULT_ADAPTIVE_THRESHOLD_ENABLED);
 static std::atomic<float> current_snr_margin_db(DEFAULT_SNR_MARGIN_DB);
 static std::atomic<uint32_t> current_sample_rate(DEFAULT_SAMPLE_RATE);
@@ -284,6 +285,7 @@ void dsp_task(void *param) {
             const float noise_floor = doa.getNoiseFloorDb();
             xSemaphoreGive(doa_mutex);
             current_noise_floor_db.store(noise_floor);
+            current_momentary_rms_db.store(multi_res.rms_db);
 
             const uint32_t processing_us = micros() - process_start;
             const uint32_t block_budget_us = audio_block_duration_us(sample_rate, window_size);
@@ -684,9 +686,12 @@ void sensor_display_task(void *param) {
             const float calibrated_db = current_rms + offset;
 
             float snr_db = 0.0f;
-            if (num_tracks > 0 && current_noise > -99.0f) {
-                snr_db = last_event.rms_db - current_noise;
-                if (snr_db < 0.0f) snr_db = 0.0f;
+            if (current_noise > -99.0f) {
+                const float active_rms = (num_tracks > 0) ? last_event.rms_db : current_momentary_rms_db.load();
+                if (active_rms > -99.0f) {
+                    snr_db = active_rms - current_noise;
+                    if (snr_db < 0.0f) snr_db = 0.0f;
+                }
             }
 
             radar_display.drawRadarMulti(angles, confs, num_tracks,
