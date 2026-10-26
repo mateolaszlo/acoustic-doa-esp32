@@ -91,13 +91,14 @@ void RadarDisplay::addDecayBlips(const float* angles_deg, size_t count, uint32_t
 void RadarDisplay::drawRadar(float angle_deg, float temp_c, float hum, float pres, float c_sound,
                             float db_spl, bool api_available, bool adaptive_active,
                             float snr_db, float snr_margin_db,
-                            uint32_t sample_rate) {
+                            uint32_t sample_rate,
+                            bool wifi_connected) {
     const float angles[1] = { angle_deg };
     const float confs[1] = { 1.0f };
     const uint32_t now = millis();
     addDecayBlips(angles, 1, now);
     drawRadarMulti(angles, confs, 1, temp_c, hum, pres, c_sound, db_spl, api_available, adaptive_active,
-                   snr_db, snr_margin_db, nullptr, sample_rate, now);
+                   snr_db, snr_margin_db, nullptr, sample_rate, now, wifi_connected);
 }
 
 void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confidences, size_t count,
@@ -106,7 +107,8 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
                                  float snr_db, float snr_margin_db,
                                  const uint8_t* slot_ids,
                                  uint32_t sample_rate,
-                                 uint32_t now_ms) {
+                                 uint32_t now_ms,
+                                 bool wifi_connected) {
     (void)confidences;
     if (!initialized) return;
     canvas.fillScreen(ST77XX_BLACK);
@@ -353,7 +355,13 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
         canvas.setCursor(18, 145);
         canvas.print("API ONLINE");
     } else {
-        canvas.drawCircle(8, status_y, 3, ST77XX_RED);
+        // Blinks (toggles fill) at 1 Hz if Wi-Fi is connected but cannot access API
+        const bool blink_filled = wifi_connected && ((current_time_ms / 500) % 2 == 0);
+        if (blink_filled) {
+            canvas.fillCircle(8, status_y, 3, ST77XX_RED);
+        } else {
+            canvas.drawCircle(8, status_y, 3, ST77XX_RED);
+        }
         canvas.setTextColor(ST77XX_RED);
         canvas.setCursor(18, 145);
         canvas.print("API OFFLINE");

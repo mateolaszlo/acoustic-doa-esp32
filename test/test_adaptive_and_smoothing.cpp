@@ -3165,6 +3165,30 @@ static void test_wifi_and_api_serial_logging() {
     out = Serial.getOutput();
     assert(out.find("[API] ERROR: Measurement POST failed (HTTP 500): Internal Server Error") != std::string::npos);
 
+    // 8. Test RadarDisplay API status and blinking indicator
+    RadarDisplay display;
+    assert(display.init());
+
+    // API ONLINE: Solid green indicator
+    display.drawRadarMulti(nullptr, nullptr, 0, 22.0f, 50.0f, 101325.0f, 344.0f,
+                           40.0f, true, true, 0.0f, 8.0f, nullptr, 44100, 1000, true);
+
+    // API OFFLINE and WiFi disconnected: Static hollow circle (no blink)
+    display.drawRadarMulti(nullptr, nullptr, 0, 22.0f, 50.0f, 101325.0f, 344.0f,
+                           40.0f, false, true, 0.0f, 8.0f, nullptr, 44100, 1000, false);
+
+    // API OFFLINE and WiFi connected: Blinks at 1 Hz (toggles filled / hollow)
+    // Even half-second (t = 1000 ms, 1000 / 500 = 2 -> filled)
+    display.drawRadarMulti(nullptr, nullptr, 0, 22.0f, 50.0f, 101325.0f, 344.0f,
+                           40.0f, false, true, 0.0f, 8.0f, nullptr, 44100, 1000, true);
+
+    // Odd half-second (t = 1500 ms, 1500 / 500 = 3 -> hollow)
+    display.drawRadarMulti(nullptr, nullptr, 0, 22.0f, 50.0f, 101325.0f, 344.0f,
+                           40.0f, false, true, 0.0f, 8.0f, nullptr, 44100, 1500, true);
+
+    // Single source drawRadar wrapper with wifi_connected flag
+    display.drawRadar(45.0f, 22.0f, 50.0f, 101325.0f, 344.0f, 55.0f, false, true, 5.0f, 8.0f, 44100, true);
+
     printf("  [PASS] test_wifi_and_api_serial_logging passed.\n");
 }
 

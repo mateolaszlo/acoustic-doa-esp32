@@ -43,10 +43,23 @@ public:
         (void)x; (void)y; (void)w; (void)h; (void)color;
     }
     virtual void drawCircle(int16_t x0, int16_t y0, int16_t r, uint16_t color) {
-        (void)x0; (void)y0; (void)r; (void)color;
+        for (int16_t y = -r; y <= r; ++y) {
+            for (int16_t x = -r; x <= r; ++x) {
+                int d2 = x * x + y * y;
+                if (d2 <= r * r && d2 >= (r - 1) * (r - 1)) {
+                    drawPixel(x0 + x, y0 + y, color);
+                }
+            }
+        }
     }
     virtual void fillCircle(int16_t x0, int16_t y0, int16_t r, uint16_t color) {
-        (void)x0; (void)y0; (void)r; (void)color;
+        for (int16_t y = -r; y <= r; ++y) {
+            for (int16_t x = -r; x <= r; ++x) {
+                if (x * x + y * y <= r * r) {
+                    drawPixel(x0 + x, y0 + y, color);
+                }
+            }
+        }
     }
     virtual void drawRoundRect(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r, uint16_t color) {
         (void)x; (void)y; (void)w; (void)h; (void)r; (void)color;

@@ -33,6 +33,7 @@ static std::atomic<float> current_humidity(DEFAULT_HUMIDITY_PCT);
 static std::atomic<float> current_pressure(DEFAULT_PRESSURE_PA);
 static std::atomic<float> db_spl_offset(DEFAULT_DB_SPL_OFFSET);
 static std::atomic<bool> server_available(false);
+static std::atomic<bool> wifi_connected(false);
 static std::atomic<int64_t> ntp_utc_offset_ms(0);
 static std::atomic<bool> ntp_time_valid(false);
 static std::atomic<int64_t> server_utc_offset_ms(0);
@@ -418,6 +419,7 @@ static bool reconfigure_audio(uint32_t sample_rate) {
 static void on_wifi_event(WiFiEvent_t event, WiFiEventInfo_t info) {
     switch (event) {
         case ARDUINO_EVENT_WIFI_STA_GOT_IP: {
+            wifi_connected.store(true);
             String ip_str = WiFi.localIP().toString();
             String ssid_str;
             if (config_mutex != nullptr && xSemaphoreTake(config_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
@@ -430,6 +432,7 @@ static void on_wifi_event(WiFiEvent_t event, WiFiEventInfo_t info) {
             break;
         }
         case ARDUINO_EVENT_WIFI_STA_DISCONNECTED: {
+            wifi_connected.store(false);
             SerialUI::printWiFiDisconnected(info.wifi_sta_disconnected.reason, millis());
             break;
         }
@@ -449,6 +452,7 @@ void network_task(void *param) {
 
     while (true) {
         if (WiFi.status() != WL_CONNECTED) {
+            wifi_connected.store(false);
             server_available.store(false);
             ntp_started = false;
             ntp_time_valid.store(false);
@@ -465,6 +469,7 @@ void network_task(void *param) {
             esp_task_wdt_reset();
             continue;
         }
+        wifi_connected.store(true);
         reconnect_attempt = 0;
 
         if (!ntp_started && time(nullptr) < MIN_VALID_EPOCH) {
@@ -666,6 +671,7 @@ void sensor_display_task(void *param) {
         last_event.sources[s] = {0.0f, 0.0f, 0.0f, -100.0f, false};
     }
     bool last_server_available = server_available.load();
+    bool last_wifi_connected = wifi_connected.load();
     MultiTargetDisplayTracker tracker(DISPLAY_TRACK_HOLD_TIMEOUT_MS, DisplaySmoothingFilter::DEFAULT_RESET_SILENCE_MS);
     TrackedTarget tracked_targets[DOA_MAX_SOURCES];
     size_t prev_rendered_tracks = 0;
@@ -702,11 +708,13 @@ void sensor_display_task(void *param) {
             const size_t active_tracks = tracker.getActiveTracks(tracked_targets, DOA_MAX_SOURCES, now_ms);
             const bool active_blips = radar_display.hasActiveDecayBlips(now_ms);
             const bool current_server_available = server_available.load();
+            const bool current_wifi_connected = wifi_connected.load();
             const bool idle_refresh_due = (now_ms - last_idle_refresh_ms >= DISPLAY_IDLE_REFRESH_INTERVAL_MS);
 
             if (active_tracks > 0 || active_blips ||
                 prev_rendered_tracks > 0 || prev_rendered_blips ||
                 current_server_available != last_server_available ||
+                current_wifi_connected != last_wifi_connected ||
                 idle_refresh_due) {
                 needs_redraw = true;
                 if (idle_refresh_due) {
@@ -717,6 +725,7 @@ void sensor_display_task(void *param) {
 
         if (needs_redraw && radar_display.isInitialized()) {
             last_server_available = server_available.load();
+            last_wifi_connected = wifi_connected.load();
             const size_t num_tracks = tracker.getActiveTracks(tracked_targets, DOA_MAX_SOURCES, now_ms);
             float angles[DOA_MAX_SOURCES];
             float confs[DOA_MAX_SOURCES];
@@ -758,7 +767,8 @@ void sensor_display_task(void *param) {
                                         snr_db, current_snr_margin_db.load(),
                                         slot_ids,
                                         current_sample_rate.load(),
-                                        now_ms);
+                                        now_ms,
+                                        last_wifi_connected);
 
             prev_rendered_tracks = num_tracks;
             prev_rendered_blips = radar_display.hasActiveDecayBlips(now_ms);
@@ -800,7 +810,8 @@ void setup() {
                                 server_available.load(),
                                 adaptive_threshold_active.load(),
                                 0.0f, current_snr_margin_db.load(),
-                                current_sample_rate.load());
+                                current_sample_rate.load(),
+                                wifi_connected.load());
     }
 
     // Create FreeRTOS queues and mutexes for result passing and configuration synchronization
