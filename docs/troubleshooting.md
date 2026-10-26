@@ -31,15 +31,31 @@ If it does not:
 
 ## Wi-Fi does not connect after provisioning
 
-Check:
+Check the serial monitor (115200 baud). The firmware provides automatic diagnostics for connection attempts and disconnections:
 
-- SSID and password spelling.
-- The device is within range.
-- The configured network is compatible with the board and access point.
-- The API URL is a LAN-reachable address, not `localhost`.
-- The stored configuration was accepted and the board restarted.
+- **Wrong SSID or router out of range**:
+  ```text
+  [WiFi] Disconnected: SSID not found (incorrect SSID name or out of range) (reason 201: NO_AP_FOUND). Check SSID name or router distance!
+  ```
+- **Wrong Wi-Fi Password**:
+  ```text
+  [WiFi] Disconnected: Authentication failed (incorrect Wi-Fi password) (reason 202: AUTH_FAIL). Check Wi-Fi password in setup!
+  ```
+  *(Also reported as `reason 15: 4WAY_HANDSHAKE_TIMEOUT` or `reason 204: HANDSHAKE_TIMEOUT`)*
+- **Lost connection / beacon timeout**:
+  ```text
+  [WiFi] Disconnected: Beacon timeout (connection lost / signal too weak) (reason 200: BEACON_TIMEOUT)
+  ```
+- **Anti-spam throttling**: During continuous auto-reconnection loops, repeated identical error messages are suppressed and summarized every 15 seconds:
+  ```text
+  [WiFi] Still disconnected: SSID not found (incorrect SSID name or out of range) (reason 201: NO_AP_FOUND, 12 attempts)
+  ```
+- **Successful connection**:
+  ```text
+  [WiFi] Connected to 'MyNetwork'! IP: 192.168.1.150, RSSI: -54 dBm, Channel: 6
+  ```
 
-The device retries Wi-Fi connection in the network task and logs HTTP failures, but it does not show a full Wi-Fi diagnostic page.
+If credentials need updating, power on the device while holding GPIO 0 during the boot window to re-enter setup mode (`192.168.4.1`).
 
 ## SPI TFT Display (KMR-1.8 / ST7735) Issues
 
@@ -90,12 +106,19 @@ If forward sounds point to a non-zero angle (e.g. `+7.0°`) and the needle reach
   3. Enter the observed forward angle into `Zero angle offset (deg)` (e.g. `7.0`).
   4. Save and reboot. The firmware applies the angular offset trim on the circular manifold $\phi_{\text{cal}} = \text{wrap}_{180}(\phi_{\text{raw}} - \phi_{\text{offset}})$ (where $\phi_{\text{offset}}$ is `angle_offset_deg`), restoring accurate, symmetric full $360^\circ$ $[-180^\circ, +180^\circ]$ tracking.
 
-## API returns 401 or 403
+## API returns 401 or 403 (Invalid API Key)
 
-- Confirm the API key in NVS.
-- Confirm the backend maps that key to the configured device.
-- Confirm the `x-api-key` header is accepted.
-- Re-enter the key through setup mode if necessary.
+The firmware automatically detects unauthorized or rejected API keys on both calibration (`GET /devices/{id}/calibration`) and measurement streaming (`POST /measurements`), printing:
+```text
+[API] CRITICAL: Measurement batch rejected (HTTP 401)! Invalid or unauthorized API key.
+[API] CRITICAL: Calibration rejected (HTTP 403)! Invalid or unauthorized API key for device ID 1.
+```
+
+To resolve:
+- Confirm the API key in NVS matches the backend configuration.
+- Confirm the backend accepts the `x-api-key` HTTP header.
+- Re-enter the API key through setup mode (`192.168.4.1`) by holding GPIO 0 on boot.
+- Repetitive 401/403 errors are automatically throttled to 1 log every 15 seconds to prevent serial flooding.
 
 ## API returns 400
 

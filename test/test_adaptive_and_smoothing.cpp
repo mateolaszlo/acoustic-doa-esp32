@@ -2995,6 +2995,179 @@ static void test_phase_four_localization_and_docs_contracts() {
     printf("  [PASS] test_phase_four_localization_and_docs_contracts passed.\n");
 }
 
+static void test_wifi_and_api_serial_logging() {
+    printf("[TEST] Running test_wifi_and_api_serial_logging...\n");
+    SerialUI::resetThrottles();
+
+    // 1. Diagnose WiFi disconnect reason codes
+    WiFiDisconnectDiagnosis diag201 = SerialUI::diagnoseWiFiDisconnect(201);
+    assert(diag201.is_wrong_ssid);
+    assert(!diag201.is_wrong_password);
+    assert(std::string(diag201.reason_name) == "NO_AP_FOUND");
+
+    WiFiDisconnectDiagnosis diag202 = SerialUI::diagnoseWiFiDisconnect(202);
+    assert(diag202.is_wrong_password);
+    assert(!diag202.is_wrong_ssid);
+    assert(std::string(diag202.reason_name) == "AUTH_FAIL");
+
+    WiFiDisconnectDiagnosis diag15 = SerialUI::diagnoseWiFiDisconnect(15);
+    assert(diag15.is_wrong_password);
+    assert(std::string(diag15.reason_name) == "4WAY_HANDSHAKE_TIMEOUT");
+
+    WiFiDisconnectDiagnosis diag204 = SerialUI::diagnoseWiFiDisconnect(204);
+    assert(diag204.is_wrong_password);
+    assert(std::string(diag204.reason_name) == "HANDSHAKE_TIMEOUT");
+
+    WiFiDisconnectDiagnosis diag200 = SerialUI::diagnoseWiFiDisconnect(200);
+    assert(!diag200.is_wrong_password);
+    assert(!diag200.is_wrong_ssid);
+    assert(std::string(diag200.reason_name) == "BEACON_TIMEOUT");
+
+    WiFiDisconnectDiagnosis diag99 = SerialUI::diagnoseWiFiDisconnect(99);
+    assert(std::string(diag99.reason_name) == "UNKNOWN");
+
+    // 2. WiFi connecting and connected logging
+    Serial.clear();
+    SerialUI::printWiFiConnecting("LabRouter_5G");
+    std::string out = Serial.getOutput();
+    assert(out.find("[WiFi] Connecting to SSID: 'LabRouter_5G'...") != std::string::npos);
+
+    Serial.clear();
+    SerialUI::printWiFiConnected("LabRouter_5G", "192.168.1.120", -55, 6);
+    out = Serial.getOutput();
+    assert(out.find("[WiFi] Connected to 'LabRouter_5G'! IP: 192.168.1.120, RSSI: -55 dBm, Channel: 6") != std::string::npos);
+
+    // 3. Disconnect diagnostics and anti-spam throttling
+    Serial.clear();
+    // First disconnect with wrong password: logged immediately
+    SerialUI::printWiFiDisconnected(202, 1000);
+    out = Serial.getOutput();
+    assert(out.find("[WiFi] Disconnected: Authentication failed (incorrect Wi-Fi password) (reason 202: AUTH_FAIL). Check Wi-Fi password in setup!") != std::string::npos);
+
+    // Repeat disconnect within throttle interval (< 15s): suppressed
+    Serial.clear();
+    SerialUI::printWiFiDisconnected(202, 2000);
+    out = Serial.getOutput();
+    assert(out.empty());
+
+    // Disconnect with different reason (201 SSID not found): logs immediately despite throttle interval
+    Serial.clear();
+    SerialUI::printWiFiDisconnected(201, 3000);
+    out = Serial.getOutput();
+    assert(out.find("[WiFi] Disconnected: SSID not found (incorrect SSID name or out of range) (reason 201: NO_AP_FOUND). Check SSID name or router distance!") != std::string::npos);
+
+    // Repeat 201 within throttle interval: suppressed
+    Serial.clear();
+    SerialUI::printWiFiDisconnected(201, 4000);
+    out = Serial.getOutput();
+    assert(out.empty());
+
+    // Disconnect after throttle window expired (> 15s): logs periodic summary with attempt count
+    Serial.clear();
+    SerialUI::printWiFiDisconnected(201, 19000);
+    out = Serial.getOutput();
+    assert(out.find("[WiFi] Still disconnected: SSID not found") != std::string::npos);
+    assert(out.find("5 attempts") != std::string::npos);
+
+    // 4. WiFi reconnecting logging
+    Serial.clear();
+    SerialUI::printWiFiReconnecting("LabRouter_5G", 1, 1000);
+    out = Serial.getOutput();
+    assert(out.find("[WiFi] Reconnecting to SSID: 'LabRouter_5G' (attempt 1)...") != std::string::npos);
+
+    Serial.clear();
+    SerialUI::printWiFiReconnecting("LabRouter_5G", 2, 2000);
+    out = Serial.getOutput();
+    assert(out.empty()); // Throttled
+
+    Serial.clear();
+    SerialUI::printWiFiReconnecting("LabRouter_5G", 3, 17000);
+    out = Serial.getOutput();
+    assert(out.find("[WiFi] Reconnecting to SSID: 'LabRouter_5G' (attempt 3)...") != std::string::npos);
+
+    // 5. API Calibration response logging
+    Serial.clear();
+    SerialUI::printApiCalibrationSuccess(101, 48000, 0.082f, 0.45f);
+    out = Serial.getOutput();
+    assert(out.find("[API] Calibration synchronized (HTTP 200): device_id=101, sample_rate=48000 Hz, mic_distance=0.082 m, corr_threshold=0.45") != std::string::npos);
+
+    // Wrong API key detection (HTTP 401 and 403)
+    Serial.clear();
+    SerialUI::printApiCalibrationError(401, "{\"error\":\"unauthorized\"}", 101);
+    out = Serial.getOutput();
+    assert(out.find("[API] CRITICAL: Calibration rejected (HTTP 401)! Invalid or unauthorized API key for device ID 101.") != std::string::npos);
+
+    Serial.clear();
+    SerialUI::printApiCalibrationError(403, "{\"error\":\"forbidden\"}", 101);
+    out = Serial.getOutput();
+    assert(out.find("[API] CRITICAL: Calibration rejected (HTTP 403)! Invalid or unauthorized API key for device ID 101.") != std::string::npos);
+
+    // Device not found (HTTP 404)
+    Serial.clear();
+    SerialUI::printApiCalibrationError(404, "{\"error\":\"not found\"}", 101);
+    out = Serial.getOutput();
+    assert(out.find("[API] ERROR: Device ID 101 not found on server (HTTP 404).") != std::string::npos);
+
+    // Network connection failed (< 0)
+    Serial.clear();
+    SerialUI::printApiCalibrationError(-1, "", 101);
+    out = Serial.getOutput();
+    assert(out.find("[API] ERROR: Calibration connection failed (code -1): Server unreachable") != std::string::npos);
+
+    // 6. API Batch streaming success anti-spam throttling
+    SerialUI::resetThrottles();
+    Serial.clear();
+    // First batch: logs active stream
+    SerialUI::printApiBatchSuccess(200, 152, 1000);
+    out = Serial.getOutput();
+    assert(out.find("[API] Measurement stream active (HTTP 200, batch size: 152 bytes)") != std::string::npos);
+
+    // Batches 2 to 49 (rapid stream, e.g. 5 Hz): completely silent (zero spam)
+    for (size_t b = 2; b < 50; ++b) {
+        Serial.clear();
+        SerialUI::printApiBatchSuccess(200, 152, 1000 + b * 200);
+        assert(Serial.getOutput().empty());
+    }
+
+    // Batch 50: logs milestone summary
+    Serial.clear();
+    SerialUI::printApiBatchSuccess(200, 152, 11000);
+    out = Serial.getOutput();
+    assert(out.find("[API] Measurement streaming nominal: 50 batches delivered (HTTP 200)") != std::string::npos);
+
+    // 7. API Batch error logging & wrong API key detection
+    Serial.clear();
+    // HTTP 401: Wrong API key detected immediately
+    SerialUI::printApiBatchError(401, "{\"error\":\"bad key\"}", 12000);
+    out = Serial.getOutput();
+    assert(out.find("[API] CRITICAL: Measurement batch rejected (HTTP 401)! Invalid or unauthorized API key.") != std::string::npos);
+
+    // Repeat 401 error within 15s: throttled (silent)
+    Serial.clear();
+    SerialUI::printApiBatchError(401, "{\"error\":\"bad key\"}", 13000);
+    assert(Serial.getOutput().empty());
+
+    // Different error code (HTTP 404): logs immediately
+    Serial.clear();
+    SerialUI::printApiBatchError(404, "{\"error\":\"missing route\"}", 14000);
+    out = Serial.getOutput();
+    assert(out.find("[API] ERROR: POST /measurements not found (HTTP 404). Check api_url in setup.") != std::string::npos);
+
+    // Server error (HTTP 500): logs immediately on first occurrence
+    Serial.clear();
+    SerialUI::printApiBatchError(500, "Internal Server Error", 15000);
+    out = Serial.getOutput();
+    assert(out.find("[API] ERROR: Measurement POST failed (HTTP 500): Internal Server Error") != std::string::npos);
+
+    // Server error repeated after 15s: logs again
+    Serial.clear();
+    SerialUI::printApiBatchError(500, "Internal Server Error", 31000);
+    out = Serial.getOutput();
+    assert(out.find("[API] ERROR: Measurement POST failed (HTTP 500): Internal Server Error") != std::string::npos);
+
+    printf("  [PASS] test_wifi_and_api_serial_logging passed.\n");
+}
+
 int main() {
     test_gcc_phat_adaptive_noise_floor();
     test_display_smoothing_filter();
@@ -3019,6 +3192,7 @@ int main() {
     test_phase_three_responsiveness_and_expanded_harness();
     test_phase_two_serial_ui_and_logging();
     test_phase_four_localization_and_docs_contracts();
+    test_wifi_and_api_serial_logging();
     printf("\nAll unit tests passed successfully!\n");
     return 0;
 }

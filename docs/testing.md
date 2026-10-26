@@ -109,6 +109,12 @@ The test harness in [`test/test_adaptive_and_smoothing.cpp`](../test/test_adapti
     - Enforces binary REST protocol contracts: 12-byte header, 20-byte record, and 492-byte max batch payload sizing.
     - Validates IEEE-754 binary32 angle packing precision across the full-circle $\pm 180.0^\circ$ azimuth boundary.
     - Validates `DeviceConfig` contract compatibility against the documented REST API calibration schema.
+24. **`test_wifi_and_api_serial_logging`**:
+    - Validates Wi-Fi disconnect reason code decoding (`NO_AP_FOUND = 201`, `AUTH_FAIL = 202`, `4WAY_HANDSHAKE_TIMEOUT = 15`, `HANDSHAKE_TIMEOUT = 204`, `BEACON_TIMEOUT = 200`, and unknown reason codes).
+    - Validates anti-spam throttling for repetitive Wi-Fi disconnections (15-second throttle window with attempt counts).
+    - Validates REST API wrong API key detection (HTTP 401 Unauthorized / HTTP 403 Forbidden) across calibration and measurement endpoints.
+    - Validates HTTP 404 (device/route not found), HTTP 500, and network timeout classification.
+    - Validates measurement batch streaming anti-spam throttling (immediate initial active print, suppressed intermediate 5 Hz batches, milestone summary at batch 50, and 15-second error throttling).
 
 ---
 

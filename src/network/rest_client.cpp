@@ -1,4 +1,5 @@
 #include "network/rest_client.h"
+#include "ui/serial_ui.h"
 #include <WiFi.h>
 #include <atomic>
 
@@ -48,15 +49,13 @@ bool RestClient::sendBatch(const uint8_t *payload, size_t payload_size,
 
     if (httpResponseCode < 200 || httpResponseCode >= 300) {
         const String response = http.getString();
-        Serial.printf("HTTP POST /measurements failed: %d, response: %s\n",
-                      httpResponseCode, response.c_str());
+        SerialUI::printApiBatchError(httpResponseCode, response.c_str());
         close();
         return false;
     }
 
     http.end(); // With setReuse(true), drains unread 2xx body while keeping TCP socket alive
-    Serial.printf("Measurement batch accepted: HTTP %d, bytes: %u\n",
-                  httpResponseCode, static_cast<unsigned>(payload_size));
+    SerialUI::printApiBatchSuccess(httpResponseCode, payload_size);
     return true;
 }
 
@@ -104,7 +103,7 @@ bool RestClient::fetchCalibration(const String &api_url, const String &api_key,
     cal_http.end();
 
     if (status < 200 || status >= 300) {
-        Serial.printf("Calibration GET failed: %d, response: %s\n", status, response.c_str());
+        SerialUI::printApiCalibrationError(status, response.c_str(), device_id);
         return false;
     }
 
@@ -185,5 +184,8 @@ bool RestClient::fetchCalibration(const String &api_url, const String &api_key,
     }
 
     config = candidate;
+    SerialUI::printApiCalibrationSuccess(candidate.device_id, candidate.sample_rate,
+                                         candidate.microphone_distance_m,
+                                         candidate.correlation_threshold);
     return true;
 }

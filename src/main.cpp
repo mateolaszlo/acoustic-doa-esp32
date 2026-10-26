@@ -415,10 +415,34 @@ static bool reconfigure_audio(uint32_t sample_rate) {
     return dsp_rollback;
 }
 
+static void on_wifi_event(WiFiEvent_t event, WiFiEventInfo_t info) {
+    switch (event) {
+        case ARDUINO_EVENT_WIFI_STA_GOT_IP: {
+            String ip_str = WiFi.localIP().toString();
+            String ssid_str;
+            if (config_mutex != nullptr && xSemaphoreTake(config_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                ssid_str = device_config.wifi_ssid;
+                xSemaphoreGive(config_mutex);
+            }
+            SerialUI::printWiFiConnected(ssid_str.c_str(), ip_str.c_str(),
+                                         static_cast<int>(WiFi.RSSI()),
+                                         static_cast<int>(WiFi.channel()));
+            break;
+        }
+        case ARDUINO_EVENT_WIFI_STA_DISCONNECTED: {
+            SerialUI::printWiFiDisconnected(info.wifi_sta_disconnected.reason, millis());
+            break;
+        }
+        default:
+            break;
+    }
+}
+
 void network_task(void *param) {
     NetworkMeasurement batch[NETWORK_BATCH_MAX_MEASUREMENTS];
     unsigned long last_calibration_refresh = 0;
     unsigned long last_request_ms = 0;
+    uint32_t reconnect_attempt = 0;
     RestClient rest_client;
     bool ntp_started = false;
     esp_task_wdt_add(nullptr);
@@ -429,11 +453,19 @@ void network_task(void *param) {
             ntp_started = false;
             ntp_time_valid.store(false);
             rest_client.close();
+            reconnect_attempt++;
+            String ssid_str;
+            if (xSemaphoreTake(config_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                ssid_str = device_config.wifi_ssid;
+                xSemaphoreGive(config_mutex);
+            }
+            SerialUI::printWiFiReconnecting(ssid_str.c_str(), reconnect_attempt, millis());
             WiFi.reconnect();
             vTaskDelay(pdMS_TO_TICKS(1000));
             esp_task_wdt_reset();
             continue;
         }
+        reconnect_attempt = 0;
 
         if (!ntp_started && time(nullptr) < MIN_VALID_EPOCH) {
             configTime(0, 0, "pool.ntp.org", "time.nist.gov");
@@ -448,6 +480,7 @@ void network_task(void *param) {
             if (utc_ms >= static_cast<int64_t>(MIN_VALID_EPOCH) * 1000LL) {
                 ntp_utc_offset_ms.store(utc_ms - monotonic_ms);
                 ntp_time_valid.store(true);
+                Serial.println("[Time] SNTP synchronized: UTC clock active");
             }
         }
 
@@ -807,6 +840,8 @@ void setup() {
     }
 
     if (device_configured) {
+        SerialUI::printWiFiConnecting(device_config.wifi_ssid.c_str());
+        WiFi.onEvent(on_wifi_event);
         WiFi.setAutoReconnect(true);
         WiFi.begin(device_config.wifi_ssid.c_str(), device_config.wifi_password.c_str());
     }
