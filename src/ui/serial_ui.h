@@ -25,7 +25,7 @@ public:
 
     // Wi-Fi Telemetry & Diagnostics
     static WiFiDisconnectDiagnosis diagnoseWiFiDisconnect(uint8_t reason_code);
-    static void printWiFiConnecting(const char* ssid);
+    static void printWiFiConnecting(const char* ssid, int pass_len = -1);
     static void printWiFiConnected(const char* ssid, const char* ip, int rssi, int channel = 0);
     static void printWiFiDisconnected(uint8_t reason_code, uint32_t now_ms = 0);
     static void printWiFiReconnecting(const char* ssid, uint32_t attempt, uint32_t now_ms = 0);

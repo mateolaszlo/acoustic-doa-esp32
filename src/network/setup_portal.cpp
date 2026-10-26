@@ -36,6 +36,7 @@ String SetupPortal::generateHtmlPage(const DeviceConfig &config) {
 void SetupPortal::enter(DeviceConfig &config, RadarDisplay &radar,
                         std::function<void(const DeviceConfig&)> on_save) {
     radar.drawSetupPortal();
+    WiFi.disconnect(true);
     WiFi.mode(WIFI_AP);
     if (!WiFi.softAP(SETUP_AP_NAME, SETUP_AP_PASSWORD)) {
         Serial.println("Setup access point could not be started");
@@ -68,8 +69,14 @@ void SetupPortal::enter(DeviceConfig &config, RadarDisplay &radar,
         }
 
         DeviceConfig candidate = config;
-        candidate.wifi_ssid = web_server.arg("wifi_ssid");
+        String wifi_ssid = web_server.arg("wifi_ssid");
+        wifi_ssid.trim();
+        candidate.wifi_ssid = wifi_ssid;
+
         String wifi_password = web_server.arg("wifi_password");
+        while (wifi_password.endsWith("\r") || wifi_password.endsWith("\n")) {
+            wifi_password.remove(wifi_password.length() - 1);
+        }
         if (wifi_password.length() > 0) {
             candidate.wifi_password = wifi_password;
         }
@@ -111,8 +118,16 @@ void SetupPortal::enter(DeviceConfig &config, RadarDisplay &radar,
             on_save(config);
         }
 
+        Serial.printf("[Setup] Configuration saved: SSID='%s' (pass_len=%u), device_id=%lu\n",
+                      candidate.wifi_ssid.c_str(),
+                      static_cast<unsigned>(candidate.wifi_password.length()),
+                      static_cast<unsigned long>(candidate.device_id));
+
         web_server.send(200, "text/plain", "Saved. Restarting...");
         delay(500);
+        WiFi.softAPdisconnect(true);
+        WiFi.mode(WIFI_OFF);
+        delay(100);
         ESP.restart();
     });
 

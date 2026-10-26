@@ -212,8 +212,16 @@ WiFiDisconnectDiagnosis SerialUI::diagnoseWiFiDisconnect(uint8_t reason_code) {
     return diag;
 }
 
-void SerialUI::printWiFiConnecting(const char* ssid) {
-    Serial.printf("[WiFi] Connecting to SSID: '%s'...\n", ssid ? ssid : "");
+void SerialUI::printWiFiConnecting(const char* ssid, int pass_len) {
+    if (pass_len > 0) {
+        Serial.printf("[WiFi] Connecting to SSID: '%s' (password length: %d)...\n",
+                      ssid ? ssid : "", pass_len);
+    } else if (pass_len == 0) {
+        Serial.printf("[WiFi] Connecting to SSID: '%s' (no password / open)...\n",
+                      ssid ? ssid : "");
+    } else {
+        Serial.printf("[WiFi] Connecting to SSID: '%s'...\n", ssid ? ssid : "");
+    }
 }
 
 void SerialUI::printWiFiConnected(const char* ssid, const char* ip, int rssi, int channel) {

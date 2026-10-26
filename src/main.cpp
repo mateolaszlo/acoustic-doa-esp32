@@ -445,6 +445,7 @@ void network_task(void *param) {
     NetworkMeasurement batch[NETWORK_BATCH_MAX_MEASUREMENTS];
     unsigned long last_calibration_refresh = 0;
     unsigned long last_request_ms = 0;
+    unsigned long last_wifi_retry_ms = 0;
     uint32_t reconnect_attempt = 0;
     RestClient rest_client;
     bool ntp_started = false;
@@ -457,20 +458,33 @@ void network_task(void *param) {
             ntp_started = false;
             ntp_time_valid.store(false);
             rest_client.close();
-            reconnect_attempt++;
-            String ssid_str;
-            if (xSemaphoreTake(config_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-                ssid_str = device_config.wifi_ssid;
-                xSemaphoreGive(config_mutex);
+
+            const unsigned long now = millis();
+            if (last_wifi_retry_ms == 0) {
+                last_wifi_retry_ms = now;
+            } else if (now - last_wifi_retry_ms >= 15000) {
+                last_wifi_retry_ms = now;
+                reconnect_attempt++;
+                String ssid_str;
+                String pass_str;
+                if (xSemaphoreTake(config_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                    ssid_str = device_config.wifi_ssid;
+                    pass_str = device_config.wifi_password;
+                    xSemaphoreGive(config_mutex);
+                }
+                SerialUI::printWiFiReconnecting(ssid_str.c_str(), reconnect_attempt, now);
+                WiFi.disconnect(false);
+                WiFi.mode(WIFI_STA);
+                WiFi.begin(ssid_str.c_str(), pass_str.c_str());
             }
-            SerialUI::printWiFiReconnecting(ssid_str.c_str(), reconnect_attempt, millis());
-            WiFi.reconnect();
+
             vTaskDelay(pdMS_TO_TICKS(1000));
             esp_task_wdt_reset();
             continue;
         }
         wifi_connected.store(true);
         reconnect_attempt = 0;
+        last_wifi_retry_ms = 0;
 
         if (!ntp_started && time(nullptr) < MIN_VALID_EPOCH) {
             configTime(0, 0, "pool.ntp.org", "time.nist.gov");
@@ -784,6 +798,13 @@ void setup() {
                   ESP.getPsramSize(),
                   ESP.getFreePsram());
     device_configured = load_device_config(device_config);
+    if (device_configured) {
+        Serial.printf("[Config] Loaded configuration: SSID='%s' (pass_len=%u), API='%s', device_id=%lu\n",
+                      device_config.wifi_ssid.c_str(),
+                      static_cast<unsigned>(device_config.wifi_password.length()),
+                      device_config.api_url.c_str(),
+                      static_cast<unsigned long>(device_config.device_id));
+    }
     current_snr_margin_db.store(device_config.snr_margin_db);
     current_sample_rate.store(device_config.sample_rate);
     db_spl_offset.store(device_config.db_spl_offset);
@@ -851,7 +872,11 @@ void setup() {
     }
 
     if (device_configured) {
-        SerialUI::printWiFiConnecting(device_config.wifi_ssid.c_str());
+        WiFi.persistent(false);
+        WiFi.disconnect(true);
+        WiFi.mode(WIFI_STA);
+        SerialUI::printWiFiConnecting(device_config.wifi_ssid.c_str(),
+                                      static_cast<int>(device_config.wifi_password.length()));
         WiFi.onEvent(on_wifi_event);
         WiFi.setAutoReconnect(true);
         WiFi.begin(device_config.wifi_ssid.c_str(), device_config.wifi_password.c_str());

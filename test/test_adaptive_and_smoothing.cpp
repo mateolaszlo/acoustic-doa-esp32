@@ -3033,6 +3033,16 @@ static void test_wifi_and_api_serial_logging() {
     assert(out.find("[WiFi] Connecting to SSID: 'LabRouter_5G'...") != std::string::npos);
 
     Serial.clear();
+    SerialUI::printWiFiConnecting("LabRouter_5G", 12);
+    out = Serial.getOutput();
+    assert(out.find("[WiFi] Connecting to SSID: 'LabRouter_5G' (password length: 12)...") != std::string::npos);
+
+    Serial.clear();
+    SerialUI::printWiFiConnecting("LabRouter_5G", 0);
+    out = Serial.getOutput();
+    assert(out.find("[WiFi] Connecting to SSID: 'LabRouter_5G' (no password / open)...") != std::string::npos);
+
+    Serial.clear();
     SerialUI::printWiFiConnected("LabRouter_5G", "192.168.1.120", -55, 6);
     out = Serial.getOutput();
     assert(out.find("[WiFi] Connected to 'LabRouter_5G'! IP: 192.168.1.120, RSSI: -55 dBm, Channel: 6") != std::string::npos);
