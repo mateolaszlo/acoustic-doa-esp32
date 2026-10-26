@@ -170,7 +170,7 @@ void MultiTargetDisplayTracker::update(const float* raw_angles, const float* con
         return;
     }
 
-    // 1. Preveri potek neaktivnih sledi
+    // 1. Prune expired or inactive tracks
     prune(now_ms);
 
     const size_t num_dets = (count > DOA_MAX_SOURCES) ? DOA_MAX_SOURCES : count;
@@ -184,7 +184,7 @@ void MultiTargetDisplayTracker::update(const float* raw_angles, const float* con
         }
     }
 
-    // 2. Požrešno prirejanje najbližjega soseda znotraj kota 45 stopinj med dodeljenimi sledmi
+    // 2. Greedy nearest-neighbor association within the 45-degree gate among allocated tracks
     constexpr float association_gate_deg = 45.0f;
     for (size_t pass = 0; pass < num_dets; ++pass) {
         float min_dist = 1e9f;
@@ -218,7 +218,7 @@ void MultiTargetDisplayTracker::update(const float* raw_angles, const float* con
         }
     }
 
-    // 3. Za neprirejene zaznave poišči prosto sled ali inicializiraj novo
+    // 3. Assign unassociated detections to free unallocated track slots
     for (size_t d = 0; d < num_dets; ++d) {
         if (det_assigned[d]) continue;
 
@@ -237,7 +237,7 @@ void MultiTargetDisplayTracker::update(const float* raw_angles, const float* con
         }
     }
 
-    // 4. Če so vsi sloti dodeljeni, poskusi ponovno uporabiti najstarejši neaktivni slot
+    // 4. If all slots are allocated, reclaim the oldest inactive track slot
     for (size_t d = 0; d < num_dets; ++d) {
         if (det_assigned[d]) continue;
 

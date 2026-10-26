@@ -9,7 +9,7 @@
 // Minimum plausible UTC timestamp (2024-01-01 00:00:00 UTC)
 constexpr time_t   MIN_VALID_EPOCH                      = 1704067200;
 
-// Binary REST Protocol Constants (POST /api/v1/meritve)
+// Binary REST Protocol Constants (POST /api/v1/measurements)
 // Format version 1: 12-byte Little-Endian batch header + 20-byte per-measurement records
 constexpr uint8_t  MEASUREMENT_BATCH_VERSION            = 1;
 constexpr size_t   MEASUREMENT_BATCH_HEADER_SIZE        = 12;

@@ -197,7 +197,7 @@ GccPhat::~GccPhat() {
 }
 
 float GccPhat::calculateSoundSpeed(float temp_c, float humidity_pct, float pressure_pa) {
-    // Zaščita pred neveljavnimi odčitki senzorja
+    // Guard against out-of-range or non-finite sensor readings
     if (!std::isfinite(temp_c) || temp_c < -40.0f || temp_c > 85.0f) {
         temp_c = DEFAULT_TEMPERATURE_C;
     }
@@ -208,10 +208,10 @@ float GccPhat::calculateSoundSpeed(float temp_c, float humidity_pct, float press
         pressure_pa = DEFAULT_PRESSURE_PA;
     }
 
-    // 1. Nasičeni parni tlak vode (Magnus-Tetens v Pa)
+    // 1. Saturation vapor pressure of water (Magnus-Tetens formula in Pa)
     float p_sat = 610.78f * expf((17.27f * temp_c) / (temp_c + 237.3f));
 
-    // 2. Parcialni tlak vodne pare in molski ulomek x_w
+    // 2. Water vapor partial pressure and mole fraction x_w
     float p_vapor = (humidity_pct / 100.0f) * p_sat;
     float x_w = p_vapor / pressure_pa;
     if (x_w < 0.0f) {
@@ -220,13 +220,13 @@ float GccPhat::calculateSoundSpeed(float temp_c, float humidity_pct, float press
         x_w = 0.2f;
     }
 
-    // 3. Termodinamske konstante vlažnega zraka
+    // 3. Moist-air thermodynamic constants
     constexpr float R_gas = 8.31446f; // J/(mol*K)
     float molar_mass = 0.0289654f * (1.0f - 0.3780f * x_w); // kg/mol
     float gamma = 1.4003f - 0.07f * x_w;
     float temp_k = temp_c + 273.15f;
 
-    // 4. Hitrost zvoka c = sqrt(gamma * R * T / M)
+    // 4. Speed of sound c = sqrt(gamma * R * T / M)
     return sqrtf((gamma * R_gas * temp_k) / molar_mass);
 }
 
@@ -290,7 +290,7 @@ bool GccPhat::init() {
 
 bool GccPhat::init(size_t window_size) {
     if (window_size != AUDIO_FFT_WINDOW_SIZE) {
-        ESP_LOGE(TAG, "Nepodprta velikost FFT okna: %u (podprto samo %u)",
+        ESP_LOGE(TAG, "Unsupported FFT window size: %u (only %u is supported)",
                  static_cast<unsigned>(window_size),
                  static_cast<unsigned>(AUDIO_FFT_WINDOW_SIZE));
         return false;
@@ -305,12 +305,12 @@ bool GccPhat::configure(float sample_rate) {
 bool GccPhat::configure(float sample_rate, size_t window_size) {
     if (!std::isfinite(sample_rate) || sample_rate <= 0.0f ||
         window_size != AUDIO_FFT_WINDOW_SIZE) {
-        ESP_LOGE(TAG, "Neveljavna sample rate/FFT velikost: %.3f/%u",
+        ESP_LOGE(TAG, "Invalid sample rate or FFT window size: %.3f / %u",
                  sample_rate, static_cast<unsigned>(window_size));
         return false;
     }
 
-    // Enkratna rezervacija medpomnilnikov v notranjem SRAM pomnilniku ob zagonu
+    // One-time allocation of working buffers in internal SRAM on initialization
     if (window == nullptr) {
         const size_t real_bytes = AUDIO_FFT_WINDOW_SIZE * sizeof(float);
         const size_t complex_bytes = AUDIO_FFT_WINDOW_SIZE * 2 * sizeof(float);
@@ -333,27 +333,27 @@ bool GccPhat::configure(float sample_rate, size_t window_size) {
             fft_ch[1] == nullptr || fft_ch[2] == nullptr ||
             fft_ch[3] == nullptr || ccorr == nullptr) {
             releaseBuffers();
-            ESP_LOGE(TAG, "Pomnilnika za FFT velikost %u ni mogoče rezervirati",
+            ESP_LOGE(TAG, "Failed to allocate memory for FFT window size %u",
                      static_cast<unsigned>(AUDIO_FFT_WINDOW_SIZE));
             return false;
         }
 
-        // Inicializacija FFT tabel v ESP-DSP (vektorska pospešitev)
+        // Initialize ESP-DSP radix-2 FFT tables (SIMD vector acceleration)
         esp_err_t ret = dsps_fft2r_init_fc32(NULL, static_cast<int>(AUDIO_FFT_WINDOW_SIZE));
         if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Napaka pri inicializaciji FFT2R: %d", ret);
+            ESP_LOGE(TAG, "Failed to initialize FFT2R tables: %d", ret);
             releaseBuffers();
             return false;
         }
 
-        // Priprava Hannovega okna (fiksno 1024 vzorcev)
+        // Generate Hann window (fixed 1024 samples)
         dsps_wind_hann_f32(window, static_cast<int>(AUDIO_FFT_WINDOW_SIZE));
         fft_size = AUDIO_FFT_WINDOW_SIZE;
     }
 
     fs = sample_rate;
 
-    // Predizračun dvopasovnih uteži za novo vzorčevalno frekvenco na obstoječih tabelah (brez alokacij)
+    // Precompute dual-band spectral weights for the new sample rate in-place (zero heap allocation)
     const float bin_hz = fs / static_cast<float>(fft_size);
     weight_sum_edge = 0.0f;
     weight_sum_diag = 0.0f;
@@ -383,7 +383,7 @@ void GccPhat::precomputeCleanKernels() {
         return;
     }
 
-    // 1. Robni par (Edge): 300 - 5000 Hz
+    // 1. Edge pair kernel: 300 - 5000 Hz
     for (size_t i = 0; i < fft_size; ++i) {
         ccorr[2 * i]     = band_weight_edge[i];
         ccorr[2 * i + 1] = 0.0f;
@@ -402,7 +402,7 @@ void GccPhat::precomputeCleanKernels() {
         clean_kernel_edge[k] = ccorr[2 * idx] / peak_edge;
     }
 
-    // 2. Diagonalni par (Diag): 300 - 4500 Hz
+    // 2. Diagonal pair kernel: 300 - 4500 Hz
     for (size_t i = 0; i < fft_size; ++i) {
         ccorr[2 * i]     = band_weight_diag[i];
         ccorr[2 * i + 1] = 0.0f;
@@ -439,14 +439,13 @@ bool GccPhat::updateNoiseFloorAndCheckGate(float rms_db) {
             const float trigger_threshold = noise_floor_db + snr_margin_db;
 
             if (rms_db < noise_floor_db) {
-                // Hiter padec ocene šuma ob utišanju ozadja (~1-2 s)
+                // Fast downward tracking when background noise subsides (~1-2 s)
                 noise_floor_db += NOISE_FLOOR_ALPHA_DOWN * (rms_db - noise_floor_db);
             } else if (rms_db < trigger_threshold) {
-                // Počasno sledenje dvigu šuma okolice pod pragom proženja
+                // Slow upward tracking of ambient noise below the trigger threshold
                 noise_floor_db += NOISE_FLOOR_ALPHA_UP * (rms_db - noise_floor_db);
             } else {
-                // Zvočni dogodek / govor: zelo počasno prilagajanje, da trajen zvok
-                // ne zviša takoj praga in ne zaduši detekcije
+                // Active acoustic event / speech: ultra-slow creep so sustained sound does not pull up the threshold and suppress detection
                 noise_floor_db += NOISE_FLOOR_ALPHA_EVENT * (rms_db - noise_floor_db);
             }
         }
@@ -481,7 +480,7 @@ void GccPhat::computePairCrossCorrelationIfft(size_t mic_i, size_t mic_j, const 
         const float re2 = spec_j[2 * i];
         const float im2 = spec_j[2 * i + 1];
 
-        // Množenje s konjugirano vrednostjo: (re1 + j*im1) * (re2 - j*im2)
+        // Multiply by complex conjugate: (re1 + j*im1) * (re2 - j*im2)
         const float cross_re = re1 * re2 + im1 * im2;
         const float cross_im = im1 * re2 - re1 * im2;
 
@@ -496,7 +495,7 @@ void GccPhat::computePairCrossCorrelationIfft(size_t mic_i, size_t mic_j, const 
         }
     }
 
-    // Inverzni FFT (IFFT) preko konjugacije pred direktnim FFT
+    // Inverse FFT (IFFT) via complex conjugation prior to forward FFT
     for (size_t i = 0; i < fft_size; ++i) {
         ccorr[2 * i + 1] = -ccorr[2 * i + 1];
     }
@@ -657,7 +656,7 @@ DoaResult GccPhat::solveFromSrpSeed(const float pair_corr[AUDIO_NUM_PAIRS][PAIR_
             continue;
         }
 
-        // 3-točkovna parabolična interpolacija okoli lokalnega vrha
+        // 3-point parabolic interpolation around the local peak
         const int l_m1 = clamp_corr_lag(best_idx - 1);
         const int l_p1 = clamp_corr_lag(best_idx + 1);
 
@@ -734,7 +733,7 @@ MultiDoaResult GccPhat::processMulti(const int32_t* ch0, const int32_t* ch1,
         return multi_res;
     }
 
-    // 1. Odstranitev DC odmika po vseh 4 kanalih (v int64_t za 24-bitno natančnost brez plavanja)
+    // 1. Remove per-channel DC offset across all 4 channels (using int64_t for exact 24-bit precision)
     int64_t ch_sum[AUDIO_NUM_CHANNELS] = {0, 0, 0, 0};
     for (size_t i = 0; i < fft_size; ++i) {
         ch_sum[0] += static_cast<int64_t>(ch0[i]);
@@ -752,7 +751,7 @@ MultiDoaResult GccPhat::processMulti(const int32_t* ch0, const int32_t* ch1,
             static_cast<float>(ch_sum[c] - ch_mean_int[c] * fft_size_i64) * inv_fft_size;
     }
 
-    // 2. 4-kanalna vsesmerna (omnidirekcionalna) neoknjena RMS energija in Hannovo oknenje
+    // 2. 4-channel omnidirectional unwindowed RMS energy and Hann windowing
     const float inv_scale = 1.0f / PCM_INT32_TO_FLOAT_SCALE;
     float energy_sum = 0.0f;
     for (size_t i = 0; i < fft_size; ++i) {
@@ -789,18 +788,18 @@ MultiDoaResult GccPhat::processMulti(const int32_t* ch0, const int32_t* ch1,
         multi_res.sources[s].rms_db = multi_res.rms_db;
     }
 
-    // 3. Prilagodljivi šumni prag
+    // 3. Adaptive noise floor gating
     if (!updateNoiseFloorAndCheckGate(multi_res.rms_db)) {
         return multi_res;
     }
 
-    // 4. Štirje direktni kompleksni FFT-ji (X0..X3)
+    // 4. Four forward complex FFTs (X0..X3)
     for (size_t c = 0; c < AUDIO_NUM_CHANNELS; ++c) {
         dsps_fft2r_fc32(fft_ch[c], static_cast<int>(fft_size));
         dsps_bit_rev_fc32(fft_ch[c], static_cast<int>(fft_size));
     }
 
-    // 5. Dvopasovno navzkrižno koreliranje in ohranitev zakasnitvenih oken na skladu
+    // 5. Dual-band cross-correlation and preservation of lag windows on the stack
     float pair_corr[AUDIO_NUM_PAIRS][PAIR_CORR_SIZE];
     float pair_lags_samples[AUDIO_NUM_PAIRS];
     float pair_confidences[AUDIO_NUM_PAIRS];
@@ -815,7 +814,7 @@ MultiDoaResult GccPhat::processMulti(const int32_t* ch0, const int32_t* ch1,
 
         computePairCrossCorrelationIfft(pair.mic_i, pair.mic_j, weights);
 
-        // Shrani normalizirana okna zakasnitev [-PAIR_CORR_RADIUS, +PAIR_CORR_RADIUS] na sklad za SRP/CLEAN
+        // Save normalized lag windows [-PAIR_CORR_RADIUS, +PAIR_CORR_RADIUS] on stack for SRP/CLEAN
         for (int lag = -PAIR_CORR_RADIUS; lag <= PAIR_CORR_RADIUS; ++lag) {
             const int idx = (lag < 0) ? (fft_size_int + lag) : lag;
             const size_t k = static_cast<size_t>(lag + PAIR_CORR_RADIUS);
@@ -839,7 +838,7 @@ MultiDoaResult GccPhat::processMulti(const int32_t* ch0, const int32_t* ch1,
             }
         }
 
-        // 3-točkovna parabolična interpolacija za podvzorčno zakasnitev in vrh
+        // 3-point parabolic interpolation for sub-sample lag and peak amplitude
         const int idx_m1 = wrap_correlation_index(best_idx - 1, fft_size_int);
         const int idx_p1 = wrap_correlation_index(best_idx + 1, fft_size_int);
 
@@ -874,10 +873,10 @@ MultiDoaResult GccPhat::processMulti(const int32_t* ch0, const int32_t* ch1,
                                     ? correlation_threshold
                                     : DEFAULT_CLEAN_SECONDARY_THRESHOLD;
 
-    // Določitev primarnega zvočnega vira (Prehod 0) preko 2x2 WLS cenilnika
+    // 6. Pass 0: Estimate primary sound source via 2x2 WLS solver
     DoaResult primary = solveWlsAzimuth(pair_lags_samples, pair_confidences, multi_res.rms_db);
     if (!primary.valid || primary.confidence < correlation_threshold) {
-        // Fallback za primer "chimera" / razcepa lagov med več govorci: uporabi globalni SRP-PHAT vrh
+        // Fallback for multi-talker split-brain / chimera lag vectors: seed from global SRP-PHAT peak
         float srp_seed_angle = 0.0f;
         float srp_seed_power = 0.0f;
         evaluateSrpPhat(pair_corr, srp_seed_angle, srp_seed_power);
@@ -904,13 +903,13 @@ MultiDoaResult GccPhat::processMulti(const int32_t* ch0, const int32_t* ch1,
     std::memcpy(saved_last_pair_psi, last_pair_psi, sizeof(saved_last_pair_psi));
     std::memcpy(saved_last_pair_weights, last_pair_weights, sizeof(saved_last_pair_weights));
 
-    // 7. CLEAN iterativna dekonvolucija za sekundarne in terciarne zvočne vire
+    // 7. Iterative CLEAN deconvolution for secondary and tertiary sound sources
     const float phi_raw = wrap_angle_180(primary.angle_deg + offset_deg);
     const float theta_raw_rad = phi_raw * deg_to_rad;
     const float u_raw_x = sinf(theta_raw_rad);
     const float u_raw_y = cosf(theta_raw_rad);
 
-    // Odštej akustični odtis primarnega vira iz pair_corr po modelskem planarjenem valu WLS
+    // Subtract primary source acoustic imprint from pair_corr using theoretical WLS planar wavefront
     for (size_t p = 0; p < AUDIO_NUM_PAIRS; ++p) {
         const MicPairDescriptor& pair = MIC_PAIRS[p];
         const float* kernel = pair.is_diagonal ? clean_kernel_diag : clean_kernel_edge;
@@ -919,7 +918,7 @@ MultiDoaResult GccPhat::processMulti(const int32_t* ch0, const int32_t* ch1,
         subtractCleanKernel(pair_corr, p, kernel, theo_lag, peak_amp);
     }
 
-    // Poišči sekundarne vire na preostalem korelacijskem polju z SRP-PHAT
+    // Search for secondary sources in residual correlation field using SRP-PHAT
     for (size_t iter = 1; iter < DOA_MAX_SOURCES; ++iter) {
         float seed_angle = 0.0f;
         float seed_power = 0.0f;
@@ -933,7 +932,7 @@ MultiDoaResult GccPhat::processMulti(const int32_t* ch0, const int32_t* ch1,
         float sec_confs[AUDIO_NUM_PAIRS];
         DoaResult candidate = solveFromSrpSeed(pair_corr, seed_angle, scale, multi_res.rms_db, sec_threshold, sec_lags, sec_confs);
 
-        // Odštej odtis sekundarnega kandidata iz pair_corr
+        // Subtract secondary candidate imprint from pair_corr
         if (candidate.valid) {
             const float phi_cand_raw = wrap_angle_180(candidate.angle_deg + offset_deg);
             const float theta_cand_rad = phi_cand_raw * deg_to_rad;
@@ -958,7 +957,7 @@ MultiDoaResult GccPhat::processMulti(const int32_t* ch0, const int32_t* ch1,
             continue;
         }
 
-        // Preveri prostorsko ločljivost glede na predhodno sprejete kandidate
+        // Enforce minimum spatial separation against previously accepted sources
         bool distinct = true;
         for (uint8_t j = 0; j < multi_res.count; ++j) {
             const float diff = fabsf(circular_diff_deg(candidate.angle_deg, multi_res.sources[j].angle_deg));
@@ -1031,7 +1030,7 @@ DoaResult GccPhat::solveWlsAzimuth(const float pair_lags_samples[AUDIO_NUM_PAIRS
     }
     result.confidence = peak_conf_sum / static_cast<float>(AUDIO_NUM_PAIRS);
 
-    // 1. Štiri zaprto-zančne trikotniške napake (v vzorcih)
+    // 1. Four closed-loop triangle consistency errors (in samples)
     const float dn0 = last_pair_lags_samples[0];
     const float dn1 = last_pair_lags_samples[1];
     const float dn2 = last_pair_lags_samples[2];
@@ -1042,19 +1041,19 @@ DoaResult GccPhat::solveWlsAzimuth(const float pair_lags_samples[AUDIO_NUM_PAIRS
     const float tri_err[4] = {
         (pair_valid[0] && pair_valid[1] && pair_valid[5])
             ? fabsf(dn0 + dn1 - dn5)
-            : INFINITY, // Trikotnik 0: (0-1-2) [Pari 0, 1, 5]
+            : INFINITY, // Triangle 0: (0-1-2) [Pairs 0, 1, 5]
         (pair_valid[3] && pair_valid[2] && pair_valid[5])
             ? fabsf(dn3 + dn2 - dn5)
-            : INFINITY, // Trikotnik 1: (0-3-2) [Pari 3, 2, 5]
+            : INFINITY, // Triangle 1: (0-3-2) [Pairs 3, 2, 5]
         (pair_valid[0] && pair_valid[3] && pair_valid[4])
             ? fabsf(dn0 - dn3 - dn4)
-            : INFINITY, // Trikotnik 2: (0-1-3) [Pari 0, 3, 4]
+            : INFINITY, // Triangle 2: (0-1-3) [Pairs 0, 3, 4]
         (pair_valid[4] && pair_valid[1] && pair_valid[2])
             ? fabsf(dn4 + dn1 - dn2)
-            : INFINITY  // Trikotnik 3: (3-1-2) [Pari 4, 1, 2]
+            : INFINITY  // Triangle 3: (3-1-2) [Pairs 4, 1, 2]
     };
 
-    // 2. Gaussove uteži konsistentnosti parov psi_p za zatiranje večpotnih odbojev
+    // 2. Gaussian loop-closure consistency weights psi_p for multipath suppression
     const float sigma_loop = DOA_LOOP_CLOSURE_TOLERANCE_SAMPLES;
     const float inv_two_sigma_sq = 1.0f / (2.0f * sigma_loop * sigma_loop);
     const float min_pair_conf = 0.75f * eff_threshold;
@@ -1079,8 +1078,8 @@ DoaResult GccPhat::solveWlsAzimuth(const float pair_lags_samples[AUDIO_NUM_PAIRS
         }
     }
 
-    // Zavrnitev nekohorentnega odmeva/šuma: če noben trikotnik ni konsistenten (e_t <= 2.5)
-    // in hkrati nimamo vsaj dveh pravokotnih robnih parov nad eff_threshold
+    // Reject incoherent reverberation/noise: if no triangle is consistent (e_t <= 2.5)
+    // and we lack at least two orthogonal edge pairs above eff_threshold
     const bool any_consistent_triangle =
         (tri_err[0] <= 2.5f) || (tri_err[1] <= 2.5f) ||
         (tri_err[2] <= 2.5f) || (tri_err[3] <= 2.5f);
@@ -1092,17 +1091,17 @@ DoaResult GccPhat::solveWlsAzimuth(const float pair_lags_samples[AUDIO_NUM_PAIRS
         return result;
     }
 
-    // Zavrnitev skupnega / difuznega šuma: v ravninski 2D postavitvi zvok v vodoravni
-    // ravnini ne more hkrati prispeti na vse 4 mikrofone z ničelno zakasnitvijo.
-    // Če imata obe pravokotni osi zakasnitve blizu 0 (|dn| < 0.35 vzorcev), gre za vertikalni
-    // vpad, skupni šum napajanja/ure ali difuzni odmev, ki bi se sicer zrušil v fiktivni kot 0.0°.
+    // Reject common-mode / diffuse noise: in a 2D planar array, a horizontal wave
+    // cannot arrive at all 4 microphones with zero delay simultaneously. Near-zero
+    // lags on both orthogonal axes (|dn| < 0.35 samples) indicate vertical incidence,
+    // clock/power noise, or diffuse reverberation that would otherwise collapse to a phantom 0.0 deg bearing.
     const bool zero_lag_y = (fabsf(dn0) < 0.35f) && (fabsf(dn2) < 0.35f);
     const bool zero_lag_x = (fabsf(dn1) < 0.35f) && (fabsf(dn3) < 0.35f);
     if (zero_lag_y && zero_lag_x) {
         return result;
     }
 
-    // 3. Sestava in rešitev 2x2 WLS normalnih enačb: A * u = g
+    // 3. Assemble and solve 2x2 WLS normal equations: A * u = g
     float s_xx = 0.0f;
     float s_xy = 0.0f;
     float s_yy = 0.0f;
@@ -1149,7 +1148,7 @@ DoaResult GccPhat::solveWlsAzimuth(const float pair_lags_samples[AUDIO_NUM_PAIRS
     if (norm_s_xx < DOA_WLS_MIN_AXIS_OBSERVABILITY ||
         norm_s_yy < DOA_WLS_MIN_AXIS_OBSERVABILITY ||
         unreg_det < DOA_WLS_MIN_UNREG_DET) {
-        return result; // Zavrni numerično degeneracijo (izguba 2D opazljivosti na eni od osi)
+        return result; // Reject numerical rank deficiency (loss of 2D observability along either axis)
     }
 
     const float lambda = 1e-6f * d * d;
@@ -1170,33 +1169,33 @@ DoaResult GccPhat::solveWlsAzimuth(const float pair_lags_samples[AUDIO_NUM_PAIRS
         return result;
     }
 
-    // 4. Polni 360-stopinjski azimut [-180, +180] in krožna kompenzacija angle_offset_deg
+    // 4. Full 360-degree azimuth [-180, +180] and circular angle_offset_deg compensation
     const float phi_raw = atan2f(u_x, u_y) * (180.0f / static_cast<float>(M_PI));
 
-    // Preverjanje fizične skladnosti osnih prihodov (Endfire Validation)
-    // Za izogibanje numeričnemu zrušenju difuznega šuma v fiktivne osne kote (0°, 90°, -90°, 180°):
-    // Zvok, ki resnično prihaja vzdolž določene osi, MORA ustvariti ustrezen zakasnitveni zamik (endfire delay).
+    // Physical endfire consistency check: prevent diffuse noise from collapsing
+    // into phantom axial bearings (0, +90, -90, 180 deg). A true axial source
+    // MUST produce a corresponding physical endfire delay on the parallel edge pairs.
     const float abs_cos_phi = fabsf(cosf(phi_raw * (static_cast<float>(M_PI) / 180.0f)));
     const float abs_sin_phi = fabsf(sinf(phi_raw * (static_cast<float>(M_PI) / 180.0f)));
     const float tau_edge_max = (d / c_sound) * fs;
     constexpr float MIN_ENDFIRE_FRACTION = 0.35f;
     const float min_required_lag = tau_edge_max * MIN_ENDFIRE_FRACTION;
 
-    // Če kandidat trdi, da je vzdolž osi Y (blizu 0° ali 180°, abs_cos > 0.90):
-    // mora vsaj en robni par osi Y (Pair 0 ali Pair 2) izkazati zadosten zamik (|dn| >= min_required_lag).
+    // If candidate is near the Y-axis (near 0 or 180 deg, abs_cos > 0.90), require
+    // at least one Y-axis edge pair (Pair 0 or 2) to exhibit sufficient lag (|dn| >= min_required_lag).
     if (abs_cos_phi > 0.90f) {
         const float max_y_lag = fmaxf(fabsf(dn0), fabsf(dn2));
         if (max_y_lag < min_required_lag) {
-            return result; // Fiktivni osni zrušek šuma (brez realne Y zakasnitve)
+            return result; // Reject phantom axial noise collapse (lacks real Y delay)
         }
     }
 
-    // Če kandidat trdi, da je vzdolž osi X (blizu +90° ali -90°, abs_sin > 0.90):
-    // mora vsaj en robni par osi X (Pair 1 ali Pair 3) izkazati zadosten zamik (|dn| >= min_required_lag).
+    // If candidate is near the X-axis (near +90 or -90 deg, abs_sin > 0.90), require
+    // at least one X-axis edge pair (Pair 1 or 3) to exhibit sufficient lag (|dn| >= min_required_lag).
     if (abs_sin_phi > 0.90f) {
         const float max_x_lag = fmaxf(fabsf(dn1), fabsf(dn3));
         if (max_x_lag < min_required_lag) {
-            return result; // Fiktivni osni zrušek šuma (brez realne X zakasnitve)
+            return result; // Reject phantom axial noise collapse (lacks real X delay)
         }
     }
 

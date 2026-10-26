@@ -34,7 +34,7 @@ bool RestClient::sendBatch(const uint8_t *payload, size_t payload_size,
         http_initialized = true;
     }
 
-    String url = current_url + "/meritve";
+    String url = current_url + "/measurements";
     if (!http.begin(url)) {
         Serial.println("HTTP client initialization failed");
         http_initialized = false;
@@ -48,7 +48,7 @@ bool RestClient::sendBatch(const uint8_t *payload, size_t payload_size,
 
     if (httpResponseCode < 200 || httpResponseCode >= 300) {
         const String response = http.getString();
-        Serial.printf("HTTP POST /meritve failed: %d, response: %s\n",
+        Serial.printf("HTTP POST /measurements failed: %d, response: %s\n",
                       httpResponseCode, response.c_str());
         close();
         return false;
@@ -82,12 +82,12 @@ bool RestClient::fetchCalibration(const String &api_url, const String &api_key,
                                   DeviceConfig &config,
                                   std::atomic<int64_t> &server_utc_offset_ms,
                                   std::atomic<bool> &server_time_valid) {
-    if (device_id == 0 || WiFi.status() != WL_CONNECTED) {
+    if (device_id == 0 || WiFi.status() != WL_CONNECTED || api_url.isEmpty() || api_key.isEmpty()) {
         return false;
     }
 
     HTTPClient cal_http;
-    String url = api_url + "/naprave/" + String(device_id) + "/kalibracija";
+    String url = api_url + "/devices/" + String(device_id) + "/calibration";
     if (!cal_http.begin(url)) {
         Serial.println("Calibration HTTP client initialization failed");
         return false;
@@ -109,9 +109,63 @@ bool RestClient::fetchCalibration(const String &api_url, const String &api_key,
     }
 
     JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, response);
+    DeserializationError error = deserializeJson(doc, response.c_str());
     if (error) {
         Serial.printf("Calibration response JSON error: %s\n", error.c_str());
+        return false;
+    }
+
+    if (!doc["device_id"].isNull() && doc["device_id"].as<uint32_t>() != device_id) {
+        Serial.printf("Calibration response device_id mismatch: expected %u, got %u\n",
+                      device_id, doc["device_id"].as<uint32_t>());
+        return false;
+    }
+
+    if (doc["microphone_distance_m"].isNull() ||
+        doc["correlation_threshold"].isNull() ||
+        (doc["sound_level_threshold_db"].isNull() && doc["sound_level_threshold_db_spl"].isNull()) ||
+        doc["sample_rate"].isNull() ||
+        doc["window_size"].isNull()) {
+        Serial.println("Calibration response missing required fields");
+        return false;
+    }
+
+    DeviceConfig candidate = config;
+    candidate.device_id = device_id;
+    candidate.microphone_distance_m = doc["microphone_distance_m"].as<float>();
+    candidate.correlation_threshold = doc["correlation_threshold"].as<float>();
+    if (!doc["sound_level_threshold_db"].isNull()) {
+        candidate.sound_level_threshold_db_spl = doc["sound_level_threshold_db"].as<float>();
+    } else {
+        candidate.sound_level_threshold_db_spl = doc["sound_level_threshold_db_spl"].as<float>();
+    }
+    candidate.sample_rate = doc["sample_rate"].as<uint32_t>();
+    candidate.window_size = doc["window_size"].as<uint32_t>();
+
+    if (!doc["db_spl_offset"].isNull()) {
+        candidate.db_spl_offset = doc["db_spl_offset"].as<float>();
+    }
+
+    if (!doc["adaptive_threshold_enabled"].isNull()) {
+        candidate.adaptive_threshold_enabled = doc["adaptive_threshold_enabled"].as<bool>();
+    } else if (!doc["adaptive_threshold"].isNull()) {
+        candidate.adaptive_threshold_enabled = doc["adaptive_threshold"].as<bool>();
+    }
+
+    if (!doc["snr_margin_db"].isNull()) {
+        candidate.snr_margin_db = doc["snr_margin_db"].as<float>();
+    } else if (!doc["snr_margin"].isNull()) {
+        candidate.snr_margin_db = doc["snr_margin"].as<float>();
+    }
+
+    if (!doc["angle_offset_deg"].isNull()) {
+        candidate.angle_offset_deg = doc["angle_offset_deg"].as<float>();
+    } else if (!doc["angle_offset"].isNull()) {
+        candidate.angle_offset_deg = doc["angle_offset"].as<float>();
+    }
+
+    if (!validate_device_config(candidate)) {
+        Serial.println("Calibration response contains invalid or unsupported values");
         return false;
     }
 
@@ -128,55 +182,6 @@ bool RestClient::fetchCalibration(const String &api_url, const String &api_key,
         } else {
             Serial.println("Calibration server time is invalid");
         }
-    }
-
-    DeviceConfig candidate = config;
-    if (!doc["razdalja_mikrofonov_m"].isNull()) {
-        candidate.microphone_distance_m = doc["razdalja_mikrofonov_m"].as<float>();
-    }
-    if (!doc["prag_korelacije"].isNull()) {
-        candidate.correlation_threshold = doc["prag_korelacije"].as<float>();
-    }
-    if (!doc["prag_glasnosti_db"].isNull()) {
-        candidate.sound_level_threshold_db_spl = doc["prag_glasnosti_db"].as<float>();
-    }
-    if (!doc["vzorcevalna_frekvenca"].isNull()) {
-        candidate.sample_rate = doc["vzorcevalna_frekvenca"].as<uint32_t>();
-    }
-    if (!doc["okno_velikost"].isNull()) {
-        candidate.window_size = doc["okno_velikost"].as<uint32_t>();
-    }
-    if (!doc["db_spl_offset"].isNull()) {
-        candidate.db_spl_offset = doc["db_spl_offset"].as<float>();
-    }
-
-    if (!doc["prilagodljivi_prag"].isNull()) {
-        candidate.adaptive_threshold_enabled = doc["prilagodljivi_prag"].as<bool>();
-    } else if (!doc["adaptive_threshold"].isNull()) {
-        candidate.adaptive_threshold_enabled = doc["adaptive_threshold"].as<bool>();
-    } else if (!doc["adaptive_threshold_enabled"].isNull()) {
-        candidate.adaptive_threshold_enabled = doc["adaptive_threshold_enabled"].as<bool>();
-    }
-
-    if (!doc["snr_rob_db"].isNull()) {
-        candidate.snr_margin_db = doc["snr_rob_db"].as<float>();
-    } else if (!doc["snr_margin_db"].isNull()) {
-        candidate.snr_margin_db = doc["snr_margin_db"].as<float>();
-    } else if (!doc["snr_margin"].isNull()) {
-        candidate.snr_margin_db = doc["snr_margin"].as<float>();
-    }
-
-    if (!doc["kot_odmik"].isNull()) {
-        candidate.angle_offset_deg = doc["kot_odmik"].as<float>();
-    } else if (!doc["angle_offset_deg"].isNull()) {
-        candidate.angle_offset_deg = doc["angle_offset_deg"].as<float>();
-    } else if (!doc["angle_offset"].isNull()) {
-        candidate.angle_offset_deg = doc["angle_offset"].as<float>();
-    }
-
-    if (!validate_device_config(candidate)) {
-        Serial.println("Calibration response contains invalid or unsupported values");
-        return false;
     }
 
     config = candidate;

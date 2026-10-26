@@ -12,7 +12,7 @@
 | `src/audio/i2s_sampler.h` / `.cpp` | Synchronized dual-I2S (`I2S0` Master RX + `I2S1` Slave RX via GPIO Matrix) driver installation and 4-channel quad DMA reads (`read_i2s_quad`) |
 | `src/audio/post_checker.h` / `.cpp` | Power-On Self-Test (POST) 4-microphone health heuristics (`evaluate_quad_microphone_health`) and bus collision detection |
 | `src/network/rest_protocol.h` | Hardware-independent 12-byte header / 20-byte record binary batch serialization format and little-endian packing |
-| `src/network/rest_client.h` / `.cpp` | HTTP keep-alive batch transmission (`POST /api/v1/meritve`) and remote calibration retrieval (`GET /api/v1/naprave/{id}/kalibracija`) |
+| `src/network/rest_client.h` / `.cpp` | HTTP keep-alive batch transmission (`POST /api/v1/measurements`) and remote calibration retrieval (`GET /api/v1/devices/{id}/calibration`) |
 | `src/network/setup_portal.h` / `.cpp` | SoftAP captive portal and embedded HTTP web server for device Wi-Fi and calibration provisioning |
 | `src/ui/radar_ui.h` / `.cpp` | 360° circular radar scope rendering, polar needle visualization, POST checklist prompt, degraded screen, and setup portal UI on ST7735 TFT |
 | `src/ui/serial_ui.h` / `.cpp` | Human-facing serial console TLI formatting: ASCII boot self-test report card, degraded alert banner, I2C bus scan, live DOA event telemetry, and DSP metrics |

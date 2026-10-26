@@ -5,21 +5,21 @@
 #include <cstring>
 #include "config/app_config.h"
 
-#define N_SAMPLES AUDIO_DEFAULT_WINDOW_SIZE // Število vzorcev (potenca 2 za FFT)
+#define N_SAMPLES AUDIO_DEFAULT_WINDOW_SIZE // Number of samples (power of 2 for FFT)
 
 struct DoaResult {
-    float angle_deg;       // Azimut v stopinjah [-180, +180] (4-mic) oz. [-90, +90] (2-mic)
-    float delay_us;        // Zakasnitev v mikrosekundah
-    float confidence;      // Normaliziran korelacijski vrh [0, 1]
-    float rms_db;          // Glasnost v dBFS
+    float angle_deg;       // Azimuth in degrees [-180, +180] (4-mic) or [-90, +90] (2-mic)
+    float delay_us;        // Equivalent projected delay in microseconds
+    float confidence;      // Normalized correlation peak confidence [0, 1]
+    float rms_db;          // Omnidirectional digital RMS level in dBFS
     bool valid;
 };
 
 struct MultiDoaResult {
-    DoaResult sources[DOA_MAX_SOURCES]; // Detektirani zvočni viri, razvrščeni padajoče po zaupanju
-    uint8_t count;                      // Število veljavnih virov (0..DOA_MAX_SOURCES)
-    float rms_db;                       // Vsesmerna energija bloka v dBFS
-    bool valid;                         // Resnično, če je vsaj en vir veljaven
+    DoaResult sources[DOA_MAX_SOURCES]; // Detected sound sources, sorted descending by confidence
+    uint8_t count;                      // Number of valid sources (0..DOA_MAX_SOURCES)
+    float rms_db;                       // Omnidirectional block RMS level in dBFS
+    bool valid;                         // True if at least one valid source was detected
 };
 
 class GccPhat {
@@ -142,7 +142,7 @@ private:
     float noise_floor_db;
     bool noise_floor_initialized;
 
-    // Medpomnilniki za FFT (kompleksna števila: [Re, Im, Re, Im...])
+    // FFT working buffers (interleaved complex numbers: [Re, Im, Re, Im...])
     float* window;
     float* band_weight_edge;
     float* band_weight_diag;

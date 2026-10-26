@@ -25,12 +25,15 @@ When running off-target, the tests link against lightweight, bit-exact mocks loc
 | [`esp_dsp.h`](../test/mock_esp/esp_dsp.h) | Bit-exact implementation of the Cooley-Tukey Radix-2 Complex Fast Fourier Transform (`dsps_fft2r_fc32`), bit reversal (`dsps_bit_rev_fc32`), and Hann window generation (`dsps_wind_hann_f32`), exactly reproducing the ESP32-S3 assembly DSP behavior. |
 | [`esp_heap_caps.h`](../test/mock_esp/esp_heap_caps.h) | Emulates ESP-IDF's dual internal SRAM (`MALLOC_CAP_INTERNAL`) and Octal PSRAM (`MALLOC_CAP_SPIRAM`) allocators, allowing unit tests to inject memory allocation failures and verify graceful fallback and rollback. |
 | [`esp_log.h`](../test/mock_esp/esp_log.h) | Replaces ESP-IDF logging macros (`ESP_LOGE`, `ESP_LOGW`, `ESP_LOGI`) with standard `printf` formatting. |
+| [`Adafruit_GFX.h`](../test/mock_esp/Adafruit_GFX.h) & [`Adafruit_ST7735.h`](../test/mock_esp/Adafruit_ST7735.h) | Lightweight frame buffer and graphics primitive mocks for off-target ST7735 TFT radar and prompt rendering verification. |
+| [`SPI.h`](../test/mock_esp/SPI.h) | Host mock for SPI bus communication. |
+| [`Arduino.h`](../test/mock_esp/Arduino.h) & [`Wire.h`](../test/mock_esp/Wire.h) | Minimal Arduino core and I2C TwoWire mocks providing `HardwareSerial Serial` output capture and I2C bus probing for off-target telemetry verification. |
 
 ---
 
 ## 3. Test Suites Overview
 
-The test harness in [`test/test_adaptive_and_smoothing.cpp`](../test/test_adaptive_and_smoothing.cpp) covers 21 specialized test suites:
+The test harness in [`test/test_adaptive_and_smoothing.cpp`](../test/test_adaptive_and_smoothing.cpp) covers 23 specialized test suites:
 
 1. **`test_gcc_phat_adaptive_noise_floor`**:
    - Verifies the asymmetric attack/decay tracking ($3\text{ dB/s}$ upward creep vs. $30\text{ dB/s}$ fast downward recovery).
@@ -97,6 +100,15 @@ The test harness in [`test/test_adaptive_and_smoothing.cpp`](../test/test_adapti
     - Validates expanded array geometries ($d > 0.12\text{ m}$, up to $0.20\text{ m}$) under ASAN/UBSAN with zero stack/heap over-reads.
     - Confirms rejection of single sources with confidence in $[0.20, \text{correlation\_threshold})$.
     - Verifies non-monotonic batch timestamp clamping and server UTC clock offset stability.
+22. **`test_phase_two_serial_ui_and_logging`**:
+    - Validates `SerialUI` serial telemetry formatting across single- and multi-source DOA events (`Detected angle: ...`).
+    - Verifies power-on self-test ASCII report generation for nominal and hardware-degraded conditions.
+    - Validates critical hardware alert banners, I2C bus scanning diagnostics, and rate-limited DSP performance telemetry.
+23. **`test_phase_four_localization_and_docs_contracts`**:
+    - Validates 100% English console output across `SerialUI` diagnostics with zero legacy Slovenian tokens.
+    - Enforces binary REST protocol contracts: 12-byte header, 20-byte record, and 492-byte max batch payload sizing.
+    - Validates IEEE-754 binary32 angle packing precision across the full-circle $\pm 180.0^\circ$ azimuth boundary.
+    - Validates `DeviceConfig` contract compatibility against the documented REST API calibration schema.
 
 ---
 
@@ -129,6 +141,7 @@ g++ -std=gnu++11 -O1 -Wall -Wextra -Werror -fsanitize=address,undefined,float-di
     src/ui/display_filter.cpp \
     src/audio/post_checker.cpp \
     src/ui/radar_ui.cpp \
+    src/ui/serial_ui.cpp \
     -o bin/test_host
 
 ./bin/test_host
@@ -152,7 +165,7 @@ The GitHub Actions workflow in [`.github/workflows/build.yml`](../.github/workfl
 
 1. **Host Unit Tests (`test` job)**:
    - Executes `make test` under `ubuntu-latest`.
-   - Validates all 21 unit test suites with AddressSanitizer and UndefinedBehaviorSanitizer enabled.
+   - Validates all 23 unit test suites with AddressSanitizer and UndefinedBehaviorSanitizer enabled.
    - Fails fast in $<2\text{ s}$ if algorithmic regressions, memory corruption, or boundary violations occur.
 2. **PlatformIO Firmware Build (`build` job)**:
    - Depends on the `test` job (`needs: test`).

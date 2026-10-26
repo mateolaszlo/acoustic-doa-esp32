@@ -24,7 +24,8 @@ SRCS      = test/test_adaptive_and_smoothing.cpp \
             src/audio/gcc_phat.cpp \
             src/ui/display_filter.cpp \
             src/audio/post_checker.cpp \
-            src/ui/radar_ui.cpp
+            src/ui/radar_ui.cpp \
+            src/ui/serial_ui.cpp
 BIN_DIR   = bin
 TARGET    = $(BIN_DIR)/test_host
 

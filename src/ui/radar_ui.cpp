@@ -76,7 +76,7 @@ void RadarDisplay::addDecayBlips(const float* angles_deg, size_t count, uint32_t
                 if (diff > 180.0f) diff = 360.0f - diff;
                 if (diff < 8.0f) {
                     duplicate = true;
-                    hit_blips[b].timestamp_ms = now_ms; // Osveži trajanje dokler zvok traja
+                    hit_blips[b].timestamp_ms = now_ms; // Refresh blip timestamp while sound persists at the same bearing
                     break;
                 }
             }
@@ -114,12 +114,12 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
     const size_t num_needles = (count > DOA_MAX_SOURCES) ? DOA_MAX_SOURCES : count;
     const uint32_t current_time_ms = (now_ms > 0) ? now_ms : millis();
 
-    // 1. Izris 360-stopinjskega krožnega radarja (cx = 64, cy = 44, r = 34)
+    // 1. Draw 360-degree circular radar scope (cx = 64, cy = 44, r = 34)
     const int cx = RADAR_CENTER_X;
     const int cy = RADAR_CENTER_Y;
     const int r = RADAR_RADIUS;
 
-    // Značka načina delovanja (AUTO ali FIX) v zgornjem desnem kotu
+    // Threshold mode pill badge (AUTO or FIX) in top-right corner
     if (adaptive_active) {
         canvas.drawRoundRect(91, 2, 34, 11, 2, ST77XX_CYAN);
         canvas.setTextSize(1);
@@ -134,15 +134,15 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
         canvas.print("FIX");
     }
 
-    // Koncentrična obroča in križne osi N/E/S/W (temno zelena mreža)
+    // Concentric range rings and N/E/S/W crosshair axes (dark green grid)
     canvas.drawCircle(cx, cy, r, COLOR_RADAR_GRID);
     canvas.drawCircle(cx, cy, r / 2, COLOR_RADAR_GRID);
     canvas.drawLine(cx - r, cy, cx + r, cy, COLOR_RADAR_GRID);
     canvas.drawLine(cx, cy - r, cx, cy + r, COLOR_RADAR_GRID);
 
-    // 30-stopinjske kompasne oznake po obodu radarja
+    // 30-degree compass tick marks around the perimeter
     for (int deg = 30; deg < 360; deg += 30) {
-        if (deg % 90 == 0) continue; // Kardinalne osi že imajo polne križne črte
+        if (deg % 90 == 0) continue; // Cardinal axes already have full crosshair lines
         const float tick_rad = static_cast<float>(deg - 90) * (static_cast<float>(M_PI) / 180.0f);
         const float cos_t = cosf(tick_rad);
         const float sin_t = sinf(tick_rad);
@@ -153,7 +153,7 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
         canvas.drawLine(x1, y1, x2, y2, COLOR_RADAR_GRID);
     }
 
-    // Kardinalne oznake azimuta (0, +90, 180, -90)
+    // Cardinal azimuth labels (0, +90, 180, -90)
     canvas.setTextSize(1);
     canvas.setTextColor(ST77XX_WHITE);
     canvas.setCursor(cx - 2, 1);
@@ -165,8 +165,7 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
     canvas.setCursor(cx + 3, cy + r - 9);
     canvas.print("180");
 
-    // 2. Izris razpadajočih fosfornih sledi (phosphor decay trail za hipne zvoke)
-    // Izris fosfornih sledi z visokokontrastno P31 zeleno barvno lestvico (hitro 500ms praznjenje)
+    // 2. Render decaying P31 green phosphor trail blips (500 ms decay for transient impulses)
     for (size_t b = 0; b < MAX_DECAY_BLIPS; ++b) {
         if (!hit_blips[b].active) continue;
         const uint32_t age_ms = (current_time_ms >= hit_blips[b].timestamp_ms) ? (current_time_ms - hit_blips[b].timestamp_ms) : 0;
@@ -177,24 +176,24 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
 
         uint16_t fade_color;
         if (age_ms < 120) {
-            fade_color = 0x57EA; // Svetla neonska fosforno zelena
+            fade_color = 0x57EA; // Bright neon phosphor green
         } else if (age_ms < 250) {
-            fade_color = 0x2DE4; // Srednje svetla fosforno zelena
+            fade_color = 0x2DE4; // Medium-bright phosphor green
         } else if (age_ms < 380) {
-            fade_color = 0x0BE0; // Zmerna smaragdna fosforna
+            fade_color = 0x0BE0; // Medium emerald phosphor green
         } else {
-            fade_color = 0x0980; // Zatemnjena fosforno zelena
+            fade_color = 0x0980; // Dimmed phosphor green
         }
 
         const float b_rad = (hit_blips[b].angle_deg - 90.0f) * (static_cast<float>(M_PI) / 180.0f);
-        // Blip je postavljen na r - 4, tik znotraj oboda radarja (r = 34)
+        // Position blip at r - 4, just inside the outer radar ring (r = 34)
         const int blip_r = r - 4;
         const int bx = cx + static_cast<int>(roundf(blip_r * cosf(b_rad)));
         const int by = cy + static_cast<int>(roundf(blip_r * sinf(b_rad)));
         canvas.fillCircle(bx, by, 2, fade_color);
     }
 
-    // 3. Izris radarskih igel (do DOA_MAX_SOURCES = 3 zvočnih virov)
+    // 3. Draw polar radar needles (up to DOA_MAX_SOURCES = 3 concurrent sources)
     canvas.fillCircle(cx, cy, 2, COLOR_MUTED_GRAY);
 
     for (size_t s = 0; s < num_needles; ++s) {
@@ -207,15 +206,15 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
         uint16_t needle_color;
         int tip_radius = 2;
         if (slot == 0) {
-            // Primarni vir: barva glede na glasnost (rdeča/rumena/zelena), večja konica
+            // Primary source (Slot 0): colored by SPL (red/yellow/green) with larger tip
             needle_color = (db_spl > NEEDLE_HIGH_SPL_THRESHOLD) ? ST77XX_RED :
                            ((db_spl > NEEDLE_MED_SPL_THRESHOLD) ? ST77XX_YELLOW : ST77XX_GREEN);
             tip_radius = 3;
         } else if (slot == 1) {
-            // Sekundarni vir: cian
+            // Secondary source (Slot 1): cyan
             needle_color = ST77XX_CYAN;
         } else {
-            // Terciarni vir: magenta
+            // Tertiary source (Slot 2): magenta
             needle_color = ST77XX_MAGENTA;
         }
 
@@ -223,7 +222,7 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
         canvas.fillCircle(target_x, target_y, tip_radius, needle_color);
     }
 
-    // 3. Spodnja nadzorna plošča s telemetrijo (y = 84..159)
+    // 4. Lower telemetry dashboard (y = 84..159)
     canvas.drawFastHLine(0, 82, TFT_WIDTH, COLOR_MUTED_GRAY);
 
     const float primary_angle = (angles_deg != nullptr && num_needles > 0) ? angles_deg[0] : 0.0f;
@@ -269,7 +268,7 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
         }
     }
 
-    // 3.1 Nivo zvoka in dinamični SNR/adaptivni prag stolpec (y = 103..110)
+    // 4.1 Sound pressure level and dynamic SNR bar with trigger gate notch (y = 103..110)
     canvas.setTextSize(1);
     canvas.setCursor(2, 103);
     canvas.setTextColor(ST77XX_YELLOW);
@@ -277,7 +276,7 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
 
     const bool has_detection = (count > 0);
 
-    // Numerični izpis SNR (+XX dB)
+    // Numeric SNR readout (+XX dB)
     canvas.setCursor(28, 103);
     if (has_detection && snr_db >= 20.0f) {
         canvas.setTextColor(ST77XX_GREEN);
@@ -288,25 +287,25 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
     }
     canvas.printf("+%1.0f", (snr_db > 0.0f) ? snr_db : 0.0f);
 
-    // Mini horizontalni merilnik SNR z adaptivnim pragom (x = 50, y = 103, w = 74, h = 7)
+    // Mini horizontal SNR meter with trigger threshold notch (x = 50, y = 103, w = 74, h = 7)
     constexpr int bar_x = 50;
     constexpr int bar_y = 103;
     constexpr int bar_w = 74;
     constexpr int bar_h = 7;
     canvas.drawRect(bar_x, bar_y, bar_w, bar_h, COLOR_MUTED_GRAY);
 
-    // Oznaka adaptivnega praga sprožitve (gate) na SNR merilniku
+    // Trigger threshold gate notch position along the SNR meter
     constexpr float max_snr_db = 30.0f;
     const int gate_offset = static_cast<int>(roundf((snr_margin_db / max_snr_db) * (bar_w - 2)));
     const int gate_x = bar_x + gate_offset;
 
-    // Pretvorba SNR v širino stolpca (dinamični razpon 0..30 dB SNR)
+    // Map SNR to bar fill width (0..30 dB dynamic range)
     float norm_snr = snr_db / max_snr_db;
     if (norm_snr < 0.0f) norm_snr = 0.0f;
     if (norm_snr > 1.0f) norm_snr = 1.0f;
     int fill_w = static_cast<int>(roundf(norm_snr * (bar_w - 2)));
 
-    // Če ni aktivnih zaznav, je stolpec strogo omejen pod prag (nikoli ne prečka bele zareze)
+    // When no detection is active, clamp fill width strictly below the white gate notch
     if (!has_detection && fill_w >= gate_offset) {
         fill_w = (gate_offset > 1) ? (gate_offset - 1) : 0;
     }
@@ -314,18 +313,18 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
     if (fill_w > 0) {
         uint16_t bar_color;
         if (has_detection && snr_db >= 20.0f) {
-            bar_color = ST77XX_GREEN; // Odličen SNR / visoka natančnost lokacije
+            bar_color = ST77XX_GREEN; // High SNR / optimal localization confidence
         } else if (has_detection && snr_db >= snr_margin_db) {
-            bar_color = ST77XX_YELLOW; // Zaznava nad pragom / zmeren SNR
+            bar_color = ST77XX_YELLOW; // Active trigger above threshold / moderate SNR
         } else {
-            bar_color = COLOR_MUTED_GRAY; // Šum okolice pod pragom zaznave
+            bar_color = COLOR_MUTED_GRAY; // Sub-threshold ambient noise
         }
         canvas.fillRect(bar_x + 1, bar_y + 1, fill_w, bar_h - 2, bar_color);
     }
 
     canvas.drawFastVLine(gate_x, bar_y - 1, bar_h + 2, ST77XX_WHITE);
 
-    // Izpis vrednosti praga z mikro pisavo 3x5 pik tik pod zarezo
+    // Render numeric SNR margin in 3x5 micro-font directly beneath the gate notch
     const int gate_val = static_cast<int>(roundf(snr_margin_db));
     const int digit_offset = (gate_val >= 10) ? 3 : 1;
     const int num_w = (gate_val >= 10) ? 7 : 3;
@@ -334,18 +333,18 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
     if (num_x + num_w > bar_x + bar_w) num_x = bar_x + bar_w - num_w;
     drawMicroNumber(canvas, num_x, bar_y + bar_h + 1, gate_val, ST77XX_WHITE);
 
-    // 3.2 Združena vrstica okoljske kompenzacije: hitrost zvoka in temperatura/vlaga (y = 117)
+    // 4.2 Consolidated environmental compensation row: sound speed, temperature, humidity (y = 117)
     canvas.setTextColor(ST77XX_WHITE);
     canvas.setCursor(4, 117);
     canvas.printf("c:%4.1fm/s  %2.0fC %2.0f%%", c_sound, temp_c, hum);
 
-    // 3.3 Barometrični tlak in konfiguracija vzorčenja (y = 130)
+    // 4.3 Barometric pressure and audio sampling configuration (y = 130)
     canvas.setTextColor(COLOR_MUTED_GRAY);
     canvas.setCursor(4, 130);
     const unsigned sr_k = static_cast<unsigned>(roundf(sample_rate / 1000.0f));
     canvas.printf("P:%4.0fhPa  %uk/1024", pres / 100.0f, sr_k);
 
-    // 3.4 API status (y = 145..155)
+    // 4.4 Backend API connectivity status (y = 145..155)
     int status_y = 148;
 
     if (api_available) {
@@ -378,7 +377,7 @@ void RadarDisplay::drawBootPrompt(uint32_t remaining_ms, uint32_t total_ms, cons
     if (!initialized) return;
     canvas.fillScreen(ST77XX_BLACK);
 
-    // Naslov
+    // Header title
     canvas.setTextSize(1);
     canvas.setTextColor(ST77XX_CYAN);
     canvas.setCursor(14, 6);
@@ -499,12 +498,12 @@ void RadarDisplay::drawBootPrompt(uint32_t remaining_ms, uint32_t total_ms, cons
 
     canvas.drawFastHLine(8, 78, 112, COLOR_MUTED_GRAY);
 
-    // Poziv za setup
+    // Setup mode prompt
     canvas.setTextColor(ST77XX_YELLOW);
     canvas.setCursor(8, 86);
     canvas.println("Hold BOOT for Setup");
 
-    // Vrstica napredka
+    // Countdown progress bar
     const int bar_x = 14;
     const int bar_y = 100;
     const int bar_w = 100;
@@ -515,13 +514,13 @@ void RadarDisplay::drawBootPrompt(uint32_t remaining_ms, uint32_t total_ms, cons
         canvas.fillRect(bar_x + 1, bar_y + 1, fill_w, bar_h - 2, ST77XX_CYAN);
     }
 
-    // Besedilo odštevanja
+    // Countdown timer text
     canvas.setTextColor(COLOR_MUTED_GRAY);
     canvas.setCursor(14, 114);
     int sec = (remaining_ms + 999) / 1000;
     canvas.printf("Starting in %d s...", sec);
 
-    // Status celote (revealed at >= 1600 ms, otherwise shows TESTING...)
+    // Overall system status (revealed at >= 1600 ms, otherwise shows TESTING...)
     canvas.setCursor(8, 136);
     if (elapsed_ms < 1600) {
         canvas.setTextColor(ST77XX_CYAN);

@@ -40,7 +40,7 @@ The API key is entered through provisioning and stored in NVS. It is not retriev
 The network task requests calibration at startup after Wi-Fi connects and approximately every 60 seconds:
 
 ```http
-GET /api/v1/naprave/{naprava_id}/kalibracija
+GET /api/v1/devices/{device_id}/calibration
 x-api-key: <device API key>
 Accept: application/json
 ```
@@ -49,26 +49,26 @@ The expected response contains:
 
 ```json
 {
-  "naprava_id": 1,
-  "razdalja_mikrofonov_m": 0.082,
-  "vzorcevalna_frekvenca": 44100,
-  "okno_velikost": 1024,
-  "prag_korelacije": 0.40,
-  "prag_glasnosti_db": 55.0,
+  "device_id": 1,
+  "microphone_distance_m": 0.082,
+  "sample_rate": 44100,
+  "window_size": 1024,
+  "correlation_threshold": 0.40,
+  "sound_level_threshold_db": 55.0,
   "db_spl_offset": 96.5,
-  "kot_odmik": 0.0,
-  "prilagodljivi_prag": true,
-  "snr_rob_db": 8.0,
+  "angle_offset_deg": 0.0,
+  "adaptive_threshold_enabled": true,
+  "snr_margin_db": 8.0,
   "server_time_unix_ms": 1791830000123
 }
 ```
 
-`temperatura_okolice_c` is not required by the current firmware. The local BME280 is the source of temperature for sound-speed compensation.
+`ambient_temperature_c` is not required by the current firmware. The local BME280 is the source of temperature for sound-speed compensation.
 
-`kot_odmik` (or `angle_offset_deg`, float in degrees, between `-180.0` and `+180.0`) is optional. Specifies the rotational zero-angle calibration trim in degrees to compensate for hardware mounting orientation or array alignment offsets, wrapped circularly into $[-180^\circ, +180^\circ]$.
+`angle_offset_deg` (float in degrees, between `-180.0` and `+180.0`) is optional. Specifies the rotational zero-angle calibration trim in degrees to compensate for hardware mounting orientation or array alignment offsets, wrapped circularly into $[-180^\circ, +180^\circ]$.
 `db_spl_offset` is optional in the current parser. If absent, the previously stored offset is retained.
-`prilagodljivi_prag` (or `adaptive_threshold_enabled`, boolean) is optional. When true, enables adaptive noise floor tracking; when false, fixed thresholding via `prag_glasnosti_db` is enforced. If absent, the previous setting is retained.
-`snr_rob_db` (or `snr_margin_db`, float in dB) is optional. Specifies the minimum SNR margin above the estimated ambient noise floor required to trigger DOA calculation. If absent, the previous margin is retained.
+`adaptive_threshold_enabled` (boolean) is optional. When true, enables adaptive noise floor tracking; when false, fixed thresholding via `sound_level_threshold_db` is enforced. If absent, the previous setting is retained.
+`snr_margin_db` (float in dB) is optional. Specifies the minimum SNR margin above the estimated ambient noise floor required to trigger DOA calculation. If absent, the previous margin is retained.
 `server_time_unix_ms` is optional. When present, the firmware estimates the
 server-to-device UTC offset using the midpoint of the calibration request and
 uses it for measurement timestamps when NTP has not synchronized the system
@@ -96,13 +96,13 @@ reinitialization fails, the previous configuration remains active.
 For valid DSP events, the client sends binary batches:
 
 ```http
-POST /api/v1/meritve
+POST /api/v1/measurements
 x-api-key: <device API key>
 Content-Type: application/octet-stream
 Connection: keep-alive
 ```
 
-The configured API base URL is still used with `/meritve` appended. The API key
+The configured API base URL is still used with `/measurements` appended. The API key
 identifies the device; the binary body does not contain a device ID. The
 firmware batches up to 24 measurements and flushes a partial batch when its
 oldest measurement is 200 ms old. Requests are spaced by at least 200 ms, for a
@@ -165,26 +165,26 @@ the binary record as follows:
 
 ```json
 {
-  "kot_stopinje": -34.8,
-  "casovna_zakasnitev_us": -132.4,
-  "raven_zvoka_db": 76.5,
-  "korelacijski_koeficient": 0.78
+  "angle_deg": -34.8,
+  "delay_us": -132.4,
+  "sound_level_db": 76.5,
+  "confidence": 0.78
 }
 ```
 
-`raven_zvoka_db` is calculated as the internal dBFS value plus the configured dB SPL offset. It is only a physically meaningful dB SPL value after calibration.
+`sound_level_db` is calculated as the internal dBFS value plus the configured dB SPL offset. It is only a physically meaningful dB SPL value after calibration.
 
 ## Successful responses
 
-Any HTTP status from 200 through 299 is treated as successful. The firmware does not require a response body and does not retrieve or store `dogodek_id`.
+Any HTTP status from 200 through 299 is treated as successful. The firmware does not require a response body and does not retrieve or store `event_id`.
 
 The backend may return a body such as:
 
 ```json
 {
   "status": "success",
-  "dogodek_id": 4821,
-  "zabelezeno": "2026-10-12T09:15:32.100Z"
+  "event_id": 4821,
+  "recorded_at": "2026-10-12T09:15:32.100Z"
 }
 ```
 
@@ -218,8 +218,8 @@ Examples of backend statuses that should be diagnosed from serial logs:
 
 The backend should:
 
-- Expose `/naprave/:id/kalibracija` with API-key authentication.
-- Expose `/meritve` with API-key authentication.
+- Expose `/devices/:id/calibration` with API-key authentication.
+- Expose `/measurements` with API-key authentication.
 - Accept version 1 of the documented little-endian binary batch format with measurement counts up to 24 (payload up to 492 bytes; ensure backend validator does not reject count > 8 with HTTP 400).
 - Validate the content length against the count field before decoding.
 - Return 2xx for accepted measurements.

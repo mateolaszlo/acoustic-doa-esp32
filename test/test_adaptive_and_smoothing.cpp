@@ -8,6 +8,8 @@
 #include <esp_heap_caps.h>
 #include <esp_dsp.h>
 #include "ui/radar_ui.h"
+#include <Arduino.h>
+#include <Wire.h>
 
 // --- Mock ESP-IDF and ESP-DSP for native host testing ---
 static int g_mock_fft_calls = 0;
@@ -22,6 +24,9 @@ static uint32_t g_mock_millis = 1000;
 uint32_t millis() {
     return g_mock_millis;
 }
+
+HardwareSerial Serial;
+TwoWire Wire;
 
 extern "C" {
     int dsps_fft2r_init_fc32(void*, int) {
@@ -121,6 +126,7 @@ extern "C" {
 #include "network/rest_protocol.h"
 #include "config/device_config.h"
 #include "network/setup_portal.h"
+#include "ui/serial_ui.h"
 #include <atomic>
 
 // Test 1: GccPhat adaptive noise floor tracking
@@ -938,6 +944,11 @@ static void test_gcc_phat_quad_rms_and_pipeline() {
     // Unsupported window sizes (512 and 2048) must be rejected cleanly
     assert(!doa.configure(44100.0f, 512));
     assert(!doa.configure(44100.0f, 2048));
+    assert(!doa.init(512));
+    assert(!doa.init(2048));
+    assert(!doa.configure(0.0f, 1024));
+    assert(!doa.configure(-44100.0f, 1024));
+    assert(!doa.configure(NAN, 1024));
     assert(doa.getFftSize() == 1024);
 
     // Initial allocation failure on fresh instance must be cleaned up safely
@@ -2740,6 +2751,250 @@ static void test_phase_three_responsiveness_and_expanded_harness() {
     printf("  [PASS] test_phase_three_responsiveness_and_expanded_harness passed.\n");
 }
 
+static void test_phase_two_serial_ui_and_logging() {
+    printf("[TEST] Running test_phase_two_serial_ui_and_logging...\n");
+
+    // 1. Verify single-source SerialUI::printDoaEvent outputs "Detected angle:" and zero Slovenian
+    Serial.clear();
+    SerialUI::printDoaEvent(45.0f, 0.95f, 65.2f, 0, 1);
+    std::string out = Serial.getOutput();
+    assert(out.find("Detected angle: 45.0 deg, R: 0.95, dB: 65.2\n") != std::string::npos);
+    assert(out.find("Zaznan kot:") == std::string::npos);
+
+    // 2. Verify multi-source SerialUI::printDoaEvent outputs "[Src 2/2] Detected angle:" and zero Slovenian
+    Serial.clear();
+    SerialUI::printDoaEvent(-30.0f, 0.85f, 60.1f, 1, 2);
+    out = Serial.getOutput();
+    assert(out.find("[Src 2/2] Detected angle: -30.0 deg, R: 0.85, dB: 60.1\n") != std::string::npos);
+    assert(out.find("Zaznan kot:") == std::string::npos);
+
+    // 3. Verify SerialUI::printHardwareDegradedAlert outputs English diagnostic text
+    Serial.clear();
+    SerialUI::printHardwareDegradedAlert();
+    out = Serial.getOutput();
+    assert(out.find("CRITICAL: BOOT SELF-TEST FAILED - HALTING!") != std::string::npos);
+    assert(out.find("Real-time DOA processing and network streaming") != std::string::npos);
+
+    // 4. Verify SerialUI::printSelfTestReport outputs nominal status
+    Serial.clear();
+    BootSelfTestResult post_ok;
+    post_ok.psram_ok = true;
+    post_ok.psram_bytes = 8 * 1024 * 1024;
+    post_ok.bme_ok = true;
+    post_ok.bme_temp_c = 22.0f;
+    post_ok.bme_pres_hpa = 1013.2f;
+    post_ok.i2s_driver_ok = true;
+    for (size_t c = 0; c < AUDIO_NUM_CHANNELS; ++c) {
+        post_ok.mic_health.ch_ok[c] = true;
+        post_ok.mic_health.ch_min[c] = -50000;
+        post_ok.mic_health.ch_max[c] = 50000;
+        post_ok.mic_health.ch_rms_db[c] = -42.0f;
+    }
+    post_ok.mic_health.bus0_distinct = true;
+    post_ok.mic_health.bus1_distinct = true;
+    post_ok.mic_health.cross_bus_distinct = true;
+    post_ok.all_nominal = true;
+    SerialUI::printSelfTestReport(post_ok, 44100);
+    out = Serial.getOutput();
+    assert(out.find("ACOUSTIC LOCATOR BOOT SELF-TEST") != std::string::npos);
+    assert(out.find("STATUS: ALL SYSTEMS NOMINAL") != std::string::npos);
+
+    // 5. Verify SerialUI::printSelfTestReport degraded reporting
+    Serial.clear();
+    BootSelfTestResult post_degraded = post_ok;
+    post_degraded.all_nominal = false;
+    post_degraded.mic_health.ch_ok[0] = false;
+    post_degraded.mic_health.ch_min[0] = 0;
+    post_degraded.mic_health.ch_max[0] = 0;
+    post_degraded.mic_health.ch_rms_db[0] = -100.0f;
+    SerialUI::printSelfTestReport(post_degraded, 44100);
+    out = Serial.getOutput();
+    assert(out.find("STATUS: HARDWARE DEGRADED - CHECK WIRING") != std::string::npos);
+    assert(out.find("FLATLINE") != std::string::npos);
+
+    // 6. Verify SerialUI::printI2cScan outputs English messages
+    Serial.clear();
+    SerialUI::printI2cScan();
+    out = Serial.getOutput();
+    assert(out.find("I2C scan:") != std::string::npos);
+    assert(out.find("Found device at 0x76") != std::string::npos);
+
+    // 7. Verify SerialUI::printDspDiagnostics outputs English stats
+    Serial.clear();
+    SerialUI::printDspDiagnostics(1000, 5, 14200, 23219, 0, 2, 0, 4096);
+    out = Serial.getOutput();
+    assert(out.find("DSP stats: blocks=1000, deadline_misses=5") != std::string::npos);
+
+    printf("  [PASS] test_phase_two_serial_ui_and_logging passed.\n");
+}
+
+static void test_phase_four_localization_and_docs_contracts() {
+    printf("[TEST] Running test_phase_four_localization_and_docs_contracts...\n");
+
+    // 1. Verify SerialUI prints only English text without any legacy Slovenian tokens
+    Serial.clear();
+    BootSelfTestResult post_ok;
+    post_ok.all_nominal = true;
+    post_ok.psram_ok = true;
+    post_ok.psram_bytes = 8 * 1024 * 1024;
+    post_ok.bme_ok = true;
+    post_ok.bme_temp_c = 21.5f;
+    post_ok.bme_pres_hpa = 1013.25f;
+    post_ok.i2s_driver_ok = true;
+    for (size_t i = 0; i < AUDIO_NUM_CHANNELS; ++i) {
+        post_ok.mic_health.ch_ok[i] = true;
+        post_ok.mic_health.ch_min[i] = -1000;
+        post_ok.mic_health.ch_max[i] = 1000;
+        post_ok.mic_health.ch_rms_db[i] = -45.0f;
+    }
+    post_ok.mic_health.bus0_distinct = true;
+    post_ok.mic_health.bus1_distinct = true;
+    post_ok.mic_health.cross_bus_distinct = true;
+    post_ok.mic_health.identical_samples = 0;
+
+    SerialUI::printSelfTestReport(post_ok, 48000);
+    SerialUI::printHardwareDegradedAlert();
+    SerialUI::printDoaEvent(-45.0f, 0.88f, 72.3f, 0, 1);
+    SerialUI::printDoaEvent(135.0f, 0.75f, 68.0f, 1, 3);
+    SerialUI::printI2cScan();
+    SerialUI::printDspDiagnostics(5000, 0, 12000, 23219, 0, 0, 0, 4096);
+
+    std::string out = Serial.getOutput();
+
+    // Verify key English phrases from docs/rest-api.md & firmware.md
+    assert(out.find("ACOUSTIC LOCATOR BOOT SELF-TEST") != std::string::npos);
+    assert(out.find("Octal PSRAM") != std::string::npos);
+    assert(out.find("BME280 I2C") != std::string::npos);
+    assert(out.find("I2S Driver") != std::string::npos);
+    assert(out.find("Bus Sync") != std::string::npos);
+    assert(out.find("STATUS: ALL SYSTEMS NOMINAL") != std::string::npos);
+    assert(out.find("CRITICAL: BOOT SELF-TEST FAILED - HALTING!") != std::string::npos);
+    assert(out.find("Detected angle: -45.0 deg, R: 0.88, dB: 72.3") != std::string::npos);
+    assert(out.find("[Src 2/3] Detected angle: 135.0 deg, R: 0.75, dB: 68.0") != std::string::npos);
+    assert(out.find("I2C scan:") != std::string::npos);
+    assert(out.find("DSP stats: blocks=5000") != std::string::npos);
+
+    // Negative verification: no legacy Slovenian words
+    static const char* const legacy_tokens[] = {
+        "meritve", "naprave", "kalibracija", "Zaznan kot", "inicializacija",
+        "senzor", "naloge", "mogoce", "ni bil", "Trikotnik", "odmik", "vzorec",
+        "razdalja", "prag"
+    };
+    for (size_t i = 0; i < sizeof(legacy_tokens)/sizeof(legacy_tokens[0]); ++i) {
+        assert(out.find(legacy_tokens[i]) == std::string::npos);
+    }
+
+    // 2. Binary REST Protocol Validation per docs/rest-api.md contract:
+    // Header (12 bytes) + 24 records * 20 bytes = 492 bytes max payload
+    assert(MEASUREMENT_BATCH_VERSION == 1);
+    assert(MEASUREMENT_BATCH_HEADER_SIZE == 12);
+    assert(MEASUREMENT_RECORD_SIZE == 20);
+    assert(NETWORK_BATCH_MAX_MEASUREMENTS == 24);
+    assert(MEASUREMENT_BATCH_HEADER_SIZE + NETWORK_BATCH_MAX_MEASUREMENTS * MEASUREMENT_RECORD_SIZE == 492);
+
+    // 3. Verify single record serialization at maximum full-circle negative and positive bearings
+    NetworkMeasurement records[2];
+    records[0].result = {-180.0f, -238.43f, 0.95f, -30.0f, true};
+    records[0].timestamp_ms = 1791830000000ULL;
+    records[0].clock_flags = CLOCK_FLAG_SERVER_SYNCHRONIZED;
+
+    records[1].result = {180.0f, 238.43f, 0.99f, -10.0f, true};
+    records[1].timestamp_ms = 1791830000100ULL;
+    records[1].clock_flags = CLOCK_FLAG_SERVER_SYNCHRONIZED;
+
+    uint8_t buf[64];
+    size_t sz = serialize_measurement_batch(records, 2, buf, sizeof(buf), 96.5f);
+    assert(sz == 12 + 2 * 20);
+    assert(buf[0] == 1);
+    assert(buf[1] == 2);
+    uint16_t clk_flags = static_cast<uint16_t>(buf[2]) | (static_cast<uint16_t>(buf[3]) << 8);
+    assert(clk_flags == CLOCK_FLAG_SERVER_SYNCHRONIZED);
+
+    // Check angle float packing for -180.0f and +180.0f
+    float read_ang0 = 0.0f, read_ang1 = 0.0f;
+    uint32_t b0 = 0, b1 = 0;
+    for (size_t b = 0; b < 4; ++b) {
+        b0 |= (static_cast<uint32_t>(buf[16 + b]) << (b * 8));
+        b1 |= (static_cast<uint32_t>(buf[36 + b]) << (b * 8));
+    }
+    std::memcpy(&read_ang0, &b0, sizeof(b0));
+    std::memcpy(&read_ang1, &b1, sizeof(b1));
+    assert(fabsf(read_ang0 - (-180.0f)) < 1e-4f);
+    assert(fabsf(read_ang1 - 180.0f) < 1e-4f);
+
+    // 4. Verify documented calibration configuration from docs/rest-api.md
+    DeviceConfig doc_cfg;
+    doc_cfg.device_id = 1;
+    doc_cfg.microphone_distance_m = 0.082f;
+    doc_cfg.sample_rate = 44100;
+    doc_cfg.window_size = 1024;
+    doc_cfg.correlation_threshold = 0.40f;
+    doc_cfg.sound_level_threshold_db_spl = 55.0f;
+    doc_cfg.db_spl_offset = 96.5f;
+    doc_cfg.angle_offset_deg = 0.0f;
+    doc_cfg.adaptive_threshold_enabled = true;
+    doc_cfg.snr_margin_db = 8.0f;
+    assert(validate_device_config(doc_cfg));
+
+    // Also verify 48000 Hz alternate supported sample rate
+    doc_cfg.sample_rate = 48000;
+    assert(validate_device_config(doc_cfg));
+
+    // 5. Verify documentation validation constraints:
+    // Negative distance rejected
+    DeviceConfig bad_cfg = doc_cfg;
+    bad_cfg.microphone_distance_m = -0.05f;
+    assert(!validate_device_config(bad_cfg));
+
+    // Zero/negative correlation threshold rejected
+    bad_cfg = doc_cfg;
+    bad_cfg.correlation_threshold = -0.1f;
+    assert(!validate_device_config(bad_cfg));
+
+    // Sound-level threshold <= -200 dB rejected
+    bad_cfg = doc_cfg;
+    bad_cfg.sound_level_threshold_db_spl = -205.0f;
+    assert(!validate_device_config(bad_cfg));
+
+    // Unsupported sample rates rejected
+    bad_cfg = doc_cfg;
+    bad_cfg.sample_rate = 22050;
+    assert(!validate_device_config(bad_cfg));
+    bad_cfg.sample_rate = 96000;
+    assert(!validate_device_config(bad_cfg));
+
+    // Window size different from 1024 rejected
+    bad_cfg = doc_cfg;
+    bad_cfg.window_size = 512;
+    assert(!validate_device_config(bad_cfg));
+    bad_cfg.window_size = 2048;
+    assert(!validate_device_config(bad_cfg));
+
+    // Angle offset out of [-180, +180] rejected
+    bad_cfg = doc_cfg;
+    bad_cfg.angle_offset_deg = -185.0f;
+    assert(!validate_device_config(bad_cfg));
+    bad_cfg.angle_offset_deg = 185.0f;
+    assert(!validate_device_config(bad_cfg));
+
+    // SNR margin out of [0, 60] dB rejected
+    bad_cfg = doc_cfg;
+    bad_cfg.snr_margin_db = -1.0f;
+    assert(!validate_device_config(bad_cfg));
+    bad_cfg.snr_margin_db = 65.0f;
+    assert(!validate_device_config(bad_cfg));
+
+    // Non-finite values rejected
+    bad_cfg = doc_cfg;
+    bad_cfg.microphone_distance_m = NAN;
+    assert(!validate_device_config(bad_cfg));
+    bad_cfg = doc_cfg;
+    bad_cfg.correlation_threshold = INFINITY;
+    assert(!validate_device_config(bad_cfg));
+
+    printf("  [PASS] test_phase_four_localization_and_docs_contracts passed.\n");
+}
+
 int main() {
     test_gcc_phat_adaptive_noise_floor();
     test_display_smoothing_filter();
@@ -2762,6 +3017,8 @@ int main() {
     test_gcc_phat_phase_one_memory_safety_and_threshold_gates();
     test_phase_two_security_and_contracts();
     test_phase_three_responsiveness_and_expanded_harness();
+    test_phase_two_serial_ui_and_logging();
+    test_phase_four_localization_and_docs_contracts();
     printf("\nAll unit tests passed successfully!\n");
     return 0;
 }

@@ -21,12 +21,12 @@
 #include "audio/i2s_sampler.h"
 #include "ui/display_filter.h"
 
-// Globalne periferne enote
+// Global peripheral instances
 static Adafruit_BME280 bme;
 static RadarDisplay radar_display;
 static GccPhat doa(DEFAULT_SAMPLE_RATE, DEFAULT_MIC_DISTANCE_M, DEFAULT_TEMPERATURE_C);
 
-// Deljene spremenljivke med jedroma (Thread-safe)
+// Shared cross-core atomic state (Thread-safe)
 static std::atomic<float> current_sound_speed(DEFAULT_SOUND_SPEED_MPS);
 static std::atomic<float> current_temperature(DEFAULT_TEMPERATURE_C);
 static std::atomic<float> current_humidity(DEFAULT_HUMIDITY_PCT);
@@ -43,7 +43,7 @@ static std::atomic<bool> adaptive_threshold_active(DEFAULT_ADAPTIVE_THRESHOLD_EN
 static std::atomic<float> current_snr_margin_db(DEFAULT_SNR_MARGIN_DB);
 static std::atomic<uint32_t> current_sample_rate(DEFAULT_SAMPLE_RATE);
 
-// Diagnostični števci
+// Diagnostic counters
 static std::atomic<uint32_t> dsp_deadline_misses(0);
 static std::atomic<uint32_t> dsp_i2s_read_failures(0);
 static std::atomic<uint32_t> display_queue_drops(0);
@@ -51,7 +51,7 @@ static std::atomic<uint32_t> network_queue_drops(0);
 static std::atomic<uint32_t> dsp_blocks_processed(0);
 static std::atomic<uint32_t> dsp_max_processing_us(0);
 
-// Nastavitve naprave in FreeRTOS sinhronizacija
+// Device configuration and FreeRTOS synchronization primitives
 static DeviceConfig device_config;
 static bool device_configured = false;
 static bool bme_initialized = false;
@@ -246,7 +246,7 @@ static void initialize_task_watchdog() {
     }
 }
 
-// --- NALOGA NA JEDRU 1: DSP OBDELAVA ---
+// --- CORE 1 TASK: REAL-TIME DSP PROCESSING ---
 void dsp_task(void *param) {
     static int32_t ch0_buf[AUDIO_MAX_WINDOW_SIZE];
     static int32_t ch1_buf[AUDIO_MAX_WINDOW_SIZE];
@@ -577,7 +577,7 @@ void init_sensors_and_display() {
     if (!bme_initialized) {
         bme_initialized = bme.begin(BME280_ADDR_SECONDARY, &Wire);
         if (!bme_initialized) {
-            Serial.printf("BME280 senzor ni bil najden! Uporabljam privzeto c=%.1f m/s\n",
+            Serial.printf("BME280 sensor not found! Using default c=%.1f m/s\n",
                           DEFAULT_SOUND_SPEED_MPS);
             SerialUI::printI2cScan();
         }
@@ -665,8 +665,7 @@ void sensor_display_task(void *param) {
                                         event.count);
             }
         } else {
-            // Tišina (brez novih paketov): preveri ali sledi ali fosforne točke še razpadajo
-            // oziroma ali je potekel 1-sekundni interval za osvežitev nivoja šuma okolice
+            // Silence (no new packets): check if tracks or phosphor blips are still decaying, or if the idle refresh interval has elapsed
             const size_t active_tracks = tracker.getActiveTracks(tracked_targets, DOA_MAX_SOURCES, now_ms);
             const bool active_blips = radar_display.hasActiveDecayBlips(now_ms);
             const bool current_server_available = server_available.load();
@@ -747,19 +746,19 @@ void setup() {
     db_spl_offset.store(device_config.db_spl_offset);
     adaptive_threshold_active.store(device_config.adaptive_threshold_enabled);
 
-    // 1. Zagon zaslona in BME280 senzorja
+    // 1. Initialize TFT display and BME280 sensor
     init_sensors_and_display();
 
-    // 2. Zagonski preizkus strojne opreme (POST)
+    // 2. Run Power-On Self-Test (POST)
     BootSelfTestResult post_res = run_boot_self_test(device_config.sample_rate);
 
-    // 3. Preveri gumb za nastavitve (prikaze POST rezultate in odstevalnik na zaslonu)
+    // 3. Check setup button (renders POST checklist and countdown on TFT)
     check_setup_button(post_res);
     if (!device_configured) {
         Serial.println("Device is not configured. Boot normally, then press and hold GPIO 0 during startup.");
     }
 
-    // Po izhodu iz boot okna narisi zacetni radar UI pred zagonom nalog
+    // Draw initial radar UI after exiting the boot prompt prior to starting tasks
     if (radar_display.isInitialized()) {
         radar_display.drawRadar(0.0f, current_temperature.load(),
                                 current_humidity.load(),
@@ -771,7 +770,7 @@ void setup() {
                                 current_sample_rate.load());
     }
 
-    // Ustvari FreeRTOS objekte za prenos rezultatov in zaščito DSP konfiguracije
+    // Create FreeRTOS queues and mutexes for result passing and configuration synchronization
     display_queue = xQueueCreate(DISPLAY_QUEUE_LENGTH, sizeof(MultiDoaResult));
     network_queue = xQueueCreate(NETWORK_QUEUE_LENGTH, sizeof(NetworkMeasurement));
     doa_mutex = xSemaphoreCreateMutex();
@@ -779,7 +778,7 @@ void setup() {
     i2s_mutex = xSemaphoreCreateMutex();
     if (display_queue == nullptr || network_queue == nullptr ||
         doa_mutex == nullptr || config_mutex == nullptr || i2s_mutex == nullptr) {
-        Serial.println("FreeRTOS objektov ni bilo mogoce ustvariti!");
+        Serial.println("Failed to create FreeRTOS synchronization objects!");
         while (true) {
             delay(1000);
         }
@@ -795,13 +794,13 @@ void setup() {
         current_sample_rate.store(DEFAULT_SAMPLE_RATE);
     }
     if (!doa.configure(static_cast<float>(device_config.sample_rate))) {
-        Serial.println("GCC-PHAT inicializacija ni uspela!");
+        Serial.println("GCC-PHAT initialization failed!");
         while (true) {
             delay(1000);
         }
     }
     if (!init_i2s_microphones(device_config.sample_rate)) {
-        Serial.println("I2S inicializacija ni uspela!");
+        Serial.println("I2S initialization failed!");
         while (true) {
             delay(1000);
         }
@@ -822,10 +821,10 @@ void setup() {
     }
     initialize_task_watchdog();
 
-    // Zaženi DSP nalogo na Jedru 1 (prioriteta 5 - visoka)
+    // Launch DSP task on Core 1 (Priority 5 - High)
     if (xTaskCreatePinnedToCore(dsp_task, "DSP_Task", TASK_DSP_STACK_SIZE,
                                 NULL, TASK_DSP_PRIORITY, NULL, TASK_DSP_CORE) != pdPASS) {
-        Serial.println("DSP naloge ni bilo mogoce zagnati!");
+        Serial.println("Failed to start DSP task!");
         while (true) {
             delay(1000);
         }
@@ -833,7 +832,7 @@ void setup() {
 
     if (xTaskCreatePinnedToCore(sensor_display_task, "Sensor_Display", TASK_SENSOR_DISPLAY_STACK_SIZE,
                                 NULL, TASK_SENSOR_DISPLAY_PRIORITY, NULL, TASK_SENSOR_DISPLAY_CORE) != pdPASS) {
-        Serial.println("Sensor/display naloge ni bilo mogoce zagnati!");
+        Serial.println("Failed to start Sensor/Display task!");
         while (true) {
             delay(1000);
         }
@@ -841,7 +840,7 @@ void setup() {
 
     if (xTaskCreatePinnedToCore(network_task, "Network_Task", TASK_NETWORK_STACK_SIZE,
                                 NULL, TASK_NETWORK_PRIORITY, NULL, TASK_NETWORK_CORE) != pdPASS) {
-        Serial.println("Omrezne naloge ni bilo mogoce zagnati!");
+        Serial.println("Failed to start Network task!");
         while (true) {
             delay(1000);
         }

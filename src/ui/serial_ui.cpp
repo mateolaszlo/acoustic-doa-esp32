@@ -86,12 +86,12 @@ void SerialUI::printHardwareDegradedAlert() {
 void SerialUI::printDoaEvent(float angle_deg, float confidence, float calibrated_db,
                              uint8_t source_idx, size_t total_sources) {
     if (total_sources > 1) {
-        Serial.printf("[Src %u/%u] Zaznan kot: %.1f deg, R: %.2f, dB: %.1f\n",
+        Serial.printf("[Src %u/%u] Detected angle: %.1f deg, R: %.2f, dB: %.1f\n",
                       static_cast<unsigned>(source_idx + 1),
                       static_cast<unsigned>(total_sources),
                       angle_deg, confidence, calibrated_db);
     } else {
-        Serial.printf("Zaznan kot: %.1f deg, R: %.2f, dB: %.1f\n",
+        Serial.printf("Detected angle: %.1f deg, R: %.2f, dB: %.1f\n",
                       angle_deg, confidence, calibrated_db);
     }
 }
