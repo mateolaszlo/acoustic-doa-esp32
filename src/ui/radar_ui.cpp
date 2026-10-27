@@ -92,13 +92,14 @@ void RadarDisplay::drawRadar(float angle_deg, float temp_c, float hum, float pre
                             float db_spl, bool api_available, bool adaptive_active,
                             float snr_db, float snr_margin_db,
                             uint32_t sample_rate,
-                            bool wifi_connected) {
+                            bool wifi_connected,
+                            float fixed_threshold_db) {
     const float angles[1] = { angle_deg };
     const float confs[1] = { 1.0f };
     const uint32_t now = millis();
     addDecayBlips(angles, 1, now);
     drawRadarMulti(angles, confs, 1, temp_c, hum, pres, c_sound, db_spl, api_available, adaptive_active,
-                   snr_db, snr_margin_db, nullptr, sample_rate, now, wifi_connected);
+                   snr_db, snr_margin_db, nullptr, sample_rate, now, wifi_connected, fixed_threshold_db);
 }
 
 void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confidences, size_t count,
@@ -108,7 +109,8 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
                                  const uint8_t* slot_ids,
                                  uint32_t sample_rate,
                                  uint32_t now_ms,
-                                 bool wifi_connected) {
+                                 bool wifi_connected,
+                                 float fixed_threshold_db) {
     (void)confidences;
     if (!initialized) return;
     canvas.fillScreen(ST77XX_BLACK);
@@ -270,7 +272,7 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
         }
     }
 
-    // 4.1 Sound pressure level and dynamic SNR bar with trigger gate notch (y = 103..110)
+    // 4.1 Sound pressure level and dynamic SNR / SPL bar with trigger gate notch (y = 103..110)
     canvas.setTextSize(1);
     canvas.setCursor(2, 103);
     canvas.setTextColor(ST77XX_YELLOW);
@@ -278,56 +280,113 @@ void RadarDisplay::drawRadarMulti(const float* angles_deg, const float* confiden
 
     const bool has_detection = (count > 0);
 
-    // Numeric SNR readout (+XX dB)
-    canvas.setCursor(28, 103);
-    if (has_detection && snr_db >= 20.0f) {
-        canvas.setTextColor(ST77XX_GREEN);
-    } else if (has_detection && snr_db >= snr_margin_db) {
-        canvas.setTextColor(ST77XX_YELLOW);
-    } else {
-        canvas.setTextColor(COLOR_MUTED_GRAY);
-    }
-    canvas.printf("+%1.0f", (snr_db > 0.0f) ? snr_db : 0.0f);
-
-    // Mini horizontal SNR meter with trigger threshold notch (x = 50, y = 103, w = 74, h = 7)
+    // Mini horizontal meter with trigger threshold notch (x = 50, y = 103, w = 74, h = 7)
     constexpr int bar_x = 50;
     constexpr int bar_y = 103;
     constexpr int bar_w = 74;
     constexpr int bar_h = 7;
     canvas.drawRect(bar_x, bar_y, bar_w, bar_h, COLOR_MUTED_GRAY);
 
-    // Trigger threshold gate notch position along the SNR meter
-    constexpr float max_snr_db = 30.0f;
-    const int gate_offset = static_cast<int>(roundf((snr_margin_db / max_snr_db) * (bar_w - 2)));
-    const int gate_x = bar_x + gate_offset;
+    int gate_offset = 0;
+    int fill_w = 0;
+    int gate_val = 0;
+    uint16_t bar_color = COLOR_MUTED_GRAY;
 
-    // Map SNR to bar fill width (0..30 dB dynamic range)
-    float norm_snr = snr_db / max_snr_db;
-    if (norm_snr < 0.0f) norm_snr = 0.0f;
-    if (norm_snr > 1.0f) norm_snr = 1.0f;
-    int fill_w = static_cast<int>(roundf(norm_snr * (bar_w - 2)));
+    if (adaptive_active) {
+        // --- AUTO MODE (Relative SNR) ---
+        // Numeric SNR readout (+XX dB)
+        canvas.setCursor(28, 103);
+        if (has_detection && snr_db >= 20.0f) {
+            canvas.setTextColor(ST77XX_GREEN);
+        } else if (has_detection && snr_db >= snr_margin_db) {
+            canvas.setTextColor(ST77XX_YELLOW);
+        } else {
+            canvas.setTextColor(COLOR_MUTED_GRAY);
+        }
+        canvas.printf("+%1.0f", (snr_db > 0.0f) ? snr_db : 0.0f);
 
-    // When no detection is active, clamp fill width strictly below the white gate notch
-    if (!has_detection && fill_w >= gate_offset) {
-        fill_w = (gate_offset > 1) ? (gate_offset - 1) : 0;
+        // Trigger threshold gate notch position along the SNR meter (0..30 dB)
+        constexpr float max_snr_db = 30.0f;
+        gate_offset = static_cast<int>(roundf((snr_margin_db / max_snr_db) * (bar_w - 2)));
+
+        float norm_snr = snr_db / max_snr_db;
+        if (norm_snr < 0.0f) norm_snr = 0.0f;
+        if (norm_snr > 1.0f) norm_snr = 1.0f;
+        fill_w = static_cast<int>(roundf(norm_snr * (bar_w - 2)));
+
+        if (!has_detection && fill_w >= gate_offset) {
+            fill_w = (gate_offset > 1) ? (gate_offset - 1) : 0;
+        }
+
+        if (fill_w > 0) {
+            if (has_detection && snr_db >= 20.0f) {
+                bar_color = ST77XX_GREEN; // High SNR / optimal localization confidence
+            } else if (has_detection && snr_db >= snr_margin_db) {
+                bar_color = ST77XX_YELLOW; // Active trigger above threshold / moderate SNR
+            } else {
+                bar_color = COLOR_MUTED_GRAY; // Sub-threshold ambient noise
+            }
+        }
+        gate_val = static_cast<int>(roundf(snr_margin_db));
+    } else {
+        // --- FIX MODE (Absolute dB SPL: 30..90 dB SPL) ---
+        constexpr float min_spl_meter = 30.0f;
+        constexpr float max_spl_meter = 90.0f;
+        constexpr float spl_range = max_spl_meter - min_spl_meter;
+
+        const float delta_db = db_spl - fixed_threshold_db;
+
+        // Numeric margin above fixed gate (+XX dB)
+        canvas.setCursor(28, 103);
+        if (has_detection && delta_db >= 15.0f) {
+            canvas.setTextColor(ST77XX_GREEN);
+        } else if (has_detection && delta_db >= 0.0f) {
+            canvas.setTextColor(ST77XX_YELLOW);
+        } else {
+            canvas.setTextColor(COLOR_MUTED_GRAY);
+        }
+        canvas.printf("+%1.0f", (delta_db > 0.0f) ? delta_db : 0.0f);
+
+        // Gate notch position along the SPL meter (30..90 dB)
+        float norm_gate = (fixed_threshold_db - min_spl_meter) / spl_range;
+        if (norm_gate < 0.0f) norm_gate = 0.0f;
+        if (norm_gate > 1.0f) norm_gate = 1.0f;
+        gate_offset = static_cast<int>(roundf(norm_gate * (bar_w - 2)));
+
+        // Map sound level to bar fill width (30..90 dB)
+        float norm_spl = (db_spl - min_spl_meter) / spl_range;
+        if (norm_spl < 0.0f) norm_spl = 0.0f;
+        if (norm_spl > 1.0f) norm_spl = 1.0f;
+        fill_w = static_cast<int>(roundf(norm_spl * (bar_w - 2)));
+
+        if (!has_detection && fill_w >= gate_offset) {
+            fill_w = (gate_offset > 1) ? (gate_offset - 1) : 0;
+        }
+
+        if (fill_w > 0) {
+            if (has_detection && delta_db >= 15.0f) {
+                bar_color = ST77XX_GREEN; // Loud / well above threshold
+            } else if (has_detection && delta_db >= 0.0f) {
+                bar_color = ST77XX_YELLOW; // Active trigger above threshold
+            } else {
+                bar_color = COLOR_MUTED_GRAY; // Sub-threshold ambient noise
+            }
+        }
+        gate_val = static_cast<int>(roundf(fixed_threshold_db));
     }
 
+    if (gate_offset < 0) gate_offset = 0;
+    if (gate_offset > bar_w - 2) gate_offset = bar_w - 2;
+    const int gate_x = bar_x + gate_offset;
+
     if (fill_w > 0) {
-        uint16_t bar_color;
-        if (has_detection && snr_db >= 20.0f) {
-            bar_color = ST77XX_GREEN; // High SNR / optimal localization confidence
-        } else if (has_detection && snr_db >= snr_margin_db) {
-            bar_color = ST77XX_YELLOW; // Active trigger above threshold / moderate SNR
-        } else {
-            bar_color = COLOR_MUTED_GRAY; // Sub-threshold ambient noise
-        }
+        if (fill_w > bar_w - 2) fill_w = bar_w - 2;
         canvas.fillRect(bar_x + 1, bar_y + 1, fill_w, bar_h - 2, bar_color);
     }
 
     canvas.drawFastVLine(gate_x, bar_y - 1, bar_h + 2, ST77XX_WHITE);
 
-    // Render numeric SNR margin in 3x5 micro-font directly beneath the gate notch
-    const int gate_val = static_cast<int>(roundf(snr_margin_db));
+    // Render numeric threshold in 3x5 micro-font directly beneath the gate notch
     const int digit_offset = (gate_val >= 10) ? 3 : 1;
     const int num_w = (gate_val >= 10) ? 7 : 3;
     int num_x = gate_x - digit_offset;

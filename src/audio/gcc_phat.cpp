@@ -424,38 +424,40 @@ void GccPhat::precomputeCleanKernels() {
 
 bool GccPhat::updateNoiseFloorAndCheckGate(float rms_db) {
     float effective_thresh = getEffectiveThresholdDb();
-    if (adaptive_threshold_enabled) {
-        if (!noise_floor_initialized) {
-            if (rms_db > NOISE_FLOOR_MIN_DB) {
-                const float max_initial_seed = (effective_thresh < NOISE_FLOOR_MAX_DB)
-                                                   ? effective_thresh
-                                                   : NOISE_FLOOR_MAX_DB;
-                noise_floor_db = (rms_db < max_initial_seed)
-                                     ? rms_db
-                                     : max_initial_seed;
-                noise_floor_initialized = true;
-            }
-        } else {
-            const float trigger_threshold = noise_floor_db + snr_margin_db;
 
-            if (rms_db < noise_floor_db) {
-                // Fast downward tracking when background noise subsides (~1-2 s)
-                noise_floor_db += NOISE_FLOOR_ALPHA_DOWN * (rms_db - noise_floor_db);
-            } else if (rms_db < trigger_threshold) {
-                // Slow upward tracking of ambient noise below the trigger threshold
-                noise_floor_db += NOISE_FLOOR_ALPHA_UP * (rms_db - noise_floor_db);
-            } else {
-                // Active acoustic event / speech: ultra-slow creep so sustained sound does not pull up the threshold and suppress detection
-                noise_floor_db += NOISE_FLOOR_ALPHA_EVENT * (rms_db - noise_floor_db);
-            }
+    // Continuous ambient noise floor tracking (runs in both AUTO and FIX modes)
+    if (!noise_floor_initialized) {
+        if (rms_db > NOISE_FLOOR_MIN_DB) {
+            const float max_initial_seed = (effective_thresh < NOISE_FLOOR_MAX_DB)
+                                               ? effective_thresh
+                                               : NOISE_FLOOR_MAX_DB;
+            noise_floor_db = (rms_db < max_initial_seed)
+                                 ? rms_db
+                                 : max_initial_seed;
+            noise_floor_initialized = true;
         }
+    } else {
+        const float trigger_threshold = noise_floor_db + snr_margin_db;
 
-        if (noise_floor_initialized) {
-            if (noise_floor_db < NOISE_FLOOR_MIN_DB) {
-                noise_floor_db = NOISE_FLOOR_MIN_DB;
-            } else if (noise_floor_db > NOISE_FLOOR_MAX_DB) {
-                noise_floor_db = NOISE_FLOOR_MAX_DB;
-            }
+        if (rms_db < noise_floor_db) {
+            // Fast downward tracking when background noise subsides (~1-2 s)
+            noise_floor_db += NOISE_FLOOR_ALPHA_DOWN * (rms_db - noise_floor_db);
+        } else if (rms_db < trigger_threshold) {
+            // Slow upward tracking of ambient noise below the trigger threshold
+            noise_floor_db += NOISE_FLOOR_ALPHA_UP * (rms_db - noise_floor_db);
+        } else {
+            // Active acoustic event / speech: ultra-slow creep so sustained sound does not pull up the threshold and suppress detection
+            noise_floor_db += NOISE_FLOOR_ALPHA_EVENT * (rms_db - noise_floor_db);
+        }
+    }
+
+    if (noise_floor_initialized) {
+        if (noise_floor_db < NOISE_FLOOR_MIN_DB) {
+            noise_floor_db = NOISE_FLOOR_MIN_DB;
+        } else if (noise_floor_db > NOISE_FLOOR_MAX_DB) {
+            noise_floor_db = NOISE_FLOOR_MAX_DB;
+        }
+        if (adaptive_threshold_enabled) {
             effective_thresh = noise_floor_db + snr_margin_db;
         }
     }

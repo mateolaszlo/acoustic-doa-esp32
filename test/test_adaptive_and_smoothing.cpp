@@ -2613,6 +2613,18 @@ static void test_phase_three_responsiveness_and_expanded_harness() {
         // Capped sources (count = 4 > DOA_MAX_SOURCES)
         display.drawRadarMulti(render_angles, render_confs, 4, 22.0f, 50.0f, 101325.0f, 344.0f, 95.0f, true, true, 30.0f, 8.0f, slot_ids, 48000, 3400);
 
+        // FIX mode rendering tests (Option B: absolute dB SPL meter with fixed threshold gate)
+        // 1. Idle noise below fixed threshold (34 dB SPL vs 55 dB threshold, count = 0)
+        display.drawRadarMulti(nullptr, nullptr, 0, 22.0f, 50.0f, 101325.0f, 344.0f, 34.0f, true, false, 0.0f, 8.0f, nullptr, 44100, 3500, true, 55.0f);
+        // 2. Active sound at fixed threshold (55 dB SPL vs 55 dB threshold, count = 1)
+        display.drawRadarMulti(render_angles, render_confs, 1, 22.0f, 50.0f, 101325.0f, 344.0f, 55.0f, true, false, 0.0f, 8.0f, slot_ids, 44100, 3600, true, 55.0f);
+        // 3. Active speech above fixed threshold (60 dB SPL vs 55 dB threshold, count = 1)
+        display.drawRadarMulti(render_angles, render_confs, 1, 22.0f, 50.0f, 101325.0f, 344.0f, 60.0f, true, false, 0.0f, 8.0f, slot_ids, 44100, 3700, true, 55.0f);
+        // 4. Loud sound well above fixed threshold (75 dB SPL vs 55 dB threshold, count = 1)
+        display.drawRadarMulti(render_angles, render_confs, 1, 22.0f, 50.0f, 101325.0f, 344.0f, 75.0f, true, false, 0.0f, 8.0f, slot_ids, 44100, 3800, true, 55.0f);
+        // 5. Single-needle drawRadar wrapper with fixed_threshold_db in FIX mode
+        display.drawRadar(45.0f, 22.0f, 50.0f, 101325.0f, 344.0f, 60.0f, true, false, 0.0f, 8.0f, 44100, true, 55.0f);
+
         // Test drawHardwareDegraded
         BootSelfTestResult post;
         post.psram_ok = true;

@@ -42,6 +42,7 @@ static std::atomic<float> current_noise_floor_db(-100.0f);
 static std::atomic<float> current_momentary_rms_db(-100.0f);
 static std::atomic<bool> adaptive_threshold_active(DEFAULT_ADAPTIVE_THRESHOLD_ENABLED);
 static std::atomic<float> current_snr_margin_db(DEFAULT_SNR_MARGIN_DB);
+static std::atomic<float> current_spl_threshold(DEFAULT_SOUND_LEVEL_THRESHOLD_DB_SPL);
 static std::atomic<uint32_t> current_sample_rate(DEFAULT_SAMPLE_RATE);
 
 // Diagnostic counters
@@ -362,6 +363,7 @@ static bool apply_dsp_calibration(float temperature_c,
     db_spl_offset.store(configured_offset);
     adaptive_threshold_active.store(adaptive_enabled);
     current_snr_margin_db.store(snr_margin);
+    current_spl_threshold.store(sound_level_threshold_db_spl);
     return true;
 }
 
@@ -782,7 +784,8 @@ void sensor_display_task(void *param) {
                                         slot_ids,
                                         current_sample_rate.load(),
                                         now_ms,
-                                        last_wifi_connected);
+                                        last_wifi_connected,
+                                        current_spl_threshold.load());
 
             prev_rendered_tracks = num_tracks;
             prev_rendered_blips = radar_display.hasActiveDecayBlips(now_ms);
@@ -806,6 +809,7 @@ void setup() {
                       static_cast<unsigned long>(device_config.device_id));
     }
     current_snr_margin_db.store(device_config.snr_margin_db);
+    current_spl_threshold.store(device_config.sound_level_threshold_db_spl);
     current_sample_rate.store(device_config.sample_rate);
     db_spl_offset.store(device_config.db_spl_offset);
     adaptive_threshold_active.store(device_config.adaptive_threshold_enabled);
@@ -832,7 +836,8 @@ void setup() {
                                 adaptive_threshold_active.load(),
                                 0.0f, current_snr_margin_db.load(),
                                 current_sample_rate.load(),
-                                wifi_connected.load());
+                                wifi_connected.load(),
+                                current_spl_threshold.load());
     }
 
     // Create FreeRTOS queues and mutexes for result passing and configuration synchronization

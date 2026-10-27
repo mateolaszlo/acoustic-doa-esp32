@@ -26,7 +26,8 @@ public:
                    float db_spl, bool api_available, bool adaptive_active = false,
                    float snr_db = 0.0f, float snr_margin_db = DEFAULT_SNR_MARGIN_DB,
                    uint32_t sample_rate = DEFAULT_SAMPLE_RATE,
-                   bool wifi_connected = false);
+                   bool wifi_connected = false,
+                   float fixed_threshold_db = DEFAULT_SOUND_LEVEL_THRESHOLD_DB_SPL);
     /**
      * @brief Render multi-target 360-degree radar scope and telemetry dashboard on ST7735 TFT.
      * @param angles_deg Array of target azimuths in degrees [-180, +180].
@@ -37,6 +38,7 @@ public:
      * @param sample_rate Audio sampling rate in Hz (e.g. 44100 or 48000).
      * @param now_ms Monotonic millisecond timestamp for phosphor decay and blink animation.
      * @param wifi_connected True if Wi-Fi station is connected to AP.
+     * @param fixed_threshold_db Fixed dB SPL trigger threshold used in FIX mode.
      */
     void drawRadarMulti(const float* angles_deg, const float* confidences, size_t count,
                         float temp_c, float hum, float pres, float c_sound,
@@ -45,7 +47,8 @@ public:
                         const uint8_t* slot_ids = nullptr,
                         uint32_t sample_rate = DEFAULT_SAMPLE_RATE,
                         uint32_t now_ms = 0,
-                        bool wifi_connected = false);
+                        bool wifi_connected = false,
+                        float fixed_threshold_db = DEFAULT_SOUND_LEVEL_THRESHOLD_DB_SPL);
     void drawBootPrompt(uint32_t remaining_ms, uint32_t total_ms, const BootSelfTestResult &post);
     void drawHardwareDegraded(const BootSelfTestResult &post);
     void drawSetupPortal();
