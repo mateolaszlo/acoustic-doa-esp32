@@ -147,9 +147,23 @@ Each measurement then occupies exactly 20 bytes:
 | 12 | 4 | Calibrated sound level in dB as float32 (`rms_db + db_spl_offset`) |
 | 16 | 4 | Correlation confidence as float32 (weighted mean 6-pair WLS confidence in $[0, 1]$) |
 
-Therefore, the body size is `12 + (measurement_count * 20)` bytes. For
-example, a full batch of 24 measurements occupies 492 bytes (or 172 bytes for
-eight measurements). The timestamp of record `i` is
+Each batch terminates with a 4-byte CRC32 trailer appended immediately after the last measurement record (at offset $12 + \text{count} \times 20$):
+
+| Offset | Size | Field |
+|---:|---:|---|
+| $12 + (N \times 20)$ | 4 | IEEE 802.3 CRC32 trailer (little-endian unsigned 32-bit integer) |
+
+Therefore, the total body size formula is:
+$$\text{Total Size} = 12 + (\text{measurement\_count} \times 20) + 4\text{ bytes}$$
+
+For example:
+- A 1-measurement batch occupies **36 bytes**.
+- An 8-measurement batch occupies **176 bytes**.
+- A full batch of 24 measurements occupies **496 bytes**.
+
+The CRC32 is calculated over all preceding bytes in the payload (the entire 12-byte header plus all $N \times 20$ bytes of measurement records) using standard IEEE 802.3 CRC-32 (polynomial `0x04C11DB7`, reflected `0xEDB88320`, initial `0xFFFFFFFF`, final XOR `0xFFFFFFFF`). On the ESP32-S3 hardware, this is computed at high speed with zero flash overhead using the on-chip ROM function `esp_rom_crc32_le`.
+
+The timestamp of record `i` is
 `base_timestamp_ms + offset_ms`. For monotonic batches, this is uptime relative
 to the current boot.
 
@@ -220,8 +234,9 @@ The backend should:
 
 - Expose `/devices/:id/calibration` with API-key authentication.
 - Expose `/measurements` with API-key authentication.
-- Accept version 1 of the documented little-endian binary batch format with measurement counts up to 24 (payload up to 492 bytes; ensure backend validator does not reject count > 8 with HTTP 400).
-- Validate the content length against the count field before decoding.
+- Accept version 1 of the documented little-endian binary batch format with measurement counts up to 24 (payload up to 496 bytes, including the 4-byte CRC32 trailer; ensure backend validator does not reject count > 8 or payloads up to 496 bytes).
+- Validate the content length ($12 + \text{count} \times 20 + 4$ bytes) against the count field before decoding.
+- Verify the 4-byte IEEE 802.3 CRC32 trailer over the first $12 + \text{count} \times 20$ bytes of the payload.
 - Return 2xx for accepted measurements.
 - Return useful JSON error bodies for failed requests.
 - Not require ambient temperature in the calibration response.

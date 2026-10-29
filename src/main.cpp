@@ -593,7 +593,8 @@ void network_task(void *param) {
 
             constexpr size_t max_payload_size =
                 MEASUREMENT_BATCH_HEADER_SIZE +
-                NETWORK_BATCH_MAX_MEASUREMENTS * MEASUREMENT_RECORD_SIZE;
+                NETWORK_BATCH_MAX_MEASUREMENTS * MEASUREMENT_RECORD_SIZE +
+                MEASUREMENT_BATCH_CRC_SIZE;
             uint8_t payload[max_payload_size];
             const size_t payload_size = serialize_measurement_batch(
                 batch, batch_count, payload, sizeof(payload), db_spl_offset.load());

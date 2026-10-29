@@ -68,6 +68,8 @@ The test harness in [`test/test_adaptive_and_smoothing.cpp`](../test/test_adapti
 12. **`test_rest_binary_batch_serialization`**:
     - Verifies 12-byte header Little-Endian byte packing (version `1`, measurement count, base timestamp, and clock flags).
     - Verifies 20-byte per-record Little-Endian float encoding (`angle_deg`, `delay_us`, calibrated dB, and confidence).
+    - Verifies IEEE 802.3 CRC32 calculation with test vector validation (`"123456789"` -> `0xCBF43926`).
+    - Validates 4-byte CRC32 trailer appending, full 24-record batch capacity (496 bytes), and single-bit tamper detection across header, records, and trailer.
     - Validates buffer overflow protection, homogeneous clock flag validation, and timestamp sequence constraints.
 13. **`test_gcc_phat_srp_phat_coarse_grid`**:
     - Verifies 72-direction coarse Steered Response Power ($5^\circ$ step) beamforming across all four quadrants ($0^\circ, \pm 45^\circ, \pm 90^\circ, \pm 135^\circ, \pm 180^\circ, +30^\circ, -60^\circ$), locating the true bearing with zero beamforming error.

@@ -11,7 +11,7 @@
 | `src/audio/gcc_phat.h` / `.cpp` | 4-channel FFT pipeline, dual-band raised-cosine spectral weighting, 6-pair GCC-PHAT, triangle loop-closure validation, and $2\times 2$ WLS 2D azimuth solver |
 | `src/audio/i2s_sampler.h` / `.cpp` | Synchronized dual-I2S (`I2S0` Master RX + `I2S1` Slave RX via GPIO Matrix) driver installation and 4-channel quad DMA reads (`read_i2s_quad`) |
 | `src/audio/post_checker.h` / `.cpp` | Power-On Self-Test (POST) 4-microphone health heuristics (`evaluate_quad_microphone_health`) and bus collision detection |
-| `src/network/rest_protocol.h` | Hardware-independent 12-byte header / 20-byte record binary batch serialization format and little-endian packing |
+| `src/network/rest_protocol.h` | Hardware-independent 12-byte header / 20-byte record / 4-byte CRC32 trailer binary batch serialization format and little-endian packing |
 | `src/network/rest_client.h` / `.cpp` | HTTP keep-alive batch transmission (`POST /api/v1/measurements`) and remote calibration retrieval (`GET /api/v1/devices/{id}/calibration`) |
 | `src/network/setup_portal.h` / `.cpp` | SoftAP captive portal and embedded HTTP web server for device Wi-Fi and calibration provisioning |
 | `src/ui/radar_ui.h` / `.cpp` | 360° circular radar scope rendering, polar needle visualization, POST checklist prompt, degraded screen, and setup portal UI on ST7735 TFT |
@@ -173,7 +173,7 @@ During startup (`SETUP_BOOT_DELAY_MS = 3000`), the firmware executes an automate
 - Refreshes remote calibration at boot and approximately every 60 seconds.
 - Receives timestamped results from `network_queue` and batches up to 24
   measurements, flushing a partial batch after 200 ms.
-- Sends packed binary batches with HTTP keep-alive and a five-second timeout.
+- Sends packed binary batches (12-byte header, 20-byte records, 4-byte hardware ROM CRC32 trailer) with HTTP keep-alive and a five-second timeout.
 - Targets at most five requests per second.
 - Retries each failed batch up to three times with increasing delays.
 - Priority: 2.

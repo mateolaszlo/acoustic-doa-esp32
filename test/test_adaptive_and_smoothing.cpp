@@ -1412,6 +1412,12 @@ static void test_rest_binary_batch_serialization() {
     assert(MEASUREMENT_BATCH_VERSION == 1);
     assert(MEASUREMENT_BATCH_HEADER_SIZE == 12);
     assert(MEASUREMENT_RECORD_SIZE == 20);
+    assert(MEASUREMENT_BATCH_CRC_SIZE == 4);
+    assert(MEASUREMENT_BATCH_TRAILER_SIZE == 4);
+
+    // Verify IEEE 802.3 CRC32 standard test vector ("123456789" -> 0xCBF43926)
+    const uint8_t test_vector[] = "123456789";
+    assert(calculate_batch_crc32(test_vector, 9) == 0xCBF43926U);
 
     uint8_t buffer[256];
     std::memset(buffer, 0, sizeof(buffer));
@@ -1427,9 +1433,9 @@ static void test_rest_binary_batch_serialization() {
 
     const float db_spl_offset = 96.5f;
 
-    // 1. Nominal batch of 2 records: 12 + 2 * 20 = 52 bytes
+    // 1. Nominal batch of 2 records: 12 + 2 * 20 + 4 = 56 bytes
     const size_t bytes = serialize_measurement_batch(batch, 2, buffer, sizeof(buffer), db_spl_offset);
-    assert(bytes == 52);
+    assert(bytes == 56);
 
     // Verify 12-byte header
     assert(buffer[0] == 1); // Format version
@@ -1477,8 +1483,31 @@ static void test_rest_binary_batch_serialization() {
     std::memcpy(&angle1_read, &bits, sizeof(bits));
     assert(fabsf(angle1_read - (-90.0f)) < 1e-4f);
 
-    // 2. Error handling: buffer too small
-    assert(serialize_measurement_batch(batch, 2, buffer, 51, db_spl_offset) == 0);
+    // Verify CRC32 trailer (offset 52)
+    uint32_t crc_trailer = 0;
+    for (size_t b = 0; b < 4; ++b) crc_trailer |= (static_cast<uint32_t>(buffer[52 + b]) << (b * 8));
+    assert(crc_trailer == calculate_batch_crc32(buffer, 52));
+    assert(verify_measurement_batch_crc32(buffer, bytes));
+
+    // Tamper detection verification:
+    // 1. Bit flip in header
+    buffer[0] ^= 0x01;
+    assert(!verify_measurement_batch_crc32(buffer, bytes));
+    buffer[0] ^= 0x01;
+
+    // 2. Bit flip in record data
+    buffer[20] ^= 0x80;
+    assert(!verify_measurement_batch_crc32(buffer, bytes));
+    buffer[20] ^= 0x80;
+
+    // 3. Bit flip in trailer
+    buffer[54] ^= 0x04;
+    assert(!verify_measurement_batch_crc32(buffer, bytes));
+    buffer[54] ^= 0x04;
+    assert(verify_measurement_batch_crc32(buffer, bytes));
+
+    // 2. Error handling: buffer too small (needs 56 bytes)
+    assert(serialize_measurement_batch(batch, 2, buffer, 55, db_spl_offset) == 0);
     // 3. Error handling: nullptr
     assert(serialize_measurement_batch(nullptr, 2, buffer, sizeof(buffer), db_spl_offset) == 0);
     assert(serialize_measurement_batch(batch, 2, nullptr, sizeof(buffer), db_spl_offset) == 0);
@@ -1508,11 +1537,12 @@ static void test_rest_binary_batch_serialization() {
         }
     }
 
-    uint8_t large_buffer[MEASUREMENT_BATCH_HEADER_SIZE + NETWORK_BATCH_MAX_MEASUREMENTS * MEASUREMENT_RECORD_SIZE + 32];
+    uint8_t large_buffer[MEASUREMENT_BATCH_HEADER_SIZE + NETWORK_BATCH_MAX_MEASUREMENTS * MEASUREMENT_RECORD_SIZE + MEASUREMENT_BATCH_CRC_SIZE + 32];
     const size_t multi_bytes = serialize_measurement_batch(
         multi_batch.data(), multi_batch.size(), large_buffer, sizeof(large_buffer), db_spl_offset);
-    assert(multi_bytes == MEASUREMENT_BATCH_HEADER_SIZE + NETWORK_BATCH_MAX_MEASUREMENTS * MEASUREMENT_RECORD_SIZE);
-    assert(multi_bytes == 492); // 12 + 24 * 20 = 492 bytes
+    assert(multi_bytes == MEASUREMENT_BATCH_HEADER_SIZE + NETWORK_BATCH_MAX_MEASUREMENTS * MEASUREMENT_RECORD_SIZE + MEASUREMENT_BATCH_CRC_SIZE);
+    assert(multi_bytes == 496); // 12 + 24 * 20 + 4 = 496 bytes
+    assert(verify_measurement_batch_crc32(large_buffer, multi_bytes));
 
     assert(large_buffer[0] == MEASUREMENT_BATCH_VERSION);
     assert(large_buffer[1] == 24); // count
@@ -2544,7 +2574,8 @@ static void test_phase_three_responsiveness_and_expanded_harness() {
 
         // Now serialization must succeed cleanly!
         size_t clamped_len = serialize_measurement_batch(batch, 5, payload, sizeof(payload), 100.0f);
-        assert(clamped_len == MEASUREMENT_BATCH_HEADER_SIZE + 5 * MEASUREMENT_RECORD_SIZE);
+        assert(clamped_len == MEASUREMENT_BATCH_HEADER_SIZE + 5 * MEASUREMENT_RECORD_SIZE + MEASUREMENT_BATCH_CRC_SIZE);
+        assert(verify_measurement_batch_crc32(payload, clamped_len));
 
         // Test server UTC offset stability:
         // Calibration poll offset updates must only commit on first valid reading or be non-decreasing
@@ -2897,10 +2928,11 @@ static void test_phase_four_localization_and_docs_contracts() {
     }
 
     // 2. Binary REST Protocol Validation per docs/rest-api.md contract:
-    // Header (12 bytes) + 24 records * 20 bytes = 492 bytes max payload
+    // Header (12 bytes) + 24 records * 20 bytes + CRC32 trailer (4 bytes) = 496 bytes max payload
     assert(MEASUREMENT_BATCH_VERSION == 1);
     assert(MEASUREMENT_BATCH_HEADER_SIZE == 12);
     assert(MEASUREMENT_RECORD_SIZE == 20);
+    assert(MEASUREMENT_BATCH_CRC_SIZE == 4);
     assert(NETWORK_BATCH_MAX_MEASUREMENTS == 24);
     assert(MEASUREMENT_BATCH_HEADER_SIZE + NETWORK_BATCH_MAX_MEASUREMENTS * MEASUREMENT_RECORD_SIZE == 492);
 
@@ -2916,7 +2948,8 @@ static void test_phase_four_localization_and_docs_contracts() {
 
     uint8_t buf[64];
     size_t sz = serialize_measurement_batch(records, 2, buf, sizeof(buf), 96.5f);
-    assert(sz == 12 + 2 * 20);
+    assert(sz == 12 + 2 * 20 + MEASUREMENT_BATCH_CRC_SIZE);
+    assert(verify_measurement_batch_crc32(buf, sz));
     assert(buf[0] == 1);
     assert(buf[1] == 2);
     uint16_t clk_flags = static_cast<uint16_t>(buf[2]) | (static_cast<uint16_t>(buf[3]) << 8);

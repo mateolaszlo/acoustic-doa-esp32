@@ -64,7 +64,8 @@ bool RestClient::sendBatch(const NetworkMeasurement *measurements, size_t count,
                            float db_spl_offset) {
     constexpr size_t max_payload_size =
         MEASUREMENT_BATCH_HEADER_SIZE +
-        NETWORK_BATCH_MAX_MEASUREMENTS * MEASUREMENT_RECORD_SIZE;
+        NETWORK_BATCH_MAX_MEASUREMENTS * MEASUREMENT_RECORD_SIZE +
+        MEASUREMENT_BATCH_CRC_SIZE;
     uint8_t payload[max_payload_size];
     const size_t payload_size = serialize_measurement_batch(
         measurements, count, payload, sizeof(payload), db_spl_offset);

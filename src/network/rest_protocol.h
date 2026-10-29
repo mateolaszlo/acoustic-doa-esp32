@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstring>
 #include <ctime>
+#include <esp_rom_crc.h>
 #include "audio/gcc_phat.h"
 #include "config/app_config.h"
 
@@ -10,10 +11,12 @@
 constexpr time_t   MIN_VALID_EPOCH                      = 1704067200;
 
 // Binary REST Protocol Constants (POST /api/v1/measurements)
-// Format version 1: 12-byte Little-Endian batch header + 20-byte per-measurement records
+// Format version 1: 12-byte Little-Endian batch header + 20-byte per-measurement records + 4-byte CRC32 trailer
 constexpr uint8_t  MEASUREMENT_BATCH_VERSION            = 1;
 constexpr size_t   MEASUREMENT_BATCH_HEADER_SIZE        = 12;
 constexpr size_t   MEASUREMENT_RECORD_SIZE              = 20;
+constexpr size_t   MEASUREMENT_BATCH_CRC_SIZE           = 4;
+constexpr size_t   MEASUREMENT_BATCH_TRAILER_SIZE       = MEASUREMENT_BATCH_CRC_SIZE;
 
 // Clock synchronization flags
 constexpr uint16_t CLOCK_FLAG_UTC_SYNCHRONIZED          = 0x0001; // Synchronized via SNTP UTC
@@ -51,6 +54,43 @@ inline void append_float_le(uint8_t* buffer, size_t &offset, float value) {
 }
 
 /**
+ * @brief Calculates the IEEE 802.3 CRC32 checksum of a byte buffer using hardware ROM functions.
+ *
+ * @param data Pointer to input data.
+ * @param length Number of bytes.
+ * @return 32-bit CRC32 checksum (0 if data is null or length is 0).
+ */
+inline uint32_t calculate_batch_crc32(const uint8_t* data, size_t length) {
+    if (data == nullptr || length == 0) {
+        return 0;
+    }
+    return esp_rom_crc32_le(0, data, static_cast<uint32_t>(length));
+}
+
+/**
+ * @brief Verifies the 4-byte CRC32 trailer appended to a serialized measurement batch.
+ *
+ * @param payload Pointer to serialized binary batch.
+ * @param total_length Total size of payload in bytes (must be >= MEASUREMENT_BATCH_HEADER_SIZE + MEASUREMENT_BATCH_CRC_SIZE).
+ * @return true if CRC matches; false otherwise.
+ */
+inline bool verify_measurement_batch_crc32(const uint8_t* payload, size_t total_length) {
+    if (payload == nullptr || total_length < MEASUREMENT_BATCH_HEADER_SIZE + MEASUREMENT_BATCH_CRC_SIZE) {
+        return false;
+    }
+    const size_t data_length = total_length - MEASUREMENT_BATCH_CRC_SIZE;
+    const uint32_t expected_crc = calculate_batch_crc32(payload, data_length);
+
+    uint32_t trailer_crc = 0;
+    trailer_crc |= static_cast<uint32_t>(payload[data_length]);
+    trailer_crc |= static_cast<uint32_t>(payload[data_length + 1]) << 8;
+    trailer_crc |= static_cast<uint32_t>(payload[data_length + 2]) << 16;
+    trailer_crc |= static_cast<uint32_t>(payload[data_length + 3]) << 24;
+
+    return expected_crc == trailer_crc;
+}
+
+/**
  * @brief Serializes a batch of up to NETWORK_BATCH_MAX_MEASUREMENTS into the binary protocol format.
  *
  * @param measurements Array of timestamped measurements.
@@ -58,7 +98,7 @@ inline void append_float_le(uint8_t* buffer, size_t &offset, float value) {
  * @param payload Destination buffer.
  * @param payload_capacity Total capacity of payload buffer.
  * @param db_spl_offset Calibration offset added to digital rms_db to form sound pressure level.
- * @return Total serialized bytes written (12 + count * 20), or 0 on validation error.
+ * @return Total serialized bytes written (12 + count * 20 + 4), or 0 on validation error.
  */
 inline size_t serialize_measurement_batch(
     const NetworkMeasurement* measurements,
@@ -69,7 +109,7 @@ inline size_t serialize_measurement_batch(
 
     if (measurements == nullptr || payload == nullptr || count == 0 ||
         count > NETWORK_BATCH_MAX_MEASUREMENTS ||
-        payload_capacity < MEASUREMENT_BATCH_HEADER_SIZE + count * MEASUREMENT_RECORD_SIZE) {
+        payload_capacity < MEASUREMENT_BATCH_HEADER_SIZE + count * MEASUREMENT_RECORD_SIZE + MEASUREMENT_BATCH_CRC_SIZE) {
         return 0;
     }
 
@@ -100,6 +140,9 @@ inline size_t serialize_measurement_batch(
         append_float_le(payload, offset, measurements[index].result.rms_db + db_spl_offset);
         append_float_le(payload, offset, measurements[index].result.confidence);
     }
+
+    const uint32_t crc = calculate_batch_crc32(payload, offset);
+    append_u32_le(payload, offset, crc);
 
     return offset;
 }
