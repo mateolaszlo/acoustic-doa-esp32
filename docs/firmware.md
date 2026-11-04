@@ -7,7 +7,7 @@
 | `src/main.cpp` | FreeRTOS tasks orchestration (`dsp_task`, `sensor_display_task`, `network_task`), peripheral setup, and system initialization |
 | `src/config/app_config.h` | Central hardware pinout, 4-mic topology, dual-band DSP cutoffs, FreeRTOS task, and radar UI constants |
 | `src/config/device_config.h` | Device configuration data structures, network settings, acoustic threshold parameters, and calibration values |
-| `src/config/config_store.h` / `.cpp` | Persistent NVS storage load/save routines via ESP32 `Preferences` API |
+| `src/config/config_store.h` / `.cpp` | Persistent NVS storage load/save routines via ESP32 `Preferences` API with read-before-write dirty checking to prevent flash wear |
 | `src/audio/gcc_phat.h` / `.cpp` | 4-channel FFT pipeline, dual-band raised-cosine spectral weighting, 6-pair GCC-PHAT, triangle loop-closure validation, and $2\times 2$ WLS 2D azimuth solver |
 | `src/audio/i2s_sampler.h` / `.cpp` | Synchronized dual-I2S (`I2S0` Master RX + `I2S1` Slave RX via GPIO Matrix) driver installation and 4-channel quad DMA reads (`read_i2s_quad`) |
 | `src/audio/post_checker.h` / `.cpp` | Power-On Self-Test (POST) 4-microphone health heuristics (`evaluate_quad_microphone_health`) and bus collision detection |
@@ -170,7 +170,7 @@ During startup (`SETUP_BOOT_DELAY_MS = 3000`), the firmware executes an automate
   estimates a server-to-device UTC offset. If both sources are unavailable, it
   transmits monotonic uptime timestamps with an explicit clock flag instead of
   blocking or discarding measurements.
-- Refreshes remote calibration at boot and approximately every 60 seconds.
+- Refreshes remote calibration at boot and approximately every 60 seconds with in-memory dirty checking (skips NVS writes and audio driver reinitialization when remote calibration is unchanged).
 - Receives timestamped results from `network_queue` and batches up to 24
   measurements, flushing a partial batch after 200 ms.
 - Sends packed binary batches (12-byte header, 20-byte records, 4-byte hardware ROM CRC32 trailer) with HTTP keep-alive and a five-second timeout.

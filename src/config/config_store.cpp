@@ -32,6 +32,30 @@ static float get_preference_float(const char *key, float fallback) {
     return preferences.isKey(key) ? preferences.getFloat(key) : fallback;
 }
 
+static inline void put_preference_string_if_changed(const char *key, const String &val) {
+    if (!preferences.isKey(key) || preferences.getString(key) != val) {
+        preferences.putString(key, val);
+    }
+}
+
+static inline void put_preference_float_if_changed(const char *key, float val, float epsilon = 1e-4f) {
+    if (!preferences.isKey(key) || !float_equal(preferences.getFloat(key), val, epsilon)) {
+        preferences.putFloat(key, val);
+    }
+}
+
+static inline void put_preference_uint_if_changed(const char *key, uint32_t val) {
+    if (!preferences.isKey(key) || preferences.getUInt(key) != val) {
+        preferences.putUInt(key, val);
+    }
+}
+
+static inline void put_preference_bool_if_changed(const char *key, bool val) {
+    if (!preferences.isKey(key) || preferences.getBool(key) != val) {
+        preferences.putBool(key, val);
+    }
+}
+
 bool load_device_config(DeviceConfig &config) {
     PreferencesScope scope(preferences, "acoustic", false);
     if (!scope.isOpen()) {
@@ -67,19 +91,19 @@ void save_device_config(const DeviceConfig &config) {
         return;
     }
 
-    preferences.putString("wifi_ssid", safe_config.wifi_ssid);
-    preferences.putString("wifi_pass", safe_config.wifi_password);
-    preferences.putString("api_url", safe_config.api_url);
-    preferences.putString("api_key", safe_config.api_key);
-    preferences.putUInt("device_id", safe_config.device_id);
-    preferences.putFloat("mic_distance", safe_config.microphone_distance_m);
-    preferences.putFloat("corr_threshold", safe_config.correlation_threshold);
-    preferences.putFloat("spl_threshold", safe_config.sound_level_threshold_db_spl);
-    preferences.putFloat("spl_offset", safe_config.db_spl_offset);
-    preferences.putFloat("ang_offset", safe_config.angle_offset_deg);
-    preferences.putUInt("sample_rate", safe_config.sample_rate);
-    preferences.putUInt("window_size", safe_config.window_size);
-    preferences.putBool("adapt_thresh", safe_config.adaptive_threshold_enabled);
-    preferences.putFloat("snr_margin", safe_config.snr_margin_db);
+    put_preference_string_if_changed("wifi_ssid", safe_config.wifi_ssid);
+    put_preference_string_if_changed("wifi_pass", safe_config.wifi_password);
+    put_preference_string_if_changed("api_url", safe_config.api_url);
+    put_preference_string_if_changed("api_key", safe_config.api_key);
+    put_preference_uint_if_changed("device_id", safe_config.device_id);
+    put_preference_float_if_changed("mic_distance", safe_config.microphone_distance_m);
+    put_preference_float_if_changed("corr_threshold", safe_config.correlation_threshold);
+    put_preference_float_if_changed("spl_threshold", safe_config.sound_level_threshold_db_spl);
+    put_preference_float_if_changed("spl_offset", safe_config.db_spl_offset);
+    put_preference_float_if_changed("ang_offset", safe_config.angle_offset_deg);
+    put_preference_uint_if_changed("sample_rate", safe_config.sample_rate);
+    put_preference_uint_if_changed("window_size", safe_config.window_size);
+    put_preference_bool_if_changed("adapt_thresh", safe_config.adaptive_threshold_enabled);
+    put_preference_float_if_changed("snr_margin", safe_config.snr_margin_db);
 }
 

@@ -28,12 +28,14 @@ When running off-target, the tests link against lightweight, bit-exact mocks loc
 | [`Adafruit_GFX.h`](../test/mock_esp/Adafruit_GFX.h) & [`Adafruit_ST7735.h`](../test/mock_esp/Adafruit_ST7735.h) | Lightweight frame buffer and graphics primitive mocks for off-target ST7735 TFT radar and prompt rendering verification. |
 | [`SPI.h`](../test/mock_esp/SPI.h) | Host mock for SPI bus communication. |
 | [`Arduino.h`](../test/mock_esp/Arduino.h) & [`Wire.h`](../test/mock_esp/Wire.h) | Minimal Arduino core and I2C TwoWire mocks providing `HardwareSerial Serial` output capture and I2C bus probing for off-target telemetry verification. |
+| [`Preferences.h`](../test/mock_esp/Preferences.h) | Host mock for the Arduino `Preferences` NVS key-value storage library with call tracking metrics to verify dirty-checking and flash wear prevention. |
+| [`esp_rom_crc.h`](../test/mock_esp/esp_rom_crc.h) | Host implementation of the ESP32-S3 ROM IEEE 802.3 CRC32 calculation (`esp_rom_crc32_le`). |
 
 ---
 
 ## 3. Test Suites Overview
 
-The test harness in [`test/test_adaptive_and_smoothing.cpp`](../test/test_adaptive_and_smoothing.cpp) covers 23 specialized test suites:
+The test harness in [`test/test_adaptive_and_smoothing.cpp`](../test/test_adaptive_and_smoothing.cpp) covers 25 specialized test suites:
 
 1. **`test_gcc_phat_adaptive_noise_floor`**:
    - Verifies the asymmetric attack/decay tracking ($3\text{ dB/s}$ upward creep vs. $30\text{ dB/s}$ fast downward recovery).
@@ -117,6 +119,10 @@ The test harness in [`test/test_adaptive_and_smoothing.cpp`](../test/test_adapti
     - Validates REST API wrong API key detection (HTTP 401 Unauthorized / HTTP 403 Forbidden) across calibration and measurement endpoints.
     - Validates HTTP 404 (device/route not found), HTTP 500, and network timeout classification.
     - Validates measurement batch streaming anti-spam throttling (immediate initial active print, suppressed intermediate 5 Hz batches, milestone summary at batch 50, and 15-second error throttling).
+25. **`test_nvs_dirty_checking_and_flash_wear_prevention`**:
+    - Validates `DeviceConfig` equality (`operator==`, `operator!=`, `configs_equal`) across all 14 parameters with float epsilon tolerances.
+    - Validates NVS flash write tracking with mock `Preferences`: cold save writes all 14 keys, re-saving identical config writes 0 keys, and single-field delta saves write exactly 1 key.
+    - Validates Tier-1 remote calibration synchronization dirty checking: identical remote payloads bypass NVS writes and avoid audio driver reinitialization.
 
 ---
 
@@ -150,6 +156,7 @@ g++ -std=gnu++11 -O1 -Wall -Wextra -Werror -fsanitize=address,undefined,float-di
     src/audio/post_checker.cpp \
     src/ui/radar_ui.cpp \
     src/ui/serial_ui.cpp \
+    src/config/config_store.cpp \
     -o bin/test_host
 
 ./bin/test_host

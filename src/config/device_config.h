@@ -111,3 +111,35 @@ inline bool is_device_configured(const DeviceConfig &config) {
            config.device_id != 0;
 }
 
+inline bool float_equal(float a, float b, float epsilon = 1e-4f) {
+    if (std::isnan(a) && std::isnan(b)) return true;
+    if (std::isnan(a) || std::isnan(b)) return false;
+    if (!std::isfinite(a) || !std::isfinite(b)) return a == b;
+    return std::fabs(a - b) <= epsilon;
+}
+
+inline bool configs_equal(const DeviceConfig &a, const DeviceConfig &b, float float_epsilon = 1e-4f) {
+    return a.wifi_ssid == b.wifi_ssid &&
+           a.wifi_password == b.wifi_password &&
+           a.api_url == b.api_url &&
+           a.api_key == b.api_key &&
+           a.device_id == b.device_id &&
+           a.sample_rate == b.sample_rate &&
+           a.window_size == b.window_size &&
+           a.adaptive_threshold_enabled == b.adaptive_threshold_enabled &&
+           float_equal(a.microphone_distance_m, b.microphone_distance_m, float_epsilon) &&
+           float_equal(a.correlation_threshold, b.correlation_threshold, float_epsilon) &&
+           float_equal(a.sound_level_threshold_db_spl, b.sound_level_threshold_db_spl, float_epsilon) &&
+           float_equal(a.db_spl_offset, b.db_spl_offset, float_epsilon) &&
+           float_equal(a.angle_offset_deg, b.angle_offset_deg, float_epsilon) &&
+           float_equal(a.snr_margin_db, b.snr_margin_db, float_epsilon);
+}
+
+inline bool operator==(const DeviceConfig &a, const DeviceConfig &b) {
+    return configs_equal(a, b);
+}
+
+inline bool operator!=(const DeviceConfig &a, const DeviceConfig &b) {
+    return !(a == b);
+}
+

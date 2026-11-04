@@ -520,29 +520,32 @@ void network_task(void *param) {
                 previous = device_config;
                 xSemaphoreGive(config_mutex);
 
-                bool reconfig_ok = true;
-                if (remote_cfg.sample_rate != previous.sample_rate) {
-                    reconfig_ok = reconfigure_audio(remote_cfg.sample_rate);
-                }
+                // Tier 1 Dirty-Check: Only update DSP and commit to NVS if calibration actually changed
+                if (remote_cfg != previous) {
+                    bool reconfig_ok = true;
+                    if (remote_cfg.sample_rate != previous.sample_rate) {
+                        reconfig_ok = reconfigure_audio(remote_cfg.sample_rate);
+                    }
 
-                if (reconfig_ok) {
-                    xSemaphoreTake(config_mutex, portMAX_DELAY);
-                    device_config = remote_cfg;
-                    device_config.window_size = AUDIO_FFT_WINDOW_SIZE;
-                    xSemaphoreGive(config_mutex);
-                    current_sample_rate.store(remote_cfg.sample_rate);
-
-                    if (apply_dsp_calibration(current_temperature.load(),
-                                              current_humidity.load(),
-                                              current_pressure.load())) {
-                        save_device_config(remote_cfg);
-                        Serial.println("Remote calibration applied");
-                    } else {
+                    if (reconfig_ok) {
                         xSemaphoreTake(config_mutex, portMAX_DELAY);
-                        device_config = previous;
+                        device_config = remote_cfg;
+                        device_config.window_size = AUDIO_FFT_WINDOW_SIZE;
                         xSemaphoreGive(config_mutex);
-                        current_sample_rate.store(previous.sample_rate);
-                        reconfigure_audio(previous.sample_rate);
+                        current_sample_rate.store(remote_cfg.sample_rate);
+
+                        if (apply_dsp_calibration(current_temperature.load(),
+                                                  current_humidity.load(),
+                                                  current_pressure.load())) {
+                            save_device_config(remote_cfg);
+                            Serial.println("[Config] Remote calibration updated and saved to NVS");
+                        } else {
+                            xSemaphoreTake(config_mutex, portMAX_DELAY);
+                            device_config = previous;
+                            xSemaphoreGive(config_mutex);
+                            current_sample_rate.store(previous.sample_rate);
+                            reconfigure_audio(previous.sample_rate);
+                        }
                     }
                 }
             }

@@ -10,6 +10,8 @@
 #include "ui/radar_ui.h"
 #include <Arduino.h>
 #include <Wire.h>
+#include <Preferences.h>
+#include "config/config_store.h"
 
 // --- Mock ESP-IDF and ESP-DSP for native host testing ---
 static int g_mock_fft_calls = 0;
@@ -20,6 +22,9 @@ static int g_mock_fail_internal_after = -1; // -1 = never fail internal
 static int g_mock_fail_all_after = -1;      // -1 = never fail all
 static int g_mock_fft_init_ret = 0;
 static uint32_t g_mock_millis = 1000;
+
+size_t Preferences::total_writes = 0;
+std::map<std::string, std::string> Preferences::mock_storage;
 
 uint32_t millis() {
     return g_mock_millis;
@@ -3247,6 +3252,113 @@ static void test_wifi_and_api_serial_logging() {
     printf("  [PASS] test_wifi_and_api_serial_logging passed.\n");
 }
 
+static void test_nvs_dirty_checking_and_flash_wear_prevention() {
+    printf("[TEST] Running test_nvs_dirty_checking_and_flash_wear_prevention...\n");
+
+    // 1. Verify DeviceConfig equality operator (operator==, operator!=, configs_equal)
+    DeviceConfig cfg1;
+    cfg1.wifi_ssid = "TestWiFi";
+    cfg1.wifi_password = "SecretPassword";
+    cfg1.api_url = "http://192.168.1.100:8000/api/v1";
+    cfg1.api_key = "apikey123";
+    cfg1.device_id = 42;
+    cfg1.microphone_distance_m = 0.082f;
+    cfg1.correlation_threshold = 0.45f;
+    cfg1.sound_level_threshold_db_spl = 58.0f;
+    cfg1.db_spl_offset = 100.0f;
+    cfg1.angle_offset_deg = 5.0f;
+    cfg1.sample_rate = 44100;
+    cfg1.window_size = 1024;
+    cfg1.adaptive_threshold_enabled = true;
+    cfg1.snr_margin_db = 8.0f;
+
+    DeviceConfig cfg2 = cfg1;
+    assert(cfg1 == cfg2);
+    assert(!(cfg1 != cfg2));
+    assert(configs_equal(cfg1, cfg2));
+
+    // Verify float epsilon comparison: small floating point delta (< 1e-4) still evaluates equal
+    cfg2.microphone_distance_m += 1e-5f;
+    assert(cfg1 == cfg2);
+
+    // Verify changes to each field trigger inequality
+    {
+        DeviceConfig c = cfg1; c.wifi_ssid = "Other"; assert(c != cfg1);
+        c = cfg1; c.wifi_password = "Other"; assert(c != cfg1);
+        c = cfg1; c.api_url = "Other"; assert(c != cfg1);
+        c = cfg1; c.api_key = "Other"; assert(c != cfg1);
+        c = cfg1; c.device_id = 99; assert(c != cfg1);
+        c = cfg1; c.microphone_distance_m = 0.080f; assert(c != cfg1);
+        c = cfg1; c.correlation_threshold = 0.40f; assert(c != cfg1);
+        c = cfg1; c.sound_level_threshold_db_spl = 50.0f; assert(c != cfg1);
+        c = cfg1; c.db_spl_offset = 96.5f; assert(c != cfg1);
+        c = cfg1; c.angle_offset_deg = 0.0f; assert(c != cfg1);
+        c = cfg1; c.sample_rate = 48000; assert(c != cfg1);
+        c = cfg1; c.window_size = 2048; assert(c != cfg1);
+        c = cfg1; c.adaptive_threshold_enabled = false; assert(c != cfg1);
+        c = cfg1; c.snr_margin_db = 12.0f; assert(c != cfg1);
+    }
+
+    // 2. Tier 2: Test save_device_config with mock Preferences storage
+    Preferences::clearStorage();
+    assert(Preferences::total_writes == 0);
+
+    // Cold save: all 14 keys must be written
+    save_device_config(cfg1);
+    assert(Preferences::total_writes == 14);
+
+    // Verify values were correctly stored and can be loaded back
+    DeviceConfig loaded;
+    assert(load_device_config(loaded));
+    assert(loaded == cfg1);
+
+    // Idempotent re-save: saving identical config must produce ZERO additional writes!
+    Preferences::resetMockStats();
+    save_device_config(cfg1);
+    assert(Preferences::total_writes == 0);
+
+    // Modify a single field (correlation_threshold): must write exactly 1 key!
+    cfg1.correlation_threshold = 0.50f;
+    Preferences::resetMockStats();
+    save_device_config(cfg1);
+    assert(Preferences::total_writes == 1);
+
+    // Modify two fields (distance and spl_offset): must write exactly 2 keys!
+    cfg1.microphone_distance_m = 0.081f;
+    cfg1.db_spl_offset = 98.0f;
+    Preferences::resetMockStats();
+    save_device_config(cfg1);
+    assert(Preferences::total_writes == 2);
+
+    // Verify loaded config reflects the modified values
+    DeviceConfig loaded_modified;
+    assert(load_device_config(loaded_modified));
+    assert(loaded_modified == cfg1);
+
+    // 3. Tier 1: Test simulated remote calibration sync dirty-check logic
+    // When remote returns identical values to current device_config:
+    DeviceConfig current_device_config = loaded_modified;
+    DeviceConfig remote_sync_cfg = current_device_config;
+
+    // In network_task: if (remote_sync_cfg != current_device_config) ...
+    // Since configs are identical, save_device_config must be completely bypassed!
+    Preferences::resetMockStats();
+    if (remote_sync_cfg != current_device_config) {
+        save_device_config(remote_sync_cfg);
+    }
+    assert(Preferences::total_writes == 0);
+
+    // When remote changes 1 calibration value:
+    remote_sync_cfg.correlation_threshold = 0.42f;
+    if (remote_sync_cfg != current_device_config) {
+        save_device_config(remote_sync_cfg);
+    }
+    // Only 1 write occurs!
+    assert(Preferences::total_writes == 1);
+
+    printf("  [PASS] test_nvs_dirty_checking_and_flash_wear_prevention passed.\n");
+}
+
 int main() {
     test_gcc_phat_adaptive_noise_floor();
     test_display_smoothing_filter();
@@ -3272,6 +3384,7 @@ int main() {
     test_phase_two_serial_ui_and_logging();
     test_phase_four_localization_and_docs_contracts();
     test_wifi_and_api_serial_logging();
+    test_nvs_dirty_checking_and_flash_wear_prevention();
     printf("\nAll unit tests passed successfully!\n");
     return 0;
 }
