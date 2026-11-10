@@ -45,6 +45,9 @@ static std::atomic<bool> adaptive_threshold_active(DEFAULT_ADAPTIVE_THRESHOLD_EN
 static std::atomic<float> current_snr_margin_db(DEFAULT_SNR_MARGIN_DB);
 static std::atomic<float> current_spl_threshold(DEFAULT_SOUND_LEVEL_THRESHOLD_DB_SPL);
 static std::atomic<uint32_t> current_sample_rate(DEFAULT_SAMPLE_RATE);
+static std::atomic<float> current_sector_width_deg(DEFAULT_SECTOR_WIDTH_DEG);
+static std::atomic<float> current_sector_hysteresis_deg(DEFAULT_SECTOR_HYSTERESIS_DEG);
+static std::atomic<uint32_t> current_tracker_hold_ms(DEFAULT_TRACKER_HOLD_TIMEOUT_MS);
 
 // Diagnostic counters
 static std::atomic<uint32_t> dsp_deadline_misses(0);
@@ -366,6 +369,9 @@ static bool apply_dsp_calibration(float temperature_c,
     const float angle_offset = device_config.angle_offset_deg;
     const bool adaptive_enabled = device_config.adaptive_threshold_enabled;
     const float snr_margin = device_config.snr_margin_db;
+    const float sector_width = device_config.sector_width_deg;
+    const float sector_hyst = device_config.sector_hysteresis_deg;
+    const uint32_t tracker_hold = device_config.tracker_hold_timeout_ms;
     xSemaphoreGive(config_mutex);
 
     if (xSemaphoreTake(doa_mutex, pdMS_TO_TICKS(DOA_MUTEX_BLOCK_TIMEOUT_MS)) != pdTRUE) {
@@ -388,6 +394,9 @@ static bool apply_dsp_calibration(float temperature_c,
     adaptive_threshold_active.store(adaptive_enabled);
     current_snr_margin_db.store(snr_margin);
     current_spl_threshold.store(sound_level_threshold_db_spl);
+    current_sector_width_deg.store(sector_width);
+    current_sector_hysteresis_deg.store(sector_hyst);
+    current_tracker_hold_ms.store(tracker_hold);
     return true;
 }
 
@@ -741,8 +750,8 @@ void sensor_display_task(void *param) {
     }
     bool last_server_available = server_available.load();
     bool last_wifi_connected = wifi_connected.load();
-    MultiTargetDisplayTracker tracker(DISPLAY_TRACK_HOLD_TIMEOUT_MS, DisplaySmoothingFilter::DEFAULT_RESET_SILENCE_MS);
-    TrackedTarget tracked_targets[DOA_MAX_SOURCES];
+    MultiSourceSectorTracker tracker;
+    TrackedTarget tracked_targets[SECTOR_TRACKER_MAX_SLOTS];
     size_t prev_rendered_tracks = 0;
     bool prev_rendered_blips = false;
     uint32_t last_idle_refresh_ms = 0;
@@ -753,28 +762,42 @@ void sensor_display_task(void *param) {
         const uint32_t now_ms = millis();
         bool needs_redraw = false;
 
+        tracker.updateCalibration(current_sector_width_deg.load(),
+                                  current_sector_hysteresis_deg.load(),
+                                  current_tracker_hold_ms.load());
+
         if (xQueueReceive(display_queue, &event, pdMS_TO_TICKS(DISPLAY_QUEUE_TIMEOUT_MS))) {
             last_event = event;
-            tracker.update(event, now_ms);
-            float event_angles[DOA_MAX_SOURCES];
-            for (size_t s = 0; s < event.count && s < DOA_MAX_SOURCES; ++s) {
-                event_angles[s] = event.sources[s].angle_deg;
+            SectorTransitionEvent transitions[SECTOR_TRACKER_MAX_SLOTS];
+            const size_t num_transitions = tracker.update(
+                event, now_ms, transitions, SECTOR_TRACKER_MAX_SLOTS);
+            const size_t active_tracks = tracker.getActiveTargets(
+                tracked_targets, SECTOR_TRACKER_MAX_SLOTS);
+            if (active_tracks > 0) {
+                float sector_angles[SECTOR_TRACKER_MAX_SLOTS];
+                for (size_t s = 0; s < active_tracks; ++s) {
+                    sector_angles[s] = tracked_targets[s].smoothed_angle_deg;
+                }
+                radar_display.addDecayBlips(sector_angles, active_tracks, now_ms);
             }
-            radar_display.addDecayBlips(event_angles, event.count, now_ms);
             needs_redraw = true;
             last_idle_refresh_ms = now_ms;
 
-            const float calibrated_db = event.rms_db + db_spl_offset.load();
-            for (uint8_t s = 0; s < event.count; ++s) {
-                SerialUI::printDoaEvent(event.sources[s].angle_deg,
-                                        event.sources[s].confidence,
-                                        calibrated_db,
-                                        s,
-                                        event.count);
+            const float offset = db_spl_offset.load();
+            for (size_t i = 0; i < num_transitions; ++i) {
+                if (transitions[i].event_type != SECTOR_EVENT_LEAVE) {
+                    SerialUI::printDoaEvent(transitions[i].angle_deg,
+                                            transitions[i].confidence,
+                                            transitions[i].rms_db + offset,
+                                            transitions[i].slot_id,
+                                            transitions[i].active_sources);
+                }
             }
         } else {
-            // Silence (no new packets): check if tracks or phosphor blips are still decaying, or if the idle refresh interval has elapsed
-            const size_t active_tracks = tracker.getActiveTracks(tracked_targets, DOA_MAX_SOURCES, now_ms);
+            // Silence (no new packets): tick the sector tracker so coasting tracks can expire
+            tracker.update(MultiDoaResult{}, now_ms, nullptr, 0);
+            const size_t active_tracks = tracker.getActiveTargets(
+                tracked_targets, SECTOR_TRACKER_MAX_SLOTS);
             const bool active_blips = radar_display.hasActiveDecayBlips(now_ms);
             const bool current_server_available = server_available.load();
             const bool current_wifi_connected = wifi_connected.load();
@@ -795,10 +818,11 @@ void sensor_display_task(void *param) {
         if (needs_redraw && radar_display.isInitialized()) {
             last_server_available = server_available.load();
             last_wifi_connected = wifi_connected.load();
-            const size_t num_tracks = tracker.getActiveTracks(tracked_targets, DOA_MAX_SOURCES, now_ms);
-            float angles[DOA_MAX_SOURCES];
-            float confs[DOA_MAX_SOURCES];
-            uint8_t slot_ids[DOA_MAX_SOURCES];
+            const size_t num_tracks = tracker.getActiveTargets(
+                tracked_targets, SECTOR_TRACKER_MAX_SLOTS);
+            float angles[SECTOR_TRACKER_MAX_SLOTS];
+            float confs[SECTOR_TRACKER_MAX_SLOTS];
+            uint8_t slot_ids[SECTOR_TRACKER_MAX_SLOTS];
             for (size_t i = 0; i < num_tracks; ++i) {
                 angles[i] = tracked_targets[i].smoothed_angle_deg;
                 confs[i] = tracked_targets[i].confidence;
@@ -866,6 +890,9 @@ void setup() {
     current_sample_rate.store(device_config.sample_rate);
     db_spl_offset.store(device_config.db_spl_offset);
     adaptive_threshold_active.store(device_config.adaptive_threshold_enabled);
+    current_sector_width_deg.store(device_config.sector_width_deg);
+    current_sector_hysteresis_deg.store(device_config.sector_hysteresis_deg);
+    current_tracker_hold_ms.store(device_config.tracker_hold_timeout_ms);
 
     // 1. Initialize TFT display and BME280 sensor
     init_sensors_and_display();

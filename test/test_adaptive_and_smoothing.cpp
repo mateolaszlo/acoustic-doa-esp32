@@ -3990,6 +3990,67 @@ static void test_multi_source_sector_tracker_and_hysteresis() {
         assert(tracker.update(corrupt, 3000, nullptr, 0) == 0);
     }
 
+    // -------------------------------------------------------------------------
+    // 10. Display / Radar UI Integration via MultiSourceSectorTracker::getActiveTargets
+    // -------------------------------------------------------------------------
+    {
+        MultiSourceSectorTracker display_tracker;
+        display_tracker.updateCalibration(15.0f, 3.0f, 2500);
+        TrackedTarget targets[SECTOR_TRACKER_MAX_SLOTS];
+        RadarDisplay display;
+        assert(display.init());
+
+        // Null safety check
+        assert(display_tracker.getActiveTargets(nullptr, 2) == 0);
+        assert(display_tracker.getActiveTargets(targets, 0) == 0);
+
+        // 1-2 frame impulse (unconfirmed CANDIDATE) must NOT appear on display (returns 0 active targets)
+        display_tracker.update(make_single(42.0f, 0.88f), 1000, nullptr, 0);
+        assert(display_tracker.getActiveTargets(targets, 2) == 0);
+        display_tracker.update(make_single(43.0f, 0.88f), 1023, nullptr, 0);
+        assert(display_tracker.getActiveTargets(targets, 2) == 0);
+
+        // 3rd frame confirms birth -> ACTIVE at quantized Sector 15 (+45.0 deg)
+        display_tracker.update(make_single(44.0f, 0.90f), 1046, nullptr, 0);
+        size_t active_n = display_tracker.getActiveTargets(targets, 2);
+        assert(active_n == 1);
+        assert(targets[0].active);
+        assert(targets[0].slot_id == 0);
+        assert(fabsf(targets[0].smoothed_angle_deg - 45.0f) < 1e-4f);
+        assert(targets[0].confidence > 0.80f);
+
+        // Second speaker joins at -32.0 deg -> Sector 10 (-30.0 deg) after 3 frames
+        display_tracker.update(make_dual(46.0f, 0.90f, -32.0f, 0.82f), 1069, nullptr, 0);
+        display_tracker.update(make_dual(46.0f, 0.90f, -31.0f, 0.82f), 1092, nullptr, 0);
+        display_tracker.update(make_dual(45.0f, 0.90f, -30.0f, 0.84f), 1115, nullptr, 0);
+        active_n = display_tracker.getActiveTargets(targets, 2);
+        assert(active_n == 2);
+        assert(targets[0].slot_id == 0 && fabsf(targets[0].smoothed_angle_deg - 45.0f) < 1e-4f);
+        assert(targets[1].slot_id == 1 && fabsf(targets[1].smoothed_angle_deg - (-30.0f)) < 1e-4f);
+
+        // Conversational speech pause (1500 ms <= 2500 ms hold_timeout_ms):
+        // Both tracks enter COASTING and remain steadily visible on display!
+        MultiDoaResult silence = {};
+        display_tracker.update(silence, 2600, nullptr, 0);
+        active_n = display_tracker.getActiveTargets(targets, 2);
+        assert(active_n == 2);
+        assert(fabsf(targets[0].smoothed_angle_deg - 45.0f) < 1e-4f);
+        assert(fabsf(targets[1].smoothed_angle_deg - (-30.0f)) < 1e-4f);
+
+        // Render both sector-quantized tracks on RadarDisplay
+        float angles[2] = {targets[0].smoothed_angle_deg, targets[1].smoothed_angle_deg};
+        float confs[2] = {targets[0].confidence, targets[1].confidence};
+        uint8_t slot_ids[2] = {targets[0].slot_id, targets[1].slot_id};
+        display.addDecayBlips(angles, active_n, 2600);
+        display.drawRadarMulti(angles, confs, active_n, 22.0f, 50.0f, 101325.0f, 344.0f, 65.0f,
+                               true, true, 15.0f, 8.0f, slot_ids, 44100, 2600, true, 55.0f);
+
+        // Silence exceeds 2500 ms hold timeout (at t = 3700 ms, 2585 ms since 1115 ms):
+        // Both tracks expire -> getActiveTargets returns 0 so screen returns to idle "---.- deg"
+        display_tracker.update(silence, 3700, nullptr, 0);
+        assert(display_tracker.getActiveTargets(targets, 2) == 0);
+    }
+
     printf("  [PASS] test_multi_source_sector_tracker_and_hysteresis passed.\n");
 }
 

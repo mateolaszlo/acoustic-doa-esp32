@@ -153,10 +153,9 @@ During startup (`SETUP_BOOT_DELAY_MS = 3000`), the firmware executes an automate
 
 - Reads the BME280 approximately every two seconds.
 - Updates the speed-of-sound calibration.
-- Receives results from `display_queue`.
-- Applies a circular $S^1$ angle smoothing filter (`DisplaySmoothingFilter`, EMA with $\alpha = 0.25$ and shortest-arc outlier rejection threshold $|\Delta\phi| > 45^\circ$ via `shortestAngularDiff()` and `wrapAngle180()`, confirming source relocation after 2 consecutive consistent readings on $S^1$, and resetting immediately after $>1.5\text{ s}$ of silence) so transitions across $\pm 180^\circ$ (e.g., $+175^\circ \leftrightarrow -175^\circ$) smooth continuously without swinging through $0^\circ$.
-- Local display tracking (`display_queue`) operates continuously at the ~43.1 Hz audio block rate, decoupled from the sector-quantized state transitions (`ENTER`, `MOVE`, `HEARTBEAT`, `LEAVE`) pushed to `network_queue` by `MultiSourceSectorTracker`.
-- Prints event information to Serial.
+- Receives results from `display_queue` and updates a local `MultiSourceSectorTracker` instance synchronized with the runtime `sector_width_deg`, `sector_hysteresis_deg`, and `tracker_hold_timeout_ms` calibration atomics.
+- Renders only confirmed active or coasting speaker tracks (`MultiSourceSectorTracker::getActiveTargets()`) at their quantized sector center azimuth (`getSectorCenterDeg(confirmed_sector_id)`) with Schmitt-trigger boundary hysteresis ($\pm 3.0^\circ$ default) and conversational speech-pause hold (`2500 ms` default). Single-frame impulses (`< 3` frames) remain unconfirmed in `TRACK_STATE_CANDIDATE` and do not cause false needles or Serial log spam.
+- Prints confirmed sector transition events (`ENTER`, `MOVE`, `HEARTBEAT`) to Serial via `SerialUI::printDoaEvent()`.
 - Draws the full-color $360^\circ$ circular radar UI on the SPI TFT, including an `[AUTO]` pill badge (in cyan) in the top-right corner when adaptive noise floor tracking is enabled (or `[FIX]` in dark gray when disabled).
 - Priority: 2.
 - Stack: 4096 bytes.
@@ -248,7 +247,7 @@ The 128x160 color SPI TFT (ST7735 / KMR-1.8) shows a full $360^\circ$ circular r
   - Persistent slot assignment ensures needles and bottom chip badges (`1:`, `2:`, `3:`) never swap color identities when one speaker pauses or times out.
 - Acoustic phosphor decay trail: Fleeting acoustic impulses leave decaying phosphor dots on the outer perimeter ring that fade gracefully over 500 ms (matching `PHOSPHOR_DECAY_DURATION_MS`), ensuring transient events (hand claps, impacts) remain clearly visible.
 - The lower telemetry dashboard (`y = 84..159`):
-  - Heading Row ($y = 85$): Displays large `%+6.1f deg` when tracking a single source, or compact color-coded target chips (`1:+36°`, `2:-64°`, `3:+120°`) matching needle colors when multiple sources are active. When all tracks exceed the 1500 ms silence timeout, it displays `---.- deg` in muted gray.
+  - Heading Row ($y = 85$): Displays large `%+6.1f deg` when tracking a single confirmed speaker at its quantized sector center, or compact color-coded target chips (`1:+45°`, `2:-30°`) matching needle colors when two confirmed speakers are active. During conversational speech pauses within `tracker_hold_timeout_ms` (default 2500 ms), the track coasts steadily on screen; once the hold timeout expires, it displays `---.- deg` in muted gray.
   - Sound Level & Dynamic Bar ($y = 104$): Displays digital sound level in dB SPL alongside a 72-pixel mini horizontal dynamic range bar with a white trigger gate notch and a 3x5 micro-font readout of the runtime SNR margin (`current_snr_margin_db` from NVS or captive portal) positioned below the notch. The bar is color-coded by signal quality: muted gray for sub-threshold ambient noise below the gate, yellow for active triggers ($\ge \text{margin}$), and bright green for optimal high-confidence SNR ($\ge 20\text{ dB}$).
   - Environmental Compensation ($y = 117$): Consolidated live moist air sound speed, ambient temperature, and relative humidity (`c:%.1fm/s %.0fC %.0f%%`).
   - System Telemetry ($y = 130$): Barometric pressure and audio block configuration (e.g. `P:%.0fhPa 44k/1024` or `48k/1024`).

@@ -122,6 +122,17 @@ public:
     uint8_t getActiveSpeakerCount() const;
     const TrackSectorState& getSlotState(size_t slot_id) const;
 
+    /**
+     * @brief Populates out_targets with currently confirmed ACTIVE or COASTING speaker tracks
+     *        at their quantized sector center angles and persistent slot_ids (0 or 1) for
+     *        local TFT radar display rendering.
+     *
+     * @param out_targets Caller-supplied array of TrackedTarget.
+     * @param max_targets Capacity of out_targets array.
+     * @return Number of active/coasting targets written (0..SECTOR_TRACKER_MAX_SLOTS).
+     */
+    size_t getActiveTargets(TrackedTarget* out_targets, size_t max_targets) const;
+
 private:
     SectorTrackerConfig    config;
     DisplaySmoothingFilter filters[SECTOR_TRACKER_MAX_SLOTS];

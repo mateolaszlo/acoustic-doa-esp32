@@ -148,6 +148,26 @@ const TrackSectorState& MultiSourceSectorTracker::getSlotState(size_t slot_id) c
     return slots[slot_id];
 }
 
+size_t MultiSourceSectorTracker::getActiveTargets(TrackedTarget* out_targets,
+                                                  size_t max_targets) const {
+    if (out_targets == nullptr || max_targets == 0) {
+        return 0;
+    }
+
+    size_t count = 0;
+    for (size_t i = 0; i < SECTOR_TRACKER_MAX_SLOTS && count < max_targets; ++i) {
+        if ((slots[i].state == TRACK_STATE_ACTIVE || slots[i].state == TRACK_STATE_COASTING) &&
+            slots[i].confirmed_sector_id < getNumSectors()) {
+            out_targets[count].smoothed_angle_deg = getSectorCenterDeg(slots[i].confirmed_sector_id);
+            out_targets[count].confidence = slots[i].smoothed_confidence;
+            out_targets[count].active = true;
+            out_targets[count].slot_id = slots[i].slot_id;
+            count++;
+        }
+    }
+    return count;
+}
+
 size_t MultiSourceSectorTracker::update(const MultiDoaResult& multi_res,
                                         uint32_t now_ms,
                                         SectorTransitionEvent* out_events,
