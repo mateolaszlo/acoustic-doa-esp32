@@ -4051,6 +4051,69 @@ static void test_multi_source_sector_tracker_and_hysteresis() {
         assert(display_tracker.getActiveTargets(targets, 2) == 0);
     }
 
+    // -------------------------------------------------------------------------
+    // 11. Continuous Array Rotation / Sweeping Speaker Without Slot Lockup
+    // -------------------------------------------------------------------------
+    {
+        MultiSourceSectorTracker sweep_tracker;
+        sweep_tracker.updateCalibration(15.0f, 3.0f, 2500);
+        SectorTransitionEvent events[SECTOR_TRACKER_MAX_SLOTS];
+        TrackedTarget targets[SECTOR_TRACKER_MAX_SLOTS];
+
+        // Acquire single speaker at 0.0 deg -> Slot 0 (Sector 12)
+        sweep_tracker.update(make_single(0.0f), 1000, events, 2);
+        sweep_tracker.update(make_single(0.0f), 1023, events, 2);
+        size_t n = sweep_tracker.update(make_single(0.0f), 1046, events, 2);
+        assert(n == 1 && events[0].slot_id == 0 && events[0].sector_id == 12);
+
+        // Rotate array continuously from 0 deg to +135 deg at +8 deg per 23 ms frame
+        // (crosses a 15 deg sector boundary every ~1.8 frames, faster than 3 frames/sector!).
+        // Slot 0 (green) must smoothly track the sweep without locking at 0 deg or spawning Slot 1!
+        uint32_t t_ms = 1069;
+        size_t move_events = 0;
+        for (float ang = 8.0f; ang <= 136.0f; ang += 8.0f) {
+            n = sweep_tracker.update(make_single(ang), t_ms, events, 2);
+            // Slot 1 must NEVER be spawned during single-speaker rotation
+            assert(sweep_tracker.getSlotState(1).state == TRACK_STATE_INACTIVE);
+            assert(sweep_tracker.getActiveSpeakerCount() == 1);
+            for (size_t i = 0; i < n; ++i) {
+                assert(events[i].slot_id == 0);
+                assert(events[i].event_type == SECTOR_EVENT_MOVE);
+                move_events++;
+            }
+            t_ms += 23;
+        }
+        assert(move_events >= 4);
+        // Hold at +135 deg (Sector 21) for 2 frames so final sector settles
+        sweep_tracker.update(make_single(135.0f), t_ms, events, 2);
+        t_ms += 23;
+        sweep_tracker.update(make_single(135.0f), t_ms, events, 2);
+        t_ms += 23;
+        assert(sweep_tracker.getSlotState(0).confirmed_sector_id == 21);
+        size_t active_n = sweep_tracker.getActiveTargets(targets, 2);
+        assert(active_n == 1);
+        assert(targets[0].slot_id == 0);
+        assert(fabsf(targets[0].smoothed_angle_deg - 135.0f) < 1e-4f);
+
+        // Rapid hand twist of the board (> 35 deg jump in a single step during active speech,
+        // e.g. from +135 deg to -90 deg = Sector 6):
+        // Slot 0 must retain ownership and transition to Sector 6 (-90 deg) after 3 frames
+        // instead of freezing Slot 0 in COASTING and spawning Slot 1!
+        sweep_tracker.update(make_single(-90.0f), t_ms, events, 2);
+        t_ms += 23;
+        sweep_tracker.update(make_single(-90.0f), t_ms, events, 2);
+        t_ms += 23;
+        n = sweep_tracker.update(make_single(-90.0f), t_ms, events, 2);
+        assert(n == 1);
+        assert(events[0].slot_id == 0);
+        assert(events[0].sector_id == 6);
+        assert(events[0].event_type == SECTOR_EVENT_MOVE);
+        assert(sweep_tracker.getSlotState(1).state == TRACK_STATE_INACTIVE);
+        active_n = sweep_tracker.getActiveTargets(targets, 2);
+        assert(active_n == 1 && targets[0].slot_id == 0);
+        assert(fabsf(targets[0].smoothed_angle_deg - (-90.0f)) < 1e-4f);
+    }
+
     printf("  [PASS] test_multi_source_sector_tracker_and_hysteresis passed.\n");
 }
 

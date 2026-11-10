@@ -245,8 +245,17 @@ size_t MultiSourceSectorTracker::update(const MultiDoaResult& multi_res,
                     (now_ms - slots[t].last_detection_ms > config.hold_timeout_ms)) {
                     continue;
                 }
-                const float dist = std::fabs(
+                const float d_smooth = std::fabs(
                     shortest_angular_diff(det_angles[d], slots[t].smoothed_angle_deg));
+                const float d_last = std::fabs(
+                    shortest_angular_diff(det_angles[d], slots[t].last_valid_angle_deg));
+                const float d_sec = std::fabs(
+                    shortest_angular_diff(det_angles[d],
+                                          getSectorCenterDeg(slots[t].confirmed_sector_id)));
+                float dist = (d_smooth < d_last) ? d_smooth : d_last;
+                if (d_sec < dist) {
+                    dist = d_sec;
+                }
                 if (dist < best_dist) {
                     best_dist = dist;
                     best_det = static_cast<int>(d);
@@ -264,6 +273,29 @@ size_t MultiSourceSectorTracker::update(const MultiDoaResult& multi_res,
         }
     }
 
+    // Pass 1B: Single-source rapid rotation continuity
+    // When only 1 source is detected in the frame and exactly 1 confirmed slot is actively
+    // speaking (last hit within birth_window_ms), keep it bound to that slot even on fast
+    // array rotations (> association_gate_deg) rather than freezing Slot 0 and spawning Slot 1.
+    if (num_dets == 1 && !det_assigned[0]) {
+        int sole_active_slot = -1;
+        size_t confirmed_slots = 0;
+        for (size_t t = 0; t < SECTOR_TRACKER_MAX_SLOTS; ++t) {
+            if (slots[t].state == TRACK_STATE_ACTIVE || slots[t].state == TRACK_STATE_COASTING) {
+                confirmed_slots++;
+                if (now_ms >= slots[t].last_detection_ms &&
+                    (now_ms - slots[t].last_detection_ms <= config.birth_window_ms)) {
+                    sole_active_slot = static_cast<int>(t);
+                }
+            }
+        }
+        if (confirmed_slots == 1 && sole_active_slot >= 0 && !slot_assigned[sole_active_slot]) {
+            det_assigned[0] = true;
+            slot_assigned[sole_active_slot] = true;
+            slot_det_idx[sole_active_slot] = 0;
+        }
+    }
+
     // Pass 2: Associate remaining detections against CANDIDATE slots
     for (size_t pass = 0; pass < num_dets; ++pass) {
         float best_dist = 1e9f;
@@ -274,8 +306,11 @@ size_t MultiSourceSectorTracker::update(const MultiDoaResult& multi_res,
             if (det_assigned[d]) continue;
             for (size_t t = 0; t < SECTOR_TRACKER_MAX_SLOTS; ++t) {
                 if (slot_assigned[t] || slots[t].state != TRACK_STATE_CANDIDATE) continue;
-                const float dist = std::fabs(
+                const float d_smooth = std::fabs(
                     shortest_angular_diff(det_angles[d], slots[t].smoothed_angle_deg));
+                const float d_last = std::fabs(
+                    shortest_angular_diff(det_angles[d], slots[t].last_valid_angle_deg));
+                const float dist = (d_smooth < d_last) ? d_smooth : d_last;
                 if (dist < best_dist) {
                     best_dist = dist;
                     best_det = static_cast<int>(d);
@@ -355,7 +390,7 @@ size_t MultiSourceSectorTracker::update(const MultiDoaResult& multi_res,
                 filters[t].reset();
                 slots[t].state = TRACK_STATE_CANDIDATE;
                 slots[t].smoothed_angle_deg = filters[t].update(raw_angle, now_ms);
-                slots[t].last_valid_angle_deg = slots[t].smoothed_angle_deg;
+                slots[t].last_valid_angle_deg = raw_angle;
                 slots[t].smoothed_rms_db = raw_rms;
                 slots[t].smoothed_confidence = raw_conf;
                 slots[t].birth_hits = 1;
@@ -382,7 +417,7 @@ size_t MultiSourceSectorTracker::update(const MultiDoaResult& multi_res,
                 }
             } else if (slots[t].state == TRACK_STATE_CANDIDATE) {
                 slots[t].smoothed_angle_deg = filters[t].update(raw_angle, now_ms);
-                slots[t].last_valid_angle_deg = slots[t].smoothed_angle_deg;
+                slots[t].last_valid_angle_deg = raw_angle;
                 slots[t].smoothed_rms_db = 0.70f * slots[t].smoothed_rms_db + 0.30f * raw_rms;
                 slots[t].smoothed_confidence = 0.70f * slots[t].smoothed_confidence + 0.30f * raw_conf;
                 slots[t].last_detection_ms = now_ms;
@@ -411,7 +446,7 @@ size_t MultiSourceSectorTracker::update(const MultiDoaResult& multi_res,
                 // TRACK_STATE_ACTIVE or TRACK_STATE_COASTING receiving a valid hit
                 slots[t].state = TRACK_STATE_ACTIVE;
                 slots[t].smoothed_angle_deg = filters[t].update(raw_angle, now_ms);
-                slots[t].last_valid_angle_deg = slots[t].smoothed_angle_deg;
+                slots[t].last_valid_angle_deg = raw_angle;
                 slots[t].smoothed_rms_db = 0.75f * slots[t].smoothed_rms_db + 0.25f * raw_rms;
                 slots[t].smoothed_confidence = 0.75f * slots[t].smoothed_confidence + 0.25f * raw_conf;
                 slots[t].last_detection_ms = now_ms;
@@ -442,6 +477,23 @@ size_t MultiSourceSectorTracker::update(const MultiDoaResult& multi_res,
                     } else {
                         if (slots[t].pending_sector_id == cand_sector) {
                             slots[t].pending_sector_hits++;
+                        } else if (slots[t].pending_sector_id != INVALID_SECTOR_ID) {
+                            const float conf_center = getSectorCenterDeg(slots[t].confirmed_sector_id);
+                            const float prev_pend_center = getSectorCenterDeg(slots[t].pending_sector_id);
+                            const float cand_center = getSectorCenterDeg(cand_sector);
+                            const float step_diff = std::fabs(
+                                shortest_angular_diff(cand_center, prev_pend_center));
+                            const float dir_prev = shortest_angular_diff(prev_pend_center, conf_center);
+                            const float dir_cand = shortest_angular_diff(cand_center, conf_center);
+                            if (step_diff <= config.sector_width_deg * 2.5f &&
+                                (dir_prev * dir_cand > 0.0f)) {
+                                // Continuous angular sweep across adjacent sectors
+                                slots[t].pending_sector_id = cand_sector;
+                                slots[t].pending_sector_hits++;
+                            } else {
+                                slots[t].pending_sector_id = cand_sector;
+                                slots[t].pending_sector_hits = 1;
+                            }
                         } else {
                             slots[t].pending_sector_id = cand_sector;
                             slots[t].pending_sector_hits = 1;
@@ -451,7 +503,8 @@ size_t MultiSourceSectorTracker::update(const MultiDoaResult& multi_res,
                             slots[t].confirmed_sector_id = cand_sector;
                             slots[t].pending_sector_id = INVALID_SECTOR_ID;
                             slots[t].pending_sector_hits = 0;
-                            slots[t].smoothed_angle_deg = raw_angle;
+                            filters[t].reset();
+                            slots[t].smoothed_angle_deg = filters[t].update(raw_angle, now_ms);
                             slots[t].last_valid_angle_deg = raw_angle;
                             slots[t].last_emitted_ms = now_ms;
 
