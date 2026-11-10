@@ -29,6 +29,30 @@ struct NetworkMeasurement {
     DoaResult result;
     uint64_t timestamp_ms;
     uint16_t clock_flags;
+    uint8_t slot_id;
+    uint8_t sector_id;
+    uint8_t event_type;     // 1=ENTER, 2=MOVE, 3=HEARTBEAT, 4=LEAVE
+    uint8_t active_sources; // 0..2 active tracked speakers
+
+    NetworkMeasurement()
+        : result{0.0f, 0.0f, 0.0f, -100.0f, false},
+          timestamp_ms(0),
+          clock_flags(0),
+          slot_id(0),
+          sector_id(0),
+          event_type(1),
+          active_sources(1) {}
+
+    NetworkMeasurement(const DoaResult &res, uint64_t ts_ms, uint16_t flags,
+                       uint8_t slot = 0, uint8_t sector = 0,
+                       uint8_t ev_type = 1, uint8_t active = 1)
+        : result(res),
+          timestamp_ms(ts_ms),
+          clock_flags(flags),
+          slot_id(slot),
+          sector_id(sector),
+          event_type(ev_type),
+          active_sources(active) {}
 };
 
 /**
@@ -195,7 +219,10 @@ inline size_t serialize_measurement_batch(
         const uint32_t delta_ms = static_cast<uint32_t>(measurements[index].timestamp_ms - base_timestamp_ms);
         append_u32_le(payload, offset, delta_ms);
         append_float_le(payload, offset, measurements[index].result.angle_deg);
-        append_float_le(payload, offset, measurements[index].result.delay_us);
+        payload[offset++] = measurements[index].slot_id;
+        payload[offset++] = measurements[index].sector_id;
+        payload[offset++] = (measurements[index].event_type == 0) ? 1 : measurements[index].event_type;
+        payload[offset++] = measurements[index].active_sources;
         append_float_le(payload, offset, measurements[index].result.rms_db + db_spl_offset);
         append_float_le(payload, offset, measurements[index].result.confidence);
     }

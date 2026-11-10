@@ -28,6 +28,9 @@ struct DeviceConfig {
     uint32_t window_size                = DEFAULT_WINDOW_SIZE;
     bool adaptive_threshold_enabled     = DEFAULT_ADAPTIVE_THRESHOLD_ENABLED;
     float snr_margin_db                 = DEFAULT_SNR_MARGIN_DB;
+    float sector_width_deg              = DEFAULT_SECTOR_WIDTH_DEG;
+    float sector_hysteresis_deg         = DEFAULT_SECTOR_HYSTERESIS_DEG;
+    uint32_t tracker_hold_timeout_ms    = DEFAULT_TRACKER_HOLD_TIMEOUT_MS;
 };
 
 inline bool validate_device_config(const DeviceConfig &config) {
@@ -59,6 +62,21 @@ inline bool validate_device_config(const DeviceConfig &config) {
     if (!std::isfinite(config.snr_margin_db) ||
         config.snr_margin_db < SNR_MARGIN_MIN_DB ||
         config.snr_margin_db > SNR_MARGIN_MAX_DB) {
+        return false;
+    }
+    if (!std::isfinite(config.sector_width_deg) ||
+        config.sector_width_deg < SECTOR_WIDTH_MIN_DEG ||
+        config.sector_width_deg > SECTOR_WIDTH_MAX_DEG) {
+        return false;
+    }
+    if (!std::isfinite(config.sector_hysteresis_deg) ||
+        config.sector_hysteresis_deg < SECTOR_HYSTERESIS_MIN_DEG ||
+        config.sector_hysteresis_deg > SECTOR_HYSTERESIS_MAX_DEG ||
+        config.sector_hysteresis_deg > config.sector_width_deg) {
+        return false;
+    }
+    if (config.tracker_hold_timeout_ms < TRACKER_HOLD_TIMEOUT_MIN_MS ||
+        config.tracker_hold_timeout_ms > TRACKER_HOLD_TIMEOUT_MAX_MS) {
         return false;
     }
     if (!is_supported_audio_config(config.sample_rate, config.window_size)) {
@@ -98,6 +116,23 @@ inline void sanitize_device_config(DeviceConfig &config) {
         config.snr_margin_db > SNR_MARGIN_MAX_DB) {
         config.snr_margin_db = DEFAULT_SNR_MARGIN_DB;
     }
+    if (!std::isfinite(config.sector_width_deg) ||
+        config.sector_width_deg < SECTOR_WIDTH_MIN_DEG ||
+        config.sector_width_deg > SECTOR_WIDTH_MAX_DEG) {
+        config.sector_width_deg = DEFAULT_SECTOR_WIDTH_DEG;
+    }
+    if (!std::isfinite(config.sector_hysteresis_deg) ||
+        config.sector_hysteresis_deg < SECTOR_HYSTERESIS_MIN_DEG ||
+        config.sector_hysteresis_deg > SECTOR_HYSTERESIS_MAX_DEG ||
+        config.sector_hysteresis_deg > config.sector_width_deg) {
+        config.sector_hysteresis_deg = (DEFAULT_SECTOR_HYSTERESIS_DEG <= config.sector_width_deg)
+                                           ? DEFAULT_SECTOR_HYSTERESIS_DEG
+                                           : (0.5f * config.sector_width_deg);
+    }
+    if (config.tracker_hold_timeout_ms < TRACKER_HOLD_TIMEOUT_MIN_MS ||
+        config.tracker_hold_timeout_ms > TRACKER_HOLD_TIMEOUT_MAX_MS) {
+        config.tracker_hold_timeout_ms = DEFAULT_TRACKER_HOLD_TIMEOUT_MS;
+    }
     if (config.sample_rate != 44100 && config.sample_rate != 48000) {
         config.sample_rate = DEFAULT_SAMPLE_RATE;
     }
@@ -127,12 +162,15 @@ inline bool configs_equal(const DeviceConfig &a, const DeviceConfig &b, float fl
            a.sample_rate == b.sample_rate &&
            a.window_size == b.window_size &&
            a.adaptive_threshold_enabled == b.adaptive_threshold_enabled &&
+           a.tracker_hold_timeout_ms == b.tracker_hold_timeout_ms &&
            float_equal(a.microphone_distance_m, b.microphone_distance_m, float_epsilon) &&
            float_equal(a.correlation_threshold, b.correlation_threshold, float_epsilon) &&
            float_equal(a.sound_level_threshold_db_spl, b.sound_level_threshold_db_spl, float_epsilon) &&
            float_equal(a.db_spl_offset, b.db_spl_offset, float_epsilon) &&
            float_equal(a.angle_offset_deg, b.angle_offset_deg, float_epsilon) &&
-           float_equal(a.snr_margin_db, b.snr_margin_db, float_epsilon);
+           float_equal(a.snr_margin_db, b.snr_margin_db, float_epsilon) &&
+           float_equal(a.sector_width_deg, b.sector_width_deg, float_epsilon) &&
+           float_equal(a.sector_hysteresis_deg, b.sector_hysteresis_deg, float_epsilon);
 }
 
 inline bool operator==(const DeviceConfig &a, const DeviceConfig &b) {

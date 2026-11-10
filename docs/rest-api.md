@@ -59,6 +59,9 @@ The expected response contains:
   "angle_offset_deg": 0.0,
   "adaptive_threshold_enabled": true,
   "snr_margin_db": 8.0,
+  "sector_width_deg": 15.0,
+  "sector_hysteresis_deg": 3.0,
+  "tracker_hold_timeout_ms": 2500,
   "server_time_unix_ms": 1791830000123
 }
 ```
@@ -69,6 +72,9 @@ The expected response contains:
 `db_spl_offset` is optional in the current parser. If absent, the previously stored offset is retained.
 `adaptive_threshold_enabled` (boolean) is optional. When true, enables adaptive noise floor tracking; when false, fixed thresholding via `sound_level_threshold_db` is enforced. If absent, the previous setting is retained.
 `snr_margin_db` (float in dB) is optional. Specifies the minimum SNR margin above the estimated ambient noise floor required to trigger DOA calculation. If absent, the previous margin is retained.
+`sector_width_deg` (float in degrees, between `5.0` and `90.0`, default `15.0`) is optional. Configures the discrete angular sector width for the 2-speaker sector tracker (e.g. `15.0` = 24 sectors, `10.0` = 36 sectors).
+`sector_hysteresis_deg` (float in degrees, between `0.0` and `15.0` and $\le \text{sector\_width\_deg}$, default `3.0`) is optional. Configures the Schmitt-trigger deadband margin beyond each sector boundary.
+`tracker_hold_timeout_ms` (unsigned integer in milliseconds, between `200` and `30000`, default `2500`) is optional. Configures the conversational speech-pause hold duration before an inactive speaker slot emits a `LEAVE` event.
 `server_time_unix_ms` is optional. When present, the firmware estimates the
 server-to-device UTC offset using the midpoint of the calibration request and
 uses it for measurement timestamps when NTP has not synchronized the system
@@ -93,7 +99,7 @@ reinitialization fails, the previous configuration remains active.
 
 ## Measurement upload
 
-For valid DSP events, the client sends binary batches:
+For confirmed speaker sector transitions (`ENTER`, `MOVE`, `HEARTBEAT`, `LEAVE`), the client sends binary batches:
 
 ```http
 POST /api/v1/measurements
@@ -104,10 +110,10 @@ Connection: keep-alive
 
 The configured API base URL is still used with `/measurements` appended. The API key
 identifies the device; the binary body does not contain a device ID. The
-firmware batches up to 24 measurements and flushes a partial batch when its
-oldest measurement is 200 ms old. Requests are spaced by at least 200 ms, for a
-maximum target of five requests per second. The DSP and display continue operating
-at the active audio-block rate independently of network I/O.
+firmware batches up to 24 state-transition records and flushes a partial batch when its
+oldest record is 30 ms old (`NETWORK_BATCH_FLUSH_INTERVAL_MS = 30`). Requests are spaced by at least 200 ms, for a
+maximum target of five requests per second. The DSP and local TFT radar display continue operating
+at the active audio-block rate (~43.1 Hz) independently of network I/O.
 
 ## Binary request body
 
@@ -137,15 +143,18 @@ source is available, it continues collecting and sending measurements with
 monotonic uptime timestamps marked `0x0004`. A batch never mixes clock
 sources.
 
-Each measurement then occupies exactly 20 bytes:
+Each measurement record then occupies exactly 20 bytes:
 
 | Offset | Size | Field |
 |---:|---:|---|
-| 0 | 4 | Millisecond offset from the batch base timestamp |
-| 4 | 4 | `angle_deg` as float32 ($360^\circ$ azimuth in $[-180^\circ, +180^\circ]$: $0^\circ = \text{Front/North}$, $+90^\circ = \text{Right/East}$, $\pm 180^\circ = \text{Back/South}$, $-90^\circ = \text{Left/West}$) |
-| 8 | 4 | `delay_us` as float32 (equivalent projected X-axis baseline delay $\frac{d \cdot \sin\phi}{c} \times 10^6\text{ }\mu\text{s}$) |
+| 0 | 4 | Millisecond offset from the batch base timestamp (`uint32_t`) |
+| 4 | 4 | `angle_deg` as float32 (quantized sector center azimuth in $[-180^\circ, +180^\circ]$: $0^\circ = \text{Front/North}$, $+90^\circ = \text{Right/East}$, $\pm 180^\circ = \text{Back/South}$, $-90^\circ = \text{Left/West}$) |
+| 8 | 1 | `slot_id` (`uint8_t`: persistent tracked speaker slot `0` or `1`) |
+| 9 | 1 | `sector_id` (`uint8_t`: discrete sector index `0 .. 23` for $15^\circ$ sectors, or `0xFF` on `LEAVE`) |
+| 10 | 1 | `event_type` (`uint8_t`: `1 = ENTER`, `2 = MOVE`, `3 = HEARTBEAT`, `4 = LEAVE`) |
+| 11 | 1 | `active_sources` (`uint8_t`: total currently active tracked speakers `0 .. 2` after this transition) |
 | 12 | 4 | Calibrated sound level in dB as float32 (`rms_db + db_spl_offset`) |
-| 16 | 4 | Correlation confidence as float32 (weighted mean 6-pair WLS confidence in $[0, 1]$) |
+| 16 | 4 | Correlation confidence as float32 (smoothed tracker confidence in $[0, 1]$) |
 
 Each batch terminates with a 4-byte CRC32 trailer appended immediately after the last measurement record (at offset $12 + \text{count} \times 20$):
 

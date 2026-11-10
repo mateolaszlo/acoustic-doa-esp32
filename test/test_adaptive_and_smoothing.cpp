@@ -125,6 +125,7 @@ extern "C" {
 }
 
 #include "audio/gcc_phat.h"
+#include "audio/sector_tracker.h"
 #include "ui/display_filter.h"
 #include "audio/post_checker.h"
 #include "audio/i2s_sampler.h"
@@ -1428,13 +1429,21 @@ static void test_rest_binary_batch_serialization() {
     std::memset(buffer, 0, sizeof(buffer));
 
     NetworkMeasurement batch[2];
-    batch[0].result = {45.0f, 168.59f, 0.85f, -20.0f, true};
+    batch[0].result = {45.0f, 0.0f, 0.85f, -20.0f, true};
     batch[0].timestamp_ms = 1704067200000ULL;
     batch[0].clock_flags = CLOCK_FLAG_UTC_SYNCHRONIZED;
+    batch[0].slot_id = 0;
+    batch[0].sector_id = 15;
+    batch[0].event_type = static_cast<uint8_t>(SECTOR_EVENT_ENTER);
+    batch[0].active_sources = 1;
 
-    batch[1].result = {-90.0f, -238.43f, 0.92f, -15.0f, true};
+    batch[1].result = {-90.0f, 0.0f, 0.92f, -15.0f, true};
     batch[1].timestamp_ms = 1704067200023ULL; // +23 ms
     batch[1].clock_flags = CLOCK_FLAG_UTC_SYNCHRONIZED;
+    batch[1].slot_id = 1;
+    batch[1].sector_id = 6;
+    batch[1].event_type = static_cast<uint8_t>(SECTOR_EVENT_MOVE);
+    batch[1].active_sources = 2;
 
     const float db_spl_offset = 96.5f;
 
@@ -1465,6 +1474,12 @@ static void test_rest_binary_batch_serialization() {
     std::memcpy(&angle0_read, &bits, sizeof(bits));
     assert(fabsf(angle0_read - 45.0f) < 1e-4f);
 
+    // Verify Record 0 sector tracker metadata bytes at offsets +8..+11 (buffer[20..23])
+    assert(buffer[20] == 0);  // slot_id
+    assert(buffer[21] == 15); // sector_id
+    assert(buffer[22] == static_cast<uint8_t>(SECTOR_EVENT_ENTER)); // event_type (1 = ENTER)
+    assert(buffer[23] == 1);  // active_sources
+
     float spl0_read = 0.0f;
     bits = 0;
     for (size_t b = 0; b < 4; ++b) bits |= (static_cast<uint32_t>(buffer[24 + b]) << (b * 8));
@@ -1487,6 +1502,12 @@ static void test_rest_binary_batch_serialization() {
     for (size_t b = 0; b < 4; ++b) bits |= (static_cast<uint32_t>(buffer[36 + b]) << (b * 8));
     std::memcpy(&angle1_read, &bits, sizeof(bits));
     assert(fabsf(angle1_read - (-90.0f)) < 1e-4f);
+
+    // Verify Record 1 sector tracker metadata bytes at offsets +8..+11 (buffer[40..43])
+    assert(buffer[40] == 1); // slot_id
+    assert(buffer[41] == 6); // sector_id
+    assert(buffer[42] == static_cast<uint8_t>(SECTOR_EVENT_MOVE)); // event_type (2 = MOVE)
+    assert(buffer[43] == 2); // active_sources
 
     // Verify CRC32 trailer (offset 52)
     uint32_t crc_trailer = 0;
@@ -3272,6 +3293,9 @@ static void test_nvs_dirty_checking_and_flash_wear_prevention() {
     cfg1.window_size = 1024;
     cfg1.adaptive_threshold_enabled = true;
     cfg1.snr_margin_db = 8.0f;
+    cfg1.sector_width_deg = 15.0f;
+    cfg1.sector_hysteresis_deg = 3.0f;
+    cfg1.tracker_hold_timeout_ms = 2500;
 
     DeviceConfig cfg2 = cfg1;
     assert(cfg1 == cfg2);
@@ -3298,15 +3322,18 @@ static void test_nvs_dirty_checking_and_flash_wear_prevention() {
         c = cfg1; c.window_size = 2048; assert(c != cfg1);
         c = cfg1; c.adaptive_threshold_enabled = false; assert(c != cfg1);
         c = cfg1; c.snr_margin_db = 12.0f; assert(c != cfg1);
+        c = cfg1; c.sector_width_deg = 10.0f; assert(c != cfg1);
+        c = cfg1; c.sector_hysteresis_deg = 2.0f; assert(c != cfg1);
+        c = cfg1; c.tracker_hold_timeout_ms = 4000; assert(c != cfg1);
     }
 
     // 2. Tier 2: Test save_device_config with mock Preferences storage
     Preferences::clearStorage();
     assert(Preferences::total_writes == 0);
 
-    // Cold save: all 14 keys must be written
+    // Cold save: all 17 keys must be written
     save_device_config(cfg1);
-    assert(Preferences::total_writes == 14);
+    assert(Preferences::total_writes == 17);
 
     // Verify values were correctly stored and can be loaded back
     DeviceConfig loaded;
@@ -3494,6 +3521,478 @@ static void test_hybrid_periodic_time_synchronization() {
     printf("  [PASS] test_hybrid_periodic_time_synchronization passed.\n");
 }
 
+static void test_multi_source_sector_tracker_and_hysteresis() {
+    printf("[TEST] Running test_multi_source_sector_tracker_and_hysteresis...\n");
+
+    // Helper to build a single-source MultiDoaResult
+    auto make_single = [](float angle_deg, float conf = 0.85f, float rms_db = -25.0f) -> MultiDoaResult {
+        MultiDoaResult r = {};
+        r.count = 1;
+        r.rms_db = rms_db;
+        r.valid = true;
+        r.sources[0] = {angle_deg, 0.0f, conf, rms_db, true};
+        return r;
+    };
+
+    // Helper to build a two-source MultiDoaResult
+    auto make_dual = [](float a0, float c0, float a1, float c1, float rms_db = -22.0f) -> MultiDoaResult {
+        MultiDoaResult r = {};
+        r.count = 2;
+        r.rms_db = rms_db;
+        r.valid = true;
+        r.sources[0] = {a0, 0.0f, c0, rms_db, true};
+        r.sources[1] = {a1, 0.0f, c1, rms_db - 2.0f, true};
+        return r;
+    };
+
+    // -------------------------------------------------------------------------
+    // 1. Sector quantization geometry and Schmitt-trigger hysteresis helpers
+    // -------------------------------------------------------------------------
+    {
+        MultiSourceSectorTracker tracker;
+        assert(tracker.getNumSectors() == 24); // 360 / 15 = 24 sectors
+
+        // Sector 12 is centered at 0.0 deg (index = floor((0 + 180)/15 + 0.5) = 12)
+        assert(tracker.quantizeAngleToSector(0.0f) == 12);
+        assert(fabsf(tracker.getSectorCenterDeg(12) - 0.0f) < 1e-4f);
+
+        // Sector 0 is centered at -180.0 deg (+180.0 wraps to Sector 0)
+        assert(tracker.quantizeAngleToSector(-180.0f) == 0);
+        assert(tracker.quantizeAngleToSector(180.0f) == 0);
+        assert(tracker.quantizeAngleToSector(176.0f) == 0);
+        assert(tracker.quantizeAngleToSector(-176.0f) == 0);
+        assert(fabsf(tracker.getSectorCenterDeg(0) - (-180.0f)) < 1e-4f);
+
+        // Sector 15 is centered at +45.0 deg
+        assert(tracker.quantizeAngleToSector(45.0f) == 15);
+        assert(fabsf(tracker.getSectorCenterDeg(15) - 45.0f) < 1e-4f);
+
+        // Hysteresis boundary for Sector 12 (center 0.0 deg):
+        // half_width (7.5 deg) + hysteresis (3.0 deg) = 10.5 deg
+        assert(tracker.isWithinSectorHysteresis(0.0f, 12));
+        assert(tracker.isWithinSectorHysteresis(10.4f, 12));
+        assert(tracker.isWithinSectorHysteresis(-10.4f, 12));
+        assert(!tracker.isWithinSectorHysteresis(10.6f, 12));
+        assert(!tracker.isWithinSectorHysteresis(-10.6f, 12));
+    }
+
+    // -------------------------------------------------------------------------
+    // 2. Transient Impulse Rejection (1-2 frame claps/echoes emit 0 events)
+    // -------------------------------------------------------------------------
+    {
+        MultiSourceSectorTracker tracker;
+        SectorTransitionEvent events[SECTOR_TRACKER_MAX_SLOTS];
+
+        // Frame 1 & Frame 2 at +60 deg -> CANDIDATE only, < 3 birth frames
+        assert(tracker.update(make_single(60.0f), 1000, events, 2) == 0);
+        assert(tracker.update(make_single(61.0f), 1023, events, 2) == 0);
+        assert(tracker.getActiveSpeakerCount() == 0);
+
+        // Silence for 500 ms (> 400 ms birth window) -> candidate expires silently with 0 events
+        MultiDoaResult empty = {};
+        assert(tracker.update(empty, 1550, events, 2) == 0);
+        assert(tracker.getActiveSpeakerCount() == 0);
+
+        // A new single-frame clap at +60 deg -> still 1/3 hits, 0 events emitted
+        assert(tracker.update(make_single(60.0f), 1600, events, 2) == 0);
+        assert(tracker.getActiveSpeakerCount() == 0);
+    }
+
+    // -------------------------------------------------------------------------
+    // 3. Boundary Hysteresis Immunity (+7.5 deg border wobble vs true step)
+    // -------------------------------------------------------------------------
+    {
+        MultiSourceSectorTracker tracker;
+        SectorTransitionEvent events[SECTOR_TRACKER_MAX_SLOTS];
+
+        // Acquire Speaker 0 in Sector 12 (center 0.0 deg) over 3 frames
+        assert(tracker.update(make_single(2.0f), 1000, events, 2) == 0);
+        assert(tracker.update(make_single(3.0f), 1023, events, 2) == 0);
+        size_t n = tracker.update(make_single(4.0f), 1046, events, 2);
+        assert(n == 1);
+        assert(events[0].slot_id == 0);
+        assert(events[0].sector_id == 12);
+        assert(events[0].event_type == SECTOR_EVENT_ENTER);
+        assert(events[0].active_sources == 1);
+        assert(fabsf(events[0].angle_deg - 0.0f) < 1e-4f);
+
+        // Speaker stands right near the +7.5 deg boundary between Sector 12 (0 deg) and Sector 13 (+15 deg),
+        // fluctuating back and forth between +5.0 deg and +10.2 deg (5.2 deg swing across the 7.5 deg border,
+        // but within the 10.5 deg Schmitt-trigger hysteresis limit of Sector 12) for 40 frames:
+        const float wobble_angles[] = {6.0f, 8.2f, 9.8f, 7.1f, 10.2f, 5.5f, 8.9f, 10.0f};
+        uint32_t t_ms = 1069;
+        for (int i = 0; i < 40; ++i) {
+            float ang = wobble_angles[i % 8];
+            assert(tracker.update(make_single(ang), t_ms, events, 2) == 0);
+            t_ms += 23;
+        }
+        assert(tracker.getSlotState(0).confirmed_sector_id == 12);
+
+        // Even a 2-frame spike to +16.0 deg (outside 10.5 deg hysteresis) that returns on frame 3
+        // must NOT trigger a sector transition (< 3 consecutive transition frames):
+        assert(tracker.update(make_single(16.0f), t_ms, events, 2) == 0); t_ms += 23;
+        assert(tracker.update(make_single(16.5f), t_ms, events, 2) == 0); t_ms += 23;
+        assert(tracker.update(make_single(7.0f),  t_ms, events, 2) == 0); t_ms += 23;
+        assert(tracker.getSlotState(0).confirmed_sector_id == 12);
+
+        // Now speaker genuinely walks into Sector 13 (+15.0 deg center) with angles >= 14.0 deg (> 10.5 deg):
+        // Frames 1 and 2 accumulate pending transition; Frame 3 commits SECTOR_EVENT_MOVE!
+        assert(tracker.update(make_single(14.5f), t_ms, events, 2) == 0); t_ms += 23;
+        assert(tracker.update(make_single(15.2f), t_ms, events, 2) == 0); t_ms += 23;
+        n = tracker.update(make_single(15.8f), t_ms, events, 2); t_ms += 23;
+        assert(n == 1);
+        assert(events[0].slot_id == 0);
+        assert(events[0].sector_id == 13);
+        assert(events[0].event_type == SECTOR_EVENT_MOVE);
+        assert(events[0].active_sources == 1);
+        assert(fabsf(events[0].angle_deg - 15.0f) < 1e-4f);
+    }
+
+    // -------------------------------------------------------------------------
+    // 4. Rear Wrap-Around (+180 / -180 deg) Continuity
+    // -------------------------------------------------------------------------
+    {
+        MultiSourceSectorTracker tracker;
+        SectorTransitionEvent events[SECTOR_TRACKER_MAX_SLOTS];
+
+        // Acquire speaker at +178 deg -> Sector 0 (center -180.0 deg)
+        assert(tracker.update(make_single(178.0f), 2000, events, 2) == 0);
+        assert(tracker.update(make_single(-179.0f), 2023, events, 2) == 0);
+        size_t n = tracker.update(make_single(179.5f), 2046, events, 2);
+        assert(n == 1);
+        assert(events[0].sector_id == 0);
+        assert(events[0].event_type == SECTOR_EVENT_ENTER);
+        assert(fabsf(events[0].angle_deg - (-180.0f)) < 1e-4f);
+
+        // Oscillate across the +-180 deg branch cut (+174 deg <-> -174 deg, within +-10.5 deg of 180 deg):
+        // Must produce ZERO transitions!
+        const float rear_wobble[] = {175.0f, -175.0f, 171.0f, -172.0f, 179.9f, -179.9f, 170.0f, -170.5f};
+        uint32_t t_ms = 2069;
+        for (int i = 0; i < 24; ++i) {
+            assert(tracker.update(make_single(rear_wobble[i % 8]), t_ms, events, 2) == 0);
+            t_ms += 23;
+        }
+        assert(tracker.getSlotState(0).confirmed_sector_id == 0);
+    }
+
+    // -------------------------------------------------------------------------
+    // 5. 2-Speaker Simultaneous Tracking & Slot Identity Persistence
+    // -------------------------------------------------------------------------
+    {
+        MultiSourceSectorTracker tracker;
+        SectorTransitionEvent events[SECTOR_TRACKER_MAX_SLOTS];
+
+        // Speaker A at -45 deg (Sector 9) and Speaker B at +60 deg (Sector 16)
+        assert(tracker.update(make_dual(-45.0f, 0.90f, 60.0f, 0.80f), 5000, events, 2) == 0);
+        assert(tracker.update(make_dual(-44.0f, 0.88f, 61.0f, 0.82f), 5023, events, 2) == 0);
+        size_t n = tracker.update(make_dual(-45.5f, 0.91f, 59.5f, 0.85f), 5046, events, 2);
+        assert(n == 2);
+        assert(tracker.getActiveSpeakerCount() == 2);
+
+        // Slot 0 tracks -45 deg (Sector 9), Slot 1 tracks +60 deg (Sector 16)
+        assert(events[0].slot_id == 0);
+        assert(events[0].sector_id == 9);
+        assert(events[0].event_type == SECTOR_EVENT_ENTER);
+        assert(fabsf(events[0].angle_deg - (-45.0f)) < 1e-4f);
+
+        assert(events[1].slot_id == 1);
+        assert(events[1].sector_id == 16);
+        assert(events[1].event_type == SECTOR_EVENT_ENTER);
+        assert(fabsf(events[1].angle_deg - 60.0f) < 1e-4f);
+        assert(events[1].active_sources == 2);
+
+        // Now Speaker B (+60 deg) speaks louder than Speaker A (-45 deg), so GccPhat::processMulti
+        // returns +60 deg at sources[0] and -45 deg at sources[1] with +-5 deg vocal fluctuation.
+        // Slot assignment MUST remain locked (Slot 0 = -45 deg, Slot 1 = +60 deg) with 0 events!
+        uint32_t t_ms = 5069;
+        for (int i = 0; i < 20; ++i) {
+            float jitter_a = (i % 2 == 0) ? 4.5f : -4.5f;
+            float jitter_b = (i % 2 == 0) ? -5.0f : 5.0f;
+            assert(tracker.update(
+                make_dual(60.0f + jitter_b, 0.95f, -45.0f + jitter_a, 0.75f),
+                t_ms, events, 2) == 0);
+            t_ms += 23;
+        }
+        assert(tracker.getSlotState(0).confirmed_sector_id == 9);
+        assert(tracker.getSlotState(1).confirmed_sector_id == 16);
+    }
+
+    // -------------------------------------------------------------------------
+    // 6. Conversational Speech Pause Survival, LEAVE Event & Post-LEAVE Slot Affinity
+    // -------------------------------------------------------------------------
+    {
+        MultiSourceSectorTracker tracker;
+        SectorTransitionEvent events[SECTOR_TRACKER_MAX_SLOTS];
+        MultiDoaResult silence = {};
+
+        // Acquire Speaker 0 at -30 deg (Sector 10) and Speaker 1 at +90 deg (Sector 18)
+        tracker.update(make_dual(-30.0f, 0.9f, 90.0f, 0.85f), 1000, events, 2);
+        tracker.update(make_dual(-30.0f, 0.9f, 90.0f, 0.85f), 1023, events, 2);
+        size_t n = tracker.update(make_dual(-30.0f, 0.9f, 90.0f, 0.85f), 1046, events, 2);
+        assert(n == 2);
+
+        // Speaker 0 pauses for 1800 ms (< 2500 ms hold_timeout_ms) while Speaker 1 keeps talking:
+        // Zero LEAVE events; when Speaker 0 resumes at t = 2846 ms in Sector 10, zero new ENTER events!
+        uint32_t t_ms = 1069;
+        while (t_ms < 2846) {
+            assert(tracker.update(make_single(90.0f), t_ms, events, 2) == 0);
+            t_ms += 100;
+        }
+        assert(tracker.getSlotState(0).state == TRACK_STATE_COASTING);
+        assert(tracker.getActiveSpeakerCount() == 2);
+
+        // Speaker 0 resumes speaking at -28 deg (still Sector 10) -> seamless resume, 0 events!
+        assert(tracker.update(make_dual(-28.0f, 0.88f, 90.0f, 0.85f), 2846, events, 2) == 0);
+        assert(tracker.getSlotState(0).state == TRACK_STATE_ACTIVE);
+
+        // Now Speaker 0 stops speaking completely for 2600 ms (> 2500 ms hold_timeout_ms):
+        t_ms = 2900;
+        while (t_ms < 5300) {
+            assert(tracker.update(make_single(90.0f), t_ms, events, 2) == 0);
+            t_ms += 100;
+        }
+        // At t = 5400 ms (elapsed = 5400 - 2846 = 2554 ms > 2500 ms), Slot 0 expires and emits LEAVE!
+        n = tracker.update(make_single(90.0f), 5400, events, 2);
+        assert(n == 1);
+        assert(events[0].slot_id == 0);
+        assert(events[0].sector_id == INVALID_SECTOR_ID); // 0xFF
+        assert(events[0].event_type == SECTOR_EVENT_LEAVE);
+        assert(events[0].active_sources == 1); // Slot 1 is still active
+        assert(fabsf(events[0].angle_deg - (-30.0f)) < 1e-4f);
+        assert(tracker.getActiveSpeakerCount() == 1);
+
+        // Both speakers silent until Slot 1 also expires (> 2500 ms after 5400 ms -> t = 7950 ms)
+        n = tracker.update(silence, 7950, events, 2);
+        assert(n == 1);
+        assert(events[0].slot_id == 1);
+        assert(events[0].sector_id == INVALID_SECTOR_ID);
+        assert(events[0].event_type == SECTOR_EVENT_LEAVE);
+        assert(events[0].active_sources == 0);
+
+        // Within 5000 ms of Slot 1's LEAVE (t = 9000 ms), Speaker 1 at +90 deg speaks again.
+        // Post-LEAVE slot retention affinity must re-assign Slot 1 (not Slot 0!) to +90 deg:
+        assert(tracker.update(make_single(89.0f), 9000, events, 2) == 0);
+        assert(tracker.update(make_single(91.0f), 9023, events, 2) == 0);
+        n = tracker.update(make_single(90.0f), 9046, events, 2);
+        assert(n == 1);
+        assert(events[0].slot_id == 1);
+        assert(events[0].sector_id == 18);
+        assert(events[0].event_type == SECTOR_EVENT_ENTER);
+        assert(events[0].active_sources == 1);
+    }
+
+    // -------------------------------------------------------------------------
+    // 7. Periodic Heartbeat Emission & Binary REST Serialization End-to-End
+    // -------------------------------------------------------------------------
+    {
+        MultiSourceSectorTracker tracker;
+        SectorTransitionEvent events[SECTOR_TRACKER_MAX_SLOTS];
+
+        // Acquire Speaker 0 at +120 deg (Sector 20) at t = 1046 ms
+        tracker.update(make_single(120.0f), 1000, events, 2);
+        tracker.update(make_single(120.0f), 1023, events, 2);
+        size_t n = tracker.update(make_single(120.0f), 1046, events, 2);
+        assert(n == 1);
+        assert(events[0].event_type == SECTOR_EVENT_ENTER);
+        assert(events[0].sector_id == 20);
+
+        // Keep speaking in Sector 20 until t = 6000 ms (< 5000 ms since 1046 ms): 0 events
+        for (uint32_t t = 1100; t < 6046; t += 100) {
+            assert(tracker.update(make_single(121.0f), t, events, 2) == 0);
+        }
+
+        // At t = 6050 ms (>= 1046 + 5000 ms), tracker emits exactly 1 SECTOR_EVENT_HEARTBEAT
+        n = tracker.update(make_single(119.5f), 6050, events, 2);
+        assert(n == 1);
+        assert(events[0].slot_id == 0);
+        assert(events[0].sector_id == 20);
+        assert(events[0].event_type == SECTOR_EVENT_HEARTBEAT);
+        assert(events[0].active_sources == 1);
+        assert(fabsf(events[0].angle_deg - 120.0f) < 1e-4f);
+
+        // Serialize all 4 lifecycle event types (ENTER, MOVE, HEARTBEAT, LEAVE) into a binary batch
+        // and verify exact 20-byte record layout + IEEE 802.3 CRC32 integrity
+        NetworkMeasurement batch[4];
+        const uint64_t base_ts = 1715000000000ULL;
+
+        batch[0] = NetworkMeasurement({120.0f, 0.0f, 0.85f, -25.0f, true},
+                                      base_ts, CLOCK_FLAG_UTC_SYNCHRONIZED,
+                                      0, 20, static_cast<uint8_t>(SECTOR_EVENT_ENTER), 1);
+        batch[1] = NetworkMeasurement({135.0f, 0.0f, 0.88f, -24.0f, true},
+                                      base_ts + 500, CLOCK_FLAG_UTC_SYNCHRONIZED,
+                                      0, 21, static_cast<uint8_t>(SECTOR_EVENT_MOVE), 1);
+        batch[2] = NetworkMeasurement({135.0f, 0.0f, 0.90f, -23.0f, true},
+                                      base_ts + 5500, CLOCK_FLAG_UTC_SYNCHRONIZED,
+                                      0, 21, static_cast<uint8_t>(SECTOR_EVENT_HEARTBEAT), 1);
+        batch[3] = NetworkMeasurement({135.0f, 0.0f, 0.90f, -23.0f, true},
+                                      base_ts + 8100, CLOCK_FLAG_UTC_SYNCHRONIZED,
+                                      0, INVALID_SECTOR_ID, static_cast<uint8_t>(SECTOR_EVENT_LEAVE), 0);
+
+        uint8_t payload[128];
+        const size_t total_bytes = serialize_measurement_batch(batch, 4, payload, sizeof(payload), 96.5f);
+        assert(total_bytes == 12 + 4 * 20 + 4); // 96 bytes
+        assert(verify_measurement_batch_crc32(payload, total_bytes));
+
+        // Check LEAVE record (Record 3 at offset 12 + 3 * 20 = 72)
+        assert(payload[72 + 8] == 0);                 // slot_id = 0
+        assert(payload[72 + 9] == INVALID_SECTOR_ID); // sector_id = 0xFF
+        assert(payload[72 + 10] == static_cast<uint8_t>(SECTOR_EVENT_LEAVE)); // event_type = 4
+        assert(payload[72 + 11] == 0);                // active_sources = 0
+    }
+
+    // -------------------------------------------------------------------------
+    // 8. Remote Calibration, NVS Persistence & Captive Portal Setup Options
+    // -------------------------------------------------------------------------
+    {
+        DeviceConfig cal_cfg;
+        cal_cfg.wifi_ssid = "StudioNet";
+        cal_cfg.wifi_password = "pass";
+        cal_cfg.api_url = "http://192.168.1.50:3000/api/v1";
+        cal_cfg.api_key = "key123";
+        cal_cfg.device_id = 7;
+        assert(validate_device_config(cal_cfg));
+
+        // Valid custom sector tracker settings (10 deg = 36 sectors, 2.5 deg hysteresis, 4000 ms hold)
+        cal_cfg.sector_width_deg = 10.0f;
+        cal_cfg.sector_hysteresis_deg = 2.5f;
+        cal_cfg.tracker_hold_timeout_ms = 4000;
+        assert(validate_device_config(cal_cfg));
+
+        // Verify NVS persistence and dirty-checking for tracker fields
+        Preferences::clearStorage();
+        save_device_config(cal_cfg);
+        DeviceConfig loaded_cal;
+        assert(load_device_config(loaded_cal));
+        assert(fabsf(loaded_cal.sector_width_deg - 10.0f) < 1e-4f);
+        assert(fabsf(loaded_cal.sector_hysteresis_deg - 2.5f) < 1e-4f);
+        assert(loaded_cal.tracker_hold_timeout_ms == 4000);
+
+        // Modifying only tracker_hold_timeout_ms writes exactly 1 NVS key
+        Preferences::resetMockStats();
+        cal_cfg.tracker_hold_timeout_ms = 3200;
+        save_device_config(cal_cfg);
+        assert(Preferences::total_writes == 1);
+
+        // Verify Captive Portal HTML generation includes all 3 tracker fields and values
+        const String html = SetupPortal::generateHtmlPage(cal_cfg);
+        assert(html.find("name='sector_width'") != std::string::npos);
+        assert(html.find("value='10.0'") != std::string::npos);
+        assert(html.find("name='sector_hysteresis'") != std::string::npos);
+        assert(html.find("value='2.5'") != std::string::npos);
+        assert(html.find("name='tracker_hold_ms'") != std::string::npos);
+        assert(html.find("value='3200'") != std::string::npos);
+
+        // Verify validation rejects out-of-range / non-finite tracker parameters
+        DeviceConfig bad = cal_cfg;
+        bad.sector_width_deg = 4.0f; // < 5.0 deg min
+        assert(!validate_device_config(bad));
+        bad.sector_width_deg = 95.0f; // > 90.0 deg max
+        assert(!validate_device_config(bad));
+        bad.sector_width_deg = NAN;
+        assert(!validate_device_config(bad));
+
+        bad = cal_cfg;
+        bad.sector_hysteresis_deg = -0.5f; // < 0.0 deg
+        assert(!validate_device_config(bad));
+        bad.sector_hysteresis_deg = 16.0f; // > 15.0 deg max
+        assert(!validate_device_config(bad));
+        bad.sector_width_deg = 6.0f;
+        bad.sector_hysteresis_deg = 8.0f; // > sector_width_deg
+        assert(!validate_device_config(bad));
+
+        bad = cal_cfg;
+        bad.tracker_hold_timeout_ms = 100; // < 200 ms min
+        assert(!validate_device_config(bad));
+        bad.tracker_hold_timeout_ms = 35000; // > 30000 ms max
+        assert(!validate_device_config(bad));
+
+        // Verify sanitize_device_config clamps/restores invalid values safely
+        sanitize_device_config(bad);
+        assert(validate_device_config(bad));
+        assert(bad.tracker_hold_timeout_ms == DEFAULT_TRACKER_HOLD_TIMEOUT_MS);
+    }
+
+    // -------------------------------------------------------------------------
+    // 9. Live Runtime Reconfiguration, Active Track Remapping & Edge Cases
+    // -------------------------------------------------------------------------
+    {
+        MultiSourceSectorTracker tracker;
+        SectorTransitionEvent events[SECTOR_TRACKER_MAX_SLOTS];
+
+        // Acquire 2 simultaneous speakers under default 15.0 deg sectors (24 sectors):
+        // Slot 0 at -30.0 deg -> Sector 10; Slot 1 at +60.0 deg -> Sector 16
+        tracker.update(make_dual(-30.0f, 0.90f, 60.0f, 0.85f), 1000, events, 2);
+        tracker.update(make_dual(-30.0f, 0.90f, 60.0f, 0.85f), 1023, events, 2);
+        size_t n = tracker.update(make_dual(-30.0f, 0.90f, 60.0f, 0.85f), 1046, events, 2);
+        assert(n == 2);
+        assert(tracker.getSlotState(0).confirmed_sector_id == 10);
+        assert(tracker.getSlotState(1).confirmed_sector_id == 16);
+
+        // Live remote calibration update 1: idempotent call (same values) is a fast no-op
+        tracker.updateCalibration(15.0f, 3.0f, 2500);
+        assert(tracker.getSlotState(0).confirmed_sector_id == 10);
+        assert(tracker.getSlotState(1).confirmed_sector_id == 16);
+
+        // Live remote calibration update 2: change sector_width_deg from 15.0 deg (24 sectors)
+        // to 10.0 deg (36 sectors), hysteresis to 2.0 deg, hold_timeout to 800 ms while both
+        // speakers are ACTIVE!
+        // Under 10.0 deg sectors:
+        // -30.0 deg -> floor((-30 + 180)/10 + 0.5) = 15
+        // +60.0 deg -> floor((60 + 180)/10 + 0.5) = 24
+        tracker.updateCalibration(10.0f, 2.0f, 800);
+        assert(tracker.getNumSectors() == 36);
+        assert(tracker.getSlotState(0).state == TRACK_STATE_ACTIVE);
+        assert(tracker.getSlotState(1).state == TRACK_STATE_ACTIVE);
+        assert(tracker.getSlotState(0).confirmed_sector_id == 15);
+        assert(tracker.getSlotState(1).confirmed_sector_id == 24);
+        assert(fabsf(tracker.getSectorCenterDeg(15) - (-30.0f)) < 1e-4f);
+        assert(fabsf(tracker.getSectorCenterDeg(24) - 60.0f) < 1e-4f);
+
+        // Next frame at same angles (-30 deg, +60 deg) produces 0 spurious transitions!
+        assert(tracker.update(make_dual(-30.0f, 0.90f, 60.0f, 0.85f), 1069, events, 2) == 0);
+
+        // Live remote calibration update 3: coarsen sector_width_deg from 10.0 deg (36 sectors)
+        // to 30.0 deg (12 sectors), where old sector_id 24 would be out-of-bounds (>= 12) if not remapped!
+        // Under 30.0 deg sectors:
+        // -30.0 deg -> floor(150/30 + 0.5) = 5 (center -30 deg)
+        // +60.0 deg -> floor(240/30 + 0.5) = 8 (center +60 deg)
+        tracker.updateCalibration(30.0f, 4.0f, 800);
+        assert(tracker.getNumSectors() == 12);
+        assert(tracker.getSlotState(0).confirmed_sector_id == 5);
+        assert(tracker.getSlotState(1).confirmed_sector_id == 8);
+
+        // Verify updated hold_timeout_ms (800 ms) takes effect immediately:
+        // Silence for 850 ms (> 800 ms) expires both tracks and emits 2 LEAVE events
+        MultiDoaResult silence = {};
+        n = tracker.update(silence, 1920, events, 2);
+        assert(n == 2);
+        assert(events[0].event_type == SECTOR_EVENT_LEAVE);
+        assert(events[1].event_type == SECTOR_EVENT_LEAVE);
+        assert(tracker.getActiveSpeakerCount() == 0);
+
+        // Edge case: Non-monotonic backwards timestamp jump, NaN/Inf inputs, null out_events
+        tracker.update(make_single(0.0f), 10000, events, 2);
+        tracker.update(make_single(0.0f), 10023, events, 2);
+        assert(tracker.update(make_single(0.0f), 10046, events, 2) == 1);
+
+        // Clock jumps backwards to t = 2000 ms, followed by silence until t = 2900 ms (> 800 ms hold):
+        // Track must clamp timestamp and still expire cleanly at t = 2900 ms!
+        assert(tracker.update(silence, 2000, events, 2) == 0);
+        assert(tracker.update(silence, 2900, events, 2) == 1);
+        assert(events[0].event_type == SECTOR_EVENT_LEAVE);
+
+        // NaN/Inf angles and nullptr output buffer safety
+        MultiDoaResult corrupt = {};
+        corrupt.valid = true;
+        corrupt.count = 2;
+        corrupt.sources[0] = {NAN, 0.0f, 0.9f, -20.0f, true};
+        corrupt.sources[1] = {45.0f, 0.0f, INFINITY, -20.0f, true};
+        assert(tracker.update(corrupt, 3000, nullptr, 0) == 0);
+    }
+
+    printf("  [PASS] test_multi_source_sector_tracker_and_hysteresis passed.\n");
+}
+
 int main() {
     test_gcc_phat_adaptive_noise_floor();
     test_display_smoothing_filter();
@@ -3521,6 +4020,7 @@ int main() {
     test_wifi_and_api_serial_logging();
     test_nvs_dirty_checking_and_flash_wear_prevention();
     test_hybrid_periodic_time_synchronization();
+    test_multi_source_sector_tracker_and_hysteresis();
     printf("\nAll unit tests passed successfully!\n");
     return 0;
 }

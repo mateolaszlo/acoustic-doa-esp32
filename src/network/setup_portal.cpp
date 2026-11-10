@@ -1,38 +1,5 @@
 #include "network/setup_portal.h"
 
-String SetupPortal::generateHtmlPage(const DeviceConfig &config) {
-    String page;
-    page.reserve(2400);
-    page += "<!doctype html><html><head><meta name='viewport' content='width=device-width'>";
-    page += "<title>Acoustic Locator Setup</title></head><body>";
-    page += "<h1>Acoustic Locator Setup</h1><form method='POST' action='/save'>";
-    page += "Wi-Fi SSID<br><input name='wifi_ssid' value='" + escapeHtmlAttr(config.wifi_ssid) + "'><br>";
-    const String pass_hint = config.wifi_password.length() > 0 ? " (leave blank to retain stored)" : "";
-    page += "Wi-Fi password" + pass_hint + "<br><input type='password' name='wifi_password'><br>";
-    page += "API URL<br><input name='api_url' value='" + escapeHtmlAttr(config.api_url) + "'><br>";
-    const String api_key_hint = config.api_key.length() > 0 ? " (leave blank to retain stored)" : "";
-    page += "API key" + api_key_hint + "<br><input type='password' name='api_key'><br>";
-    page += "Device ID<br><input type='number' name='device_id' value='" +
-            String(config.device_id) + "'><br>";
-    page += "Microphone distance (m)<br><input name='mic_distance' value='" +
-            String(config.microphone_distance_m, 4) + "'><br>";
-    page += "dB SPL offset<br><input name='spl_offset' value='" +
-            String(config.db_spl_offset, 2) + "'><br>";
-    page += "Fixed threshold (dB SPL)<br><input name='spl_threshold' value='" +
-            String(config.sound_level_threshold_db_spl, 1) + "'><br>";
-    page += "Correlation threshold (min R, e.g. 0.45)<br><input name='corr_threshold' step='0.01' value='" +
-            String(config.correlation_threshold, 2) + "'><br>";
-    page += "Zero angle offset (deg)<br><input name='ang_offset' value='" +
-            String(config.angle_offset_deg, 1) + "'><br>";
-    page += "<label><input type='checkbox' name='adapt_thresh' value='1'" +
-            String(config.adaptive_threshold_enabled ? " checked" : "") +
-            "> Enable adaptive noise floor threshold</label><br>";
-    page += "SNR margin (dB)<br><input name='snr_margin' value='" +
-            String(config.snr_margin_db, 1) + "'><br><br>";
-    page += "<button type='submit'>Save and restart</button></form></body></html>";
-    return page;
-}
-
 void SetupPortal::enter(DeviceConfig &config, RadarDisplay &radar,
                         std::function<void(const DeviceConfig&)> on_save) {
     radar.drawSetupPortal();
@@ -106,6 +73,20 @@ void SetupPortal::enter(DeviceConfig &config, RadarDisplay &radar,
         }
         if (web_server.hasArg("ang_offset")) {
             candidate.angle_offset_deg = web_server.arg("ang_offset").toFloat();
+        }
+        if (web_server.hasArg("sector_width")) {
+            candidate.sector_width_deg = web_server.arg("sector_width").toFloat();
+        }
+        if (web_server.hasArg("sector_hysteresis")) {
+            candidate.sector_hysteresis_deg = web_server.arg("sector_hysteresis").toFloat();
+        }
+        if (web_server.hasArg("tracker_hold_ms")) {
+            const long raw_hold = web_server.arg("tracker_hold_ms").toInt();
+            if (raw_hold <= 0) {
+                web_server.send(400, "text/plain", "Invalid tracker hold timeout");
+                return;
+            }
+            candidate.tracker_hold_timeout_ms = static_cast<uint32_t>(raw_hold);
         }
 
         if (!validate_device_config(candidate) || !is_device_configured(candidate)) {

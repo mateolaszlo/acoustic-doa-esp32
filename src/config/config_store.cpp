@@ -77,6 +77,11 @@ bool load_device_config(DeviceConfig &config) {
     config.adaptive_threshold_enabled =
         preferences.isKey("adapt_thresh") ? preferences.getBool("adapt_thresh") : config.adaptive_threshold_enabled;
     config.snr_margin_db = get_preference_float("snr_margin", config.snr_margin_db);
+    config.sector_width_deg = get_preference_float("sec_width", config.sector_width_deg);
+    config.sector_hysteresis_deg = get_preference_float("sec_hyst", config.sector_hysteresis_deg);
+    config.tracker_hold_timeout_ms =
+        preferences.isKey("trk_hold") ? preferences.getUInt("trk_hold", config.tracker_hold_timeout_ms)
+                                      : config.tracker_hold_timeout_ms;
 
     sanitize_device_config(config);
     return is_device_configured(config);
@@ -105,5 +110,8 @@ void save_device_config(const DeviceConfig &config) {
     put_preference_uint_if_changed("window_size", safe_config.window_size);
     put_preference_bool_if_changed("adapt_thresh", safe_config.adaptive_threshold_enabled);
     put_preference_float_if_changed("snr_margin", safe_config.snr_margin_db);
+    put_preference_float_if_changed("sec_width", safe_config.sector_width_deg);
+    put_preference_float_if_changed("sec_hyst", safe_config.sector_hysteresis_deg);
+    put_preference_uint_if_changed("trk_hold", safe_config.tracker_hold_timeout_ms);
 }
 

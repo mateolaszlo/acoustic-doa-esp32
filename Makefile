@@ -22,6 +22,7 @@ CXXFLAGS ?= $(BASE_FLAGS) $(SAN_FLAGS)
 INCLUDES  = -I test/mock_esp -I src
 SRCS      = test/test_adaptive_and_smoothing.cpp \
             src/audio/gcc_phat.cpp \
+            src/audio/sector_tracker.cpp \
             src/ui/display_filter.cpp \
             src/audio/post_checker.cpp \
             src/ui/radar_ui.cpp \

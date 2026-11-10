@@ -86,6 +86,14 @@ uint8_t DisplaySmoothingFilter::getConsecutiveOutliers() const {
     return consecutive_outliers;
 }
 
+void DisplaySmoothingFilter::setEmaAlpha(float alpha) {
+    if (std::isfinite(alpha) && alpha > 0.0f && alpha <= 1.0f) {
+        ema_alpha = alpha;
+    } else {
+        ema_alpha = DEFAULT_EMA_ALPHA;
+    }
+}
+
 void DisplaySmoothingFilter::setResetSilenceMs(uint32_t ms) {
     reset_silence_ms = ms;
 }

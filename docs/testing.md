@@ -35,7 +35,7 @@ When running off-target, the tests link against lightweight, bit-exact mocks loc
 
 ## 3. Test Suites Overview
 
-The test harness in [`test/test_adaptive_and_smoothing.cpp`](../test/test_adaptive_and_smoothing.cpp) covers 26 specialized test suites:
+The test harness in [`test/test_adaptive_and_smoothing.cpp`](../test/test_adaptive_and_smoothing.cpp) covers 27 specialized test suites:
 
 1. **`test_gcc_phat_adaptive_noise_floor`**:
    - Verifies the asymmetric attack/decay tracking ($3\text{ dB/s}$ upward creep vs. $30\text{ dB/s}$ fast downward recovery).
@@ -128,6 +128,10 @@ The test harness in [`test/test_adaptive_and_smoothing.cpp`](../test/test_adapti
     - Validates periodic SNTP discipline (`discipline_sntp_offset`): accepts realistic positive/negative crystal drift within $\pm 2000\text{ ms}$, and rejects out-of-bounds anomalies.
     - Validates Server UTC discipline (`discipline_server_offset`): enforces RTT jitter gating ($RTT > 100\text{ ms}$ rejected), applies smooth EMA filtering ($\alpha = 0.25$) on clean samples, and commits wall-clock steps ($> 10\text{s}$) immediately.
     - Validates multi-clock timing regime handoffs and timestamp monotonicity: preserves strictly non-decreasing timestamps from Monotonic boot to Server UTC to authoritative SNTP lock.
+27. **`test_multi_source_sector_tracker_and_hysteresis`**:
+    - Validates 24-sector ($15^\circ$) circular quantization and $\pm 10.5^\circ$ Schmitt-trigger boundary hysteresis across all quadrants and the $\pm 180^\circ$ rear branch cut.
+    - Validates transient impulse rejection (1–2 frame claps/echoes emit 0 network packets), 3-frame birth acquisition (`SECTOR_EVENT_ENTER`), and 3-frame transition confirmation (`SECTOR_EVENT_MOVE`).
+    - Validates 2-speaker simultaneous tracking with persistent `slot_id` (`0` and `1`) across amplitude flips, $2500\text{ ms}$ conversational pause coasting, `SECTOR_EVENT_LEAVE` (`sector_id = 0xFF`), $5000\text{ ms}$ post-LEAVE slot affinity, $5000\text{ ms}$ `SECTOR_EVENT_HEARTBEAT`, and 20-byte binary REST serialization + CRC32 verification.
 
 ---
 
@@ -157,6 +161,7 @@ g++ -std=gnu++11 -O1 -Wall -Wextra -Werror -fsanitize=address,undefined,float-di
     -I test/mock_esp -I src \
     test/test_adaptive_and_smoothing.cpp \
     src/audio/gcc_phat.cpp \
+    src/audio/sector_tracker.cpp \
     src/ui/display_filter.cpp \
     src/audio/post_checker.cpp \
     src/ui/radar_ui.cpp \
@@ -185,7 +190,7 @@ The GitHub Actions workflow in [`.github/workflows/build.yml`](../.github/workfl
 
 1. **Host Unit Tests (`test` job)**:
    - Executes `make test` under `ubuntu-latest`.
-   - Validates all 23 unit test suites with AddressSanitizer and UndefinedBehaviorSanitizer enabled.
+   - Validates all 27 unit test suites with AddressSanitizer and UndefinedBehaviorSanitizer enabled.
    - Fails fast in $<2\text{ s}$ if algorithmic regressions, memory corruption, or boundary violations occur.
 2. **PlatformIO Firmware Build (`build` job)**:
    - Depends on the `test` job (`needs: test`).

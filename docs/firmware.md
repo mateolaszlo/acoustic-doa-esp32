@@ -9,6 +9,7 @@
 | `src/config/device_config.h` | Device configuration data structures, network settings, acoustic threshold parameters, and calibration values |
 | `src/config/config_store.h` / `.cpp` | Persistent NVS storage load/save routines via ESP32 `Preferences` API with read-before-write dirty checking to prevent flash wear |
 | `src/audio/gcc_phat.h` / `.cpp` | 4-channel FFT pipeline, dual-band raised-cosine spectral weighting, 6-pair GCC-PHAT, triangle loop-closure validation, and $2\times 2$ WLS 2D azimuth solver |
+| `src/audio/sector_tracker.h` / `.cpp` | Stateful 2-speaker circular $S^1$ sector tracker with Schmitt-trigger boundary hysteresis, birth/transition confirmation gates, and conversational speech-pause coasting |
 | `src/audio/i2s_sampler.h` / `.cpp` | Synchronized dual-I2S (`I2S0` Master RX + `I2S1` Slave RX via GPIO Matrix) driver installation and 4-channel quad DMA reads (`read_i2s_quad`) |
 | `src/audio/post_checker.h` / `.cpp` | Power-On Self-Test (POST) 4-microphone health heuristics (`evaluate_quad_microphone_health`) and bus collision detection |
 | `src/network/rest_protocol.h` | Hardware-independent 12-byte header / 20-byte record / 4-byte CRC32 trailer binary batch serialization format and little-endian packing |
@@ -139,7 +140,7 @@ During startup (`SETUP_BOOT_DELAY_MS = 3000`), the firmware executes an automate
 
 - Reads synchronized 4-channel I2S DMA data (`read_i2s_quad`).
 - Runs 4-channel 6-pair dual-band GCC-PHAT, triangle loop-closure weighting, 2D WLS azimuth estimation, and adaptive noise floor tracking.
-- Sends every valid result independently to the display and network queues.
+- Sends every valid frame at full block rate (~43.1 Hz) to `display_queue` for continuous local TFT radar rendering, while feeding `MultiSourceSectorTracker::update()` on every block so only confirmed speaker sector transitions (`ENTER`, `MOVE`, `HEARTBEAT`, `LEAVE`) are pushed to `network_queue`.
 - Never performs Wi-Fi, HTTP, or network batching work.
 - Measures processing duration against the current audio-block deadline.
 - Resets the task watchdog and periodically reports timing, I2S, queue, and stack statistics.

@@ -71,6 +71,9 @@ The setup form contains:
 - Zero angle offset in degrees (-180.0 to +180.0 deg, default 0.0 deg). Compensates for hardware/sampling channel delay skew and mounting depth differences.
 - Enable adaptive noise floor threshold (checkbox). When enabled, sound triggers when rising above the ambient noise floor by the configured SNR margin instead of relying solely on a fixed threshold.
 - SNR margin (dB). Configurable SNR margin above ambient noise floor (default 8.0 dB).
+- Sector width (deg, 5–90, default 15.0 deg). Discrete sector width for the 2-speaker sector tracker.
+- Sector hysteresis (deg, 0–15, default 3.0 deg). Angular Schmitt-trigger deadband beyond sector boundaries.
+- Speech pause hold timeout (ms, 200–30000, default 2500 ms). Conversational silence hold duration before emitting a speaker `LEAVE` event.
 
 The setup AP is not started during normal boots. It is entered only when the setup input is detected during the startup check.
 

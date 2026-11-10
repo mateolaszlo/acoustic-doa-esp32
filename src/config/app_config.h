@@ -83,6 +83,20 @@ constexpr size_t CLEAN_KERNEL_RADIUS_SAMPLES         = 16;
 constexpr int    PAIR_CORR_RADIUS                    = 32;
 constexpr size_t PAIR_CORR_SIZE                      = 2 * PAIR_CORR_RADIUS + 1; // 65 lags [-32, +32]
 
+// Stateful 2-Speaker Circular Sector Tracker & Hysteresis Defaults
+constexpr size_t   SECTOR_TRACKER_MAX_SLOTS          = 2;     // 2 simultaneous tracked speakers (Slot 0, Slot 1)
+constexpr uint8_t  INVALID_SECTOR_ID                 = 0xFF;  // Sentinel sector_id on LEAVE or unconfirmed state
+constexpr float    DEFAULT_SECTOR_WIDTH_DEG          = 15.0f; // 24 sectors across [-180, +180) deg
+constexpr float    DEFAULT_SECTOR_HYSTERESIS_DEG     = 3.0f;  // +/- 3.0 deg Schmitt-trigger boundary deadband
+constexpr float    DEFAULT_TRACKER_ASSOC_GATE_DEG    = 45.0f; // S^1 nearest-neighbor association gate
+constexpr float    DEFAULT_TRACKER_EMA_ALPHA         = 0.25f; // Circular S^1 smoothing alpha
+constexpr uint8_t  DEFAULT_TRACKER_BIRTH_FRAMES      = 3;     // Consistent hits required to confirm ENTER
+constexpr uint32_t DEFAULT_TRACKER_BIRTH_WINDOW_MS   = 400;   // Max gap between birth candidate hits
+constexpr uint8_t  DEFAULT_TRACKER_TRANSITION_FRAMES = 3;     // Consecutive hits outside hysteresis band to confirm MOVE
+constexpr uint32_t DEFAULT_TRACKER_HOLD_TIMEOUT_MS   = 2500;  // Conversational speech-pause hold before LEAVE
+constexpr uint32_t DEFAULT_TRACKER_SLOT_RETENTION_MS = 5000;  // Post-LEAVE angle affinity retention for slot_id
+constexpr uint32_t DEFAULT_TRACKER_HEARTBEAT_MS      = 5000;  // Periodic keep-alive while active in same sector
+
 // Dual-Band GCC-PHAT Raised-Cosine Spectral Weighting Cutoffs
 constexpr float GCC_PHAT_MIN_HZ      = 300.0f;
 constexpr float GCC_PHAT_EDGE_MAX_HZ = 5000.0f;
@@ -94,14 +108,20 @@ constexpr float DOA_WLS_MIN_AXIS_OBSERVABILITY     = 0.02f;
 constexpr float DOA_WLS_MIN_UNREG_DET              = 0.001f;
 
 // Parameter Plausibility & Validation Bounds
-constexpr float ANGLE_OFFSET_MIN_DEG    = -180.0f;
-constexpr float ANGLE_OFFSET_MAX_DEG    = 180.0f;
-constexpr float SNR_MARGIN_MIN_DB       = 0.0f;
-constexpr float SNR_MARGIN_MAX_DB       = 60.0f;
-constexpr float SPL_THRESHOLD_MIN_DB    = -200.0f;
-constexpr float SPL_THRESHOLD_MAX_DB    = 200.0f;
-constexpr float DB_SPL_OFFSET_MIN_DB    = -100.0f;
-constexpr float DB_SPL_OFFSET_MAX_DB    = 200.0f;
+constexpr float ANGLE_OFFSET_MIN_DEG             = -180.0f;
+constexpr float ANGLE_OFFSET_MAX_DEG             = 180.0f;
+constexpr float SNR_MARGIN_MIN_DB                = 0.0f;
+constexpr float SNR_MARGIN_MAX_DB                = 60.0f;
+constexpr float SPL_THRESHOLD_MIN_DB             = -200.0f;
+constexpr float SPL_THRESHOLD_MAX_DB             = 200.0f;
+constexpr float DB_SPL_OFFSET_MIN_DB             = -100.0f;
+constexpr float DB_SPL_OFFSET_MAX_DB             = 200.0f;
+constexpr float SECTOR_WIDTH_MIN_DEG             = 5.0f;    // 72 sectors max
+constexpr float SECTOR_WIDTH_MAX_DEG             = 90.0f;   // 4 quadrants min
+constexpr float SECTOR_HYSTERESIS_MIN_DEG        = 0.0f;
+constexpr float SECTOR_HYSTERESIS_MAX_DEG        = 15.0f;
+constexpr uint32_t TRACKER_HOLD_TIMEOUT_MIN_MS   = 200;     // 0.2 s min speech pause hold
+constexpr uint32_t TRACKER_HOLD_TIMEOUT_MAX_MS   = 30000;   // 30.0 s max speech pause hold
 
 // Environmental Defaults (Moist Air Thermodynamics Fallback)
 constexpr float DEFAULT_TEMPERATURE_C   = 20.0f;
@@ -136,8 +156,8 @@ constexpr unsigned TASK_NETWORK_PRIORITY          = 2;
 constexpr int TASK_NETWORK_CORE                   = 0;
 constexpr uint32_t NETWORK_QUEUE_LENGTH           = 128;
 constexpr uint32_t NETWORK_BATCH_MAX_MEASUREMENTS = 24;
-constexpr uint32_t NETWORK_BATCH_FLUSH_INTERVAL_MS = 200;
-constexpr uint32_t NETWORK_MAX_REQUEST_INTERVAL_MS = 200;
+constexpr uint32_t NETWORK_BATCH_FLUSH_INTERVAL_MS = 30;  // Fast 30 ms flush window for sparse sector state transitions
+constexpr uint32_t NETWORK_MAX_REQUEST_INTERVAL_MS = 200; // <= 5 requests/sec rate limit
 constexpr int HTTP_RETRY_COUNT                    = 3;
 constexpr uint32_t CONFIG_REFRESH_INTERVAL_MS     = 60000;
 constexpr uint32_t NTP_OFFSET_REFRESH_INTERVAL_MS = 600000; // 10 minutes periodic SNTP discipline

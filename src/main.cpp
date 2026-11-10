@@ -18,6 +18,7 @@
 #include "network/rest_protocol.h"
 #include "network/rest_client.h"
 #include "audio/gcc_phat.h"
+#include "audio/sector_tracker.h"
 #include "audio/i2s_sampler.h"
 #include "ui/display_filter.h"
 
@@ -254,17 +255,24 @@ void dsp_task(void *param) {
     static int32_t ch1_buf[AUDIO_MAX_WINDOW_SIZE];
     static int32_t ch2_buf[AUDIO_MAX_WINDOW_SIZE];
     static int32_t ch3_buf[AUDIO_MAX_WINDOW_SIZE];
+    static MultiSourceSectorTracker sector_tracker;
     esp_task_wdt_add(nullptr);
 
     while (true) {
         uint32_t sample_rate;
         float min_spl_threshold;
+        float sector_width_deg;
+        float sector_hysteresis_deg;
+        uint32_t tracker_hold_timeout_ms;
         if (xSemaphoreTake(config_mutex, pdMS_TO_TICKS(CONFIG_MUTEX_FAST_TIMEOUT_MS)) != pdTRUE) {
             esp_task_wdt_reset();
             continue;
         }
         sample_rate = device_config.sample_rate;
         min_spl_threshold = device_config.sound_level_threshold_db_spl;
+        sector_width_deg = device_config.sector_width_deg;
+        sector_hysteresis_deg = device_config.sector_hysteresis_deg;
+        tracker_hold_timeout_ms = device_config.tracker_hold_timeout_ms;
         xSemaphoreGive(config_mutex);
 
         bool read_ok = false;
@@ -297,14 +305,30 @@ void dsp_task(void *param) {
 
             const float sound_spl = multi_res.rms_db + db_spl_offset.load();
             const bool spl_gate_ok = adaptive_threshold_active.load() || (sound_spl >= min_spl_threshold);
-            if (multi_res.valid && multi_res.count > 0 && spl_gate_ok) {
+            const bool block_valid = (multi_res.valid && multi_res.count > 0 && spl_gate_ok);
+            if (block_valid) {
+                // Full-frame-rate continuous smoothed radar rendering on local TFT
                 enqueue_latest(display_queue, multi_res, display_queue_drops);
+            }
 
-                // Enqueue each detected source from this block with identical timestamp
-                NetworkMeasurement base_meas = make_network_measurement(multi_res.sources[0]);
-                for (uint8_t i = 0; i < multi_res.count; ++i) {
+            // Always tick the sector tracker so coasting tracks can expire and emit LEAVE
+            sector_tracker.updateCalibration(
+                sector_width_deg, sector_hysteresis_deg, tracker_hold_timeout_ms);
+            MultiDoaResult tracker_input = block_valid ? multi_res : MultiDoaResult{};
+            SectorTransitionEvent events[SECTOR_TRACKER_MAX_SLOTS];
+            const size_t event_count = sector_tracker.update(
+                tracker_input, millis(), events, SECTOR_TRACKER_MAX_SLOTS);
+
+            if (event_count > 0) {
+                DoaResult base_doa = {events[0].angle_deg, 0.0f, events[0].confidence, events[0].rms_db, true};
+                NetworkMeasurement base_meas = make_network_measurement(base_doa);
+                for (size_t i = 0; i < event_count; ++i) {
                     NetworkMeasurement meas = base_meas;
-                    meas.result = multi_res.sources[i];
+                    meas.result = {events[i].angle_deg, 0.0f, events[i].confidence, events[i].rms_db, true};
+                    meas.slot_id = events[i].slot_id;
+                    meas.sector_id = events[i].sector_id;
+                    meas.event_type = static_cast<uint8_t>(events[i].event_type);
+                    meas.active_sources = events[i].active_sources;
                     enqueue_network_measurement(meas);
                 }
             }

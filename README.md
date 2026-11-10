@@ -22,7 +22,7 @@ The firmware:
 - Uses local BME280 temperature, relative humidity, and barometric pressure readings for thermodynamic moist-air speed-of-sound compensation.
 - Displays a real-time 360-degree radar UI, multi-target color needles, and live telemetry on a 1.8" SPI TFT (ST7735 / KMR-1.8 128x160).
 - Tracks and smooths multiple simultaneous acoustic targets with nearest-neighbor association across the +/-180 degree back boundary.
-- Sends accepted events in binary batches to a REST API over Wi-Fi.
+- Quantizes up to 2 simultaneous speakers into 15-degree sectors with Schmitt-trigger boundary hysteresis and temporal confirmation gates, streaming only resilient state-transition events (`ENTER`, `MOVE`, `HEARTBEAT`, `LEAVE`) in binary batches to a REST API over Wi-Fi.
 - Stores device credentials and calibration settings in ESP32 NVS flash.
 - Provides a button-triggered setup access point with a DNS-based captive portal.
 
@@ -33,7 +33,7 @@ The backend, database, and web dashboard are separate systems. See [REST API int
 The project includes an automated off-target host unit test suite for rapid feature verification and regression prevention without physical ESP32 hardware:
 
 ```bash
-# Run all 23 unit test suites with AddressSanitizer and UndefinedBehaviorSanitizer
+# Run all 27 unit test suites with AddressSanitizer and UndefinedBehaviorSanitizer
 make test
 
 # Or run the shell script

@@ -37,6 +37,8 @@ public:
     float getSmoothedAngle() const;
     bool isInitialized() const;
     uint8_t getConsecutiveOutliers() const;
+    float getEmaAlpha() const { return ema_alpha; }
+    void setEmaAlpha(float alpha);
     uint32_t getResetSilenceMs() const { return reset_silence_ms; }
     void setResetSilenceMs(uint32_t ms);
 

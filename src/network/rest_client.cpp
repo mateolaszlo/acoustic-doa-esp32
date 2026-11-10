@@ -164,6 +164,34 @@ bool RestClient::fetchCalibration(const String &api_url, const String &api_key,
         candidate.angle_offset_deg = doc["angle_offset"].as<float>();
     }
 
+    if (!doc["sector_width_deg"].isNull()) {
+        candidate.sector_width_deg = doc["sector_width_deg"].as<float>();
+    } else if (!doc["sector_width"].isNull()) {
+        candidate.sector_width_deg = doc["sector_width"].as<float>();
+    }
+
+    if (!doc["sector_hysteresis_deg"].isNull()) {
+        candidate.sector_hysteresis_deg = doc["sector_hysteresis_deg"].as<float>();
+    } else if (!doc["hysteresis_deg"].isNull()) {
+        candidate.sector_hysteresis_deg = doc["hysteresis_deg"].as<float>();
+    }
+
+    if (!doc["tracker_hold_timeout_ms"].isNull()) {
+        const int64_t raw_hold = doc["tracker_hold_timeout_ms"].as<int64_t>();
+        if (raw_hold < 0 || raw_hold > static_cast<int64_t>(UINT32_MAX)) {
+            Serial.println("Calibration response contains invalid tracker_hold_timeout_ms");
+            return false;
+        }
+        candidate.tracker_hold_timeout_ms = static_cast<uint32_t>(raw_hold);
+    } else if (!doc["hold_timeout_ms"].isNull()) {
+        const int64_t raw_hold = doc["hold_timeout_ms"].as<int64_t>();
+        if (raw_hold < 0 || raw_hold > static_cast<int64_t>(UINT32_MAX)) {
+            Serial.println("Calibration response contains invalid hold_timeout_ms");
+            return false;
+        }
+        candidate.tracker_hold_timeout_ms = static_cast<uint32_t>(raw_hold);
+    }
+
     if (!validate_device_config(candidate)) {
         Serial.println("Calibration response contains invalid or unsupported values");
         return false;
