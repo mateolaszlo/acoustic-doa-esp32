@@ -172,12 +172,18 @@ bool RestClient::fetchCalibration(const String &api_url, const String &api_key,
     JsonVariant server_time_value = doc["server_time_unix_ms"];
     if (!server_time_value.isNull()) {
         const uint64_t server_time_ms = server_time_value.as<uint64_t>();
-        const int64_t midpoint_ms = request_start_ms + (request_end_ms - request_start_ms) / 2;
+        const int64_t rtt_ms = request_end_ms - request_start_ms;
+        const int64_t midpoint_ms = request_start_ms + rtt_ms / 2;
         if (server_time_ms >= static_cast<uint64_t>(MIN_VALID_EPOCH) * 1000ULL && midpoint_ms >= 0) {
             const int64_t new_offset_ms = static_cast<int64_t>(server_time_ms) - midpoint_ms;
             if (!server_time_valid.load()) {
                 server_utc_offset_ms.store(new_offset_ms);
                 server_time_valid.store(true);
+            } else {
+                const int64_t disciplined = discipline_server_offset(server_utc_offset_ms.load(),
+                                                                     new_offset_ms,
+                                                                     rtt_ms);
+                server_utc_offset_ms.store(disciplined);
             }
         } else {
             Serial.println("Calibration server time is invalid");

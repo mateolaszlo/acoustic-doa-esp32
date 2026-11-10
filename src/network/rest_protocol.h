@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <cstring>
 #include <ctime>
+#include <cmath>
+#include <cstdlib>
 #include <esp_rom_crc.h>
 #include "audio/gcc_phat.h"
 #include "config/app_config.h"
@@ -28,6 +30,63 @@ struct NetworkMeasurement {
     uint64_t timestamp_ms;
     uint16_t clock_flags;
 };
+
+/**
+ * @brief Disciplines the active SNTP UTC offset against a new gettimeofday() reading.
+ *
+ * @param current_offset_ms Active atomic ntp_utc_offset_ms.
+ * @param measured_offset_ms Newly sampled (utc_ms - monotonic_ms).
+ * @param max_plausible_drift_ms Maximum plausible drift limit (default: MAX_PLAUSIBLE_SNTP_DRIFT_MS).
+ * @return Disciplined offset to store in ntp_utc_offset_ms.
+ */
+inline int64_t discipline_sntp_offset(int64_t current_offset_ms,
+                                      int64_t measured_offset_ms,
+                                      int64_t max_plausible_drift_ms = MAX_PLAUSIBLE_SNTP_DRIFT_MS) {
+    const int64_t drift_ms = measured_offset_ms - current_offset_ms;
+    if (std::abs(drift_ms) <= max_plausible_drift_ms) {
+        return measured_offset_ms;
+    }
+    return current_offset_ms;
+}
+
+/**
+ * @brief Disciplines the Server UTC offset using RTT gating and an EMA low-pass filter
+ *        to reject Wi-Fi latency jitter while eliminating long-term crystal drift.
+ *
+ * @param current_offset_ms Active atomic server_utc_offset_ms.
+ * @param measured_offset_ms Measured (server_time_ms - midpoint_ms).
+ * @param rtt_ms Request round-trip time in milliseconds (request_end - request_start).
+ * @param max_rtt_ms Maximum RTT threshold for clean time anchoring (default: MAX_CALIBRATION_RTT_MS).
+ * @return Disciplined offset to store in server_utc_offset_ms.
+ */
+inline int64_t discipline_server_offset(int64_t current_offset_ms,
+                                        int64_t measured_offset_ms,
+                                        int64_t rtt_ms,
+                                        int64_t max_rtt_ms = MAX_CALIBRATION_RTT_MS) {
+    if (rtt_ms < 0 || rtt_ms > max_rtt_ms) {
+        return current_offset_ms;
+    }
+
+    const int64_t diff_ms = measured_offset_ms - current_offset_ms;
+
+    // If the server wall-clock experienced a large step (> 10s, e.g. server NTP sync),
+    // commit directly without waiting for EMA convergence.
+    if (std::abs(diff_ms) > 10000LL) {
+        return measured_offset_ms;
+    }
+
+    if (diff_ms == 0) {
+        return current_offset_ms;
+    }
+
+    // Smooth EMA low-pass filter (alpha = 0.25) to reject Wi-Fi RTT jitter
+    int64_t step = diff_ms / 4LL;
+    if (step == 0) {
+        step = (diff_ms > 0) ? 1LL : -1LL;
+    }
+
+    return current_offset_ms + step;
+}
 
 inline void append_u16_le(uint8_t* buffer, size_t &offset, uint16_t value) {
     buffer[offset++] = static_cast<uint8_t>(value);

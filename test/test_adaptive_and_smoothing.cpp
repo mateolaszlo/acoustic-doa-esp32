@@ -2582,8 +2582,8 @@ static void test_phase_three_responsiveness_and_expanded_harness() {
         assert(clamped_len == MEASUREMENT_BATCH_HEADER_SIZE + 5 * MEASUREMENT_RECORD_SIZE + MEASUREMENT_BATCH_CRC_SIZE);
         assert(verify_measurement_batch_crc32(payload, clamped_len));
 
-        // Test server UTC offset stability:
-        // Calibration poll offset updates must only commit on first valid reading or be non-decreasing
+        // Test server UTC offset stability and discipline:
+        // Calibration poll offset updates reject high-RTT jitter
         std::atomic<int64_t> server_utc_offset_ms{0};
         std::atomic<bool> server_time_valid{false};
 
@@ -2596,12 +2596,13 @@ static void test_phase_three_responsiveness_and_expanded_harness() {
         assert(server_time_valid.load());
         assert(server_utc_offset_ms.load() == initial_offset);
 
-        // Second calibration poll arrives with 50 ms Wi-Fi network jitter (offset fluctuates backwards)
+        // Second calibration poll arrives with 150 ms Wi-Fi network jitter (offset fluctuates backwards)
         const int64_t jittered_offset = initial_offset - 50LL;
-        if (!server_time_valid.load()) {
-            server_utc_offset_ms.store(jittered_offset);
-        }
-        // Offset must NOT step backwards on subsequent polls!
+        const int64_t disciplined = discipline_server_offset(server_utc_offset_ms.load(),
+                                                             jittered_offset,
+                                                             150LL); // RTT exceeds 100 ms threshold
+        assert(disciplined == initial_offset);
+        server_utc_offset_ms.store(disciplined);
         assert(server_utc_offset_ms.load() == initial_offset);
     }
 
@@ -3359,6 +3360,140 @@ static void test_nvs_dirty_checking_and_flash_wear_prevention() {
     printf("  [PASS] test_nvs_dirty_checking_and_flash_wear_prevention passed.\n");
 }
 
+static void test_hybrid_periodic_time_synchronization() {
+    printf("[TEST] Running test_hybrid_periodic_time_synchronization...\n");
+
+    // 1. Central time configuration constants verification
+    assert(NTP_OFFSET_REFRESH_INTERVAL_MS == 600000);
+    assert(MAX_PLAUSIBLE_SNTP_DRIFT_MS == 2000);
+    assert(MAX_CALIBRATION_RTT_MS == 100);
+
+    // 2. SNTP Offset Discipline Logic
+    const int64_t base_sntp_offset = 1710000000000LL;
+
+    // Zero drift: unchanged
+    assert(discipline_sntp_offset(base_sntp_offset, base_sntp_offset) == base_sntp_offset);
+
+    // Realistic positive crystal drift (+12 ms over 10 minutes): accepted
+    assert(discipline_sntp_offset(base_sntp_offset, base_sntp_offset + 12LL) == base_sntp_offset + 12LL);
+
+    // Realistic negative crystal drift (-15 ms over 10 minutes): accepted
+    assert(discipline_sntp_offset(base_sntp_offset, base_sntp_offset - 15LL) == base_sntp_offset - 15LL);
+
+    // Plausibility boundary checks: exactly +2000 ms accepted
+    assert(discipline_sntp_offset(base_sntp_offset, base_sntp_offset + 2000LL) == base_sntp_offset + 2000LL);
+    assert(discipline_sntp_offset(base_sntp_offset, base_sntp_offset - 2000LL) == base_sntp_offset - 2000LL);
+
+    // Out-of-bounds anomaly (> 2000 ms, e.g. corrupt time reading or DNS/NTP glitch): rejected, preserves active offset
+    assert(discipline_sntp_offset(base_sntp_offset, base_sntp_offset + 2001LL) == base_sntp_offset);
+    assert(discipline_sntp_offset(base_sntp_offset, base_sntp_offset - 2001LL) == base_sntp_offset);
+    assert(discipline_sntp_offset(base_sntp_offset, base_sntp_offset + 50000LL) == base_sntp_offset);
+
+    // 3. Server UTC Offset Discipline & RTT Jitter Gating
+    const int64_t base_server_offset = 1710000050000LL;
+
+    // RTT Gating: High Wi-Fi latency (> 100 ms) rejected to protect against network asymmetry
+    assert(discipline_server_offset(base_server_offset, base_server_offset + 30LL, 101LL) == base_server_offset);
+    assert(discipline_server_offset(base_server_offset, base_server_offset - 40LL, 250LL) == base_server_offset);
+    assert(discipline_server_offset(base_server_offset, base_server_offset + 20LL, -1LL) == base_server_offset);
+
+    // Clean RTT (<= 100 ms):
+    // Zero diff: unchanged
+    assert(discipline_server_offset(base_server_offset, base_server_offset, 40LL) == base_server_offset);
+
+    // Positive drift (+20 ms diff, RTT = 30 ms): smoothed via EMA alpha = 0.25 (step = +5 ms)
+    assert(discipline_server_offset(base_server_offset, base_server_offset + 20LL, 30LL) == base_server_offset + 5LL);
+
+    // Negative drift (-20 ms diff, RTT = 35 ms): smoothed via EMA alpha = 0.25 (step = -5 ms)
+    assert(discipline_server_offset(base_server_offset, base_server_offset - 20LL, 35LL) == base_server_offset - 5LL);
+
+    // Small positive delta (+2 ms diff): step = +1 ms (avoids truncation stall)
+    assert(discipline_server_offset(base_server_offset, base_server_offset + 2LL, 25LL) == base_server_offset + 1LL);
+
+    // Small negative delta (-2 ms diff): step = -1 ms (avoids truncation stall)
+    assert(discipline_server_offset(base_server_offset, base_server_offset - 2LL, 25LL) == base_server_offset - 1LL);
+
+    // Wall-clock step (> 10,000 ms, e.g. server host time resynced): commits directly
+    assert(discipline_server_offset(base_server_offset, base_server_offset + 45000LL, 40LL) == base_server_offset + 45000LL);
+    assert(discipline_server_offset(base_server_offset, base_server_offset - 30000LL, 50LL) == base_server_offset - 30000LL);
+
+    // 4. Timing Regime Handoff Simulation & Timestamp Monotonicity
+    std::atomic<int64_t> test_ntp_offset{0};
+    std::atomic<bool> test_ntp_valid{false};
+    std::atomic<int64_t> test_server_offset{0};
+    std::atomic<bool> test_server_valid{false};
+
+    auto make_test_measurement = [&](int64_t monotonic_ms) -> NetworkMeasurement {
+        DoaResult dummy_res = {};
+        dummy_res.valid = true;
+        dummy_res.angle_deg = 45.0f;
+        dummy_res.delay_us = 0.0f;
+        dummy_res.confidence = 0.9f;
+        dummy_res.rms_db = -40.0f;
+
+        if (test_ntp_valid.load()) {
+            const int64_t utc_ms = monotonic_ms + test_ntp_offset.load();
+            return {dummy_res, static_cast<uint64_t>(utc_ms), CLOCK_FLAG_UTC_SYNCHRONIZED};
+        }
+        if (test_server_valid.load()) {
+            const int64_t utc_ms = monotonic_ms + test_server_offset.load();
+            return {dummy_res, static_cast<uint64_t>(utc_ms),
+                    static_cast<uint16_t>(CLOCK_FLAG_UTC_SYNCHRONIZED | CLOCK_FLAG_SERVER_SYNCHRONIZED)};
+        }
+        return {dummy_res, static_cast<uint64_t>(monotonic_ms), CLOCK_FLAG_MONOTONIC_UPTIME};
+    };
+
+    // Stage 1: Boot phase - no Wi-Fi/NTP/Server sync yet
+    NetworkMeasurement m1 = make_test_measurement(5000LL);
+    assert(m1.clock_flags == CLOCK_FLAG_MONOTONIC_UPTIME);
+    assert(m1.timestamp_ms == 5000ULL);
+
+    // Stage 2: First calibration response arrives from server at monotonic 5500 ms (RTT = 40 ms)
+    const uint64_t server_wall_clock = 1715000000000ULL;
+    const int64_t rtt1 = 40LL;
+    const int64_t midpoint1 = 5500LL + rtt1 / 2LL;
+    const int64_t initial_server_offset = static_cast<int64_t>(server_wall_clock) - midpoint1;
+
+    test_server_offset.store(initial_server_offset);
+    test_server_valid.store(true);
+
+    NetworkMeasurement m2 = make_test_measurement(6000LL);
+    assert(m2.clock_flags == (CLOCK_FLAG_UTC_SYNCHRONIZED | CLOCK_FLAG_SERVER_SYNCHRONIZED));
+    assert(m2.timestamp_ms > m1.timestamp_ms);
+    const uint64_t ts_m2 = m2.timestamp_ms;
+
+    // Stage 3: Second calibration arrives 60s later with slight Wi-Fi jitter (+16 ms measured diff, RTT = 35 ms)
+    const int64_t rtt2 = 35LL;
+    const int64_t jittered_measured = initial_server_offset + 16LL;
+    const int64_t disciplined_srv = discipline_server_offset(test_server_offset.load(), jittered_measured, rtt2);
+    test_server_offset.store(disciplined_srv);
+    assert(disciplined_srv == initial_server_offset + 4LL); // 16 / 4 = 4 ms adjustment
+
+    NetworkMeasurement m3 = make_test_measurement(66000LL);
+    assert(m3.timestamp_ms > ts_m2);
+
+    // Stage 4: SNTP synchronization completes (Internet available)
+    const int64_t sntp_initial = initial_server_offset + 50LL; // SNTP authoritative lock
+    test_ntp_offset.store(sntp_initial);
+    test_ntp_valid.store(true);
+
+    NetworkMeasurement m4 = make_test_measurement(66050LL);
+    assert(m4.clock_flags == CLOCK_FLAG_UTC_SYNCHRONIZED);
+    assert(m4.timestamp_ms > m3.timestamp_ms);
+
+    // Stage 5: Periodic SNTP discipline after 10 minutes adjusts for 10 ms crystal drift
+    const int64_t sntp_drifted = sntp_initial + 10LL;
+    const int64_t sntp_disciplined = discipline_sntp_offset(test_ntp_offset.load(), sntp_drifted);
+    test_ntp_offset.store(sntp_disciplined);
+    assert(test_ntp_offset.load() == sntp_drifted);
+
+    NetworkMeasurement m5 = make_test_measurement(666050LL);
+    assert(m5.clock_flags == CLOCK_FLAG_UTC_SYNCHRONIZED);
+    assert(m5.timestamp_ms > m4.timestamp_ms);
+
+    printf("  [PASS] test_hybrid_periodic_time_synchronization passed.\n");
+}
+
 int main() {
     test_gcc_phat_adaptive_noise_floor();
     test_display_smoothing_filter();
@@ -3385,6 +3520,7 @@ int main() {
     test_phase_four_localization_and_docs_contracts();
     test_wifi_and_api_serial_logging();
     test_nvs_dirty_checking_and_flash_wear_prevention();
+    test_hybrid_periodic_time_synchronization();
     printf("\nAll unit tests passed successfully!\n");
     return 0;
 }

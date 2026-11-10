@@ -164,12 +164,9 @@ During startup (`SETUP_BOOT_DELAY_MS = 3000`), the firmware executes an automate
 
 - Waits for Wi-Fi.
 - Reconnects when disconnected.
-- Starts the SNTP client once per Wi-Fi connection instead of restarting it on
-  a fixed retry interval. It also accepts
-  an optional `server_time_unix_ms` field from the calibration response and
-  estimates a server-to-device UTC offset. If both sources are unavailable, it
-  transmits monotonic uptime timestamps with an explicit clock flag instead of
-  blocking or discarding measurements.
+- Starts the SNTP client once per Wi-Fi connection and periodically disciplines the SNTP UTC offset (`ntp_utc_offset_ms`) every 10 minutes from `gettimeofday()` to eliminate crystal oscillator drift (~1.7 s/day).
+- Accepts `server_time_unix_ms` from periodic 60-second calibration responses as an authoritative fallback when SNTP is unavailable (isolated LAN / firewall). Server UTC offset (`server_utc_offset_ms`) is disciplined using an RTT-gated filter ($RTT \le 100\text{ ms}$) and an EMA low-pass filter ($\alpha = 0.25$) to smooth Wi-Fi jitter.
+- If neither source is available, transmits monotonic uptime timestamps with an explicit clock flag (`CLOCK_FLAG_MONOTONIC_UPTIME`) instead of blocking or discarding measurements.
 - Refreshes remote calibration at boot and approximately every 60 seconds with in-memory dirty checking (skips NVS writes and audio driver reinitialization when remote calibration is unchanged).
 - Receives timestamped results from `network_queue` and batches up to 24
   measurements, flushing a partial batch after 200 ms.
@@ -187,11 +184,10 @@ The Arduino `loop()` only delays. Application work is performed by the explicit 
 - `config_mutex` protects configuration values while they are copied or replaced.
 - `display_queue` and `network_queue` contain independent copies of each valid result.
 - Temperature, speed of sound, and dB SPL offset are exposed through atomic values where they are shared between tasks.
-- Binary batch header clock flags distinguish synchronized UTC timestamps from
-  server-synchronized UTC timestamps, and monotonic uptime timestamps.
+- Binary batch header clock flags distinguish synchronized UTC timestamps (`CLOCK_FLAG_UTC_SYNCHRONIZED`),
+  server-synchronized UTC timestamps (`CLOCK_FLAG_SERVER_SYNCHRONIZED`), and monotonic uptime timestamps (`CLOCK_FLAG_MONOTONIC_UPTIME`).
 - Measurement timestamps are based on the monotonic ESP timer; UTC timestamps
-  apply a stored offset. This prevents SNTP clock corrections from creating
-  backwards batch offsets.
+  apply a disciplined offset. Periodic SNTP adjustments (every 10 min) and RTT-gated calibration adjustments (every 60s) keep timestamps accurate without causing backward steps within batches.
 
 Queue sends are non-blocking. If the bounded network queue is full, the oldest
 queued measurement is discarded and the newest result is retained. The display

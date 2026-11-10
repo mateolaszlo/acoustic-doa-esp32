@@ -35,7 +35,7 @@ When running off-target, the tests link against lightweight, bit-exact mocks loc
 
 ## 3. Test Suites Overview
 
-The test harness in [`test/test_adaptive_and_smoothing.cpp`](../test/test_adaptive_and_smoothing.cpp) covers 25 specialized test suites:
+The test harness in [`test/test_adaptive_and_smoothing.cpp`](../test/test_adaptive_and_smoothing.cpp) covers 26 specialized test suites:
 
 1. **`test_gcc_phat_adaptive_noise_floor`**:
    - Verifies the asymmetric attack/decay tracking ($3\text{ dB/s}$ upward creep vs. $30\text{ dB/s}$ fast downward recovery).
@@ -123,6 +123,11 @@ The test harness in [`test/test_adaptive_and_smoothing.cpp`](../test/test_adapti
     - Validates `DeviceConfig` equality (`operator==`, `operator!=`, `configs_equal`) across all 14 parameters with float epsilon tolerances.
     - Validates NVS flash write tracking with mock `Preferences`: cold save writes all 14 keys, re-saving identical config writes 0 keys, and single-field delta saves write exactly 1 key.
     - Validates Tier-1 remote calibration synchronization dirty checking: identical remote payloads bypass NVS writes and avoid audio driver reinitialization.
+26. **`test_hybrid_periodic_time_synchronization`**:
+    - Validates central time configuration constants: `NTP_OFFSET_REFRESH_INTERVAL_MS = 600000` (10 min), `MAX_PLAUSIBLE_SNTP_DRIFT_MS = 2000`, `MAX_CALIBRATION_RTT_MS = 100`.
+    - Validates periodic SNTP discipline (`discipline_sntp_offset`): accepts realistic positive/negative crystal drift within $\pm 2000\text{ ms}$, and rejects out-of-bounds anomalies.
+    - Validates Server UTC discipline (`discipline_server_offset`): enforces RTT jitter gating ($RTT > 100\text{ ms}$ rejected), applies smooth EMA filtering ($\alpha = 0.25$) on clean samples, and commits wall-clock steps ($> 10\text{s}$) immediately.
+    - Validates multi-clock timing regime handoffs and timestamp monotonicity: preserves strictly non-decreasing timestamps from Monotonic boot to Server UTC to authoritative SNTP lock.
 
 ---
 

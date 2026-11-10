@@ -167,12 +167,12 @@ The timestamp of record `i` is
 `base_timestamp_ms + offset_ms`. For monotonic batches, this is uptime relative
 to the current boot.
 
-The firmware starts the SNTP client once after Wi-Fi connects, but measurements
-are not blocked while synchronization is pending. Measurement timestamps use
-the monotonic ESP timer plus the selected UTC offset, so later SNTP clock
-corrections cannot make offsets within a batch negative.
-The calibration request can independently establish a UTC offset from the
-server timestamp.
+The firmware starts the SNTP client once after Wi-Fi connects, and periodically
+disciplines `ntp_utc_offset_ms` every 10 minutes from `gettimeofday()`. Measurement
+timestamps use the monotonic ESP timer plus the selected UTC offset, so gradual drift
+discipline cannot make offsets within a batch negative.
+When SNTP is unavailable, periodic 60-second calibration requests independently establish
+and discipline a fallback Server UTC offset using RTT gating and EMA low-pass filtering.
 
 The previous JSON representation is no longer sent. Its fields correspond to
 the binary record as follows:

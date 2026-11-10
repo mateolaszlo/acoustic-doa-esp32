@@ -140,6 +140,9 @@ constexpr uint32_t NETWORK_BATCH_FLUSH_INTERVAL_MS = 200;
 constexpr uint32_t NETWORK_MAX_REQUEST_INTERVAL_MS = 200;
 constexpr int HTTP_RETRY_COUNT                    = 3;
 constexpr uint32_t CONFIG_REFRESH_INTERVAL_MS     = 60000;
+constexpr uint32_t NTP_OFFSET_REFRESH_INTERVAL_MS = 600000; // 10 minutes periodic SNTP discipline
+constexpr int64_t  MAX_PLAUSIBLE_SNTP_DRIFT_MS     = 2000;   // +/- 2000 ms plausibility limit for crystal drift
+constexpr int64_t  MAX_CALIBRATION_RTT_MS          = 100;    // 100 ms maximum RTT for clean server time anchoring
 
 // Mutex Acquisition Timeouts
 constexpr uint32_t CONFIG_MUTEX_FAST_TIMEOUT_MS   = 10;

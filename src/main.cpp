@@ -448,6 +448,7 @@ void network_task(void *param) {
     unsigned long last_calibration_refresh = 0;
     unsigned long last_request_ms = 0;
     unsigned long last_wifi_retry_ms = 0;
+    unsigned long last_ntp_discipline_ms = 0;
     uint32_t reconnect_attempt = 0;
     RestClient rest_client;
     bool ntp_started = false;
@@ -459,6 +460,7 @@ void network_task(void *param) {
             server_available.store(false);
             ntp_started = false;
             ntp_time_valid.store(false);
+            last_ntp_discipline_ms = 0;
             rest_client.close();
 
             const unsigned long now = millis();
@@ -501,7 +503,30 @@ void network_task(void *param) {
             if (utc_ms >= static_cast<int64_t>(MIN_VALID_EPOCH) * 1000LL) {
                 ntp_utc_offset_ms.store(utc_ms - monotonic_ms);
                 ntp_time_valid.store(true);
+                last_ntp_discipline_ms = millis();
                 Serial.println("[Time] SNTP synchronized: UTC clock active");
+            }
+        } else if (ntp_time_valid.load()) {
+            const unsigned long now = millis();
+            if (now - last_ntp_discipline_ms >= NTP_OFFSET_REFRESH_INTERVAL_MS) {
+                last_ntp_discipline_ms = now;
+                struct timeval time_value;
+                gettimeofday(&time_value, nullptr);
+                const int64_t monotonic_ms = static_cast<int64_t>(esp_timer_get_time() / 1000ULL);
+                const int64_t utc_ms = static_cast<int64_t>(time_value.tv_sec) * 1000LL +
+                                       static_cast<int64_t>(time_value.tv_usec) / 1000LL;
+                if (utc_ms >= static_cast<int64_t>(MIN_VALID_EPOCH) * 1000LL) {
+                    const int64_t measured_offset = utc_ms - monotonic_ms;
+                    const int64_t prev_offset = ntp_utc_offset_ms.load();
+                    const int64_t disciplined = discipline_sntp_offset(prev_offset, measured_offset);
+                    ntp_utc_offset_ms.store(disciplined);
+                    const int64_t drift_ms = disciplined - prev_offset;
+                    if (std::abs(drift_ms) >= 5) {
+                        Serial.printf("[Time] SNTP disciplined: drift=%+lld ms, offset=%lld ms\n",
+                                      static_cast<long long>(drift_ms),
+                                      static_cast<long long>(disciplined));
+                    }
+                }
             }
         }
 
