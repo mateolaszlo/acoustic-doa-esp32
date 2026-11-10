@@ -155,7 +155,7 @@ During startup (`SETUP_BOOT_DELAY_MS = 3000`), the firmware executes an automate
 - Updates the speed-of-sound calibration.
 - Receives results from `display_queue`.
 - Applies a circular $S^1$ angle smoothing filter (`DisplaySmoothingFilter`, EMA with $\alpha = 0.25$ and shortest-arc outlier rejection threshold $|\Delta\phi| > 45^\circ$ via `shortestAngularDiff()` and `wrapAngle180()`, confirming source relocation after 2 consecutive consistent readings on $S^1$, and resetting immediately after $>1.5\text{ s}$ of silence) so transitions across $\pm 180^\circ$ (e.g., $+175^\circ \leftrightarrow -175^\circ$) smooth continuously without swinging through $0^\circ$.
-- Uploads and network measurements (`network_queue` and API batches) remain strictly raw and physics-consistent (no smoothing is applied to API measurements).
+- Local display tracking (`display_queue`) operates continuously at the ~43.1 Hz audio block rate, decoupled from the sector-quantized state transitions (`ENTER`, `MOVE`, `HEARTBEAT`, `LEAVE`) pushed to `network_queue` by `MultiSourceSectorTracker`.
 - Prints event information to Serial.
 - Draws the full-color $360^\circ$ circular radar UI on the SPI TFT, including an `[AUTO]` pill badge (in cyan) in the top-right corner when adaptive noise floor tracking is enabled (or `[FIX]` in dark gray when disabled).
 - Priority: 2.
@@ -170,7 +170,7 @@ During startup (`SETUP_BOOT_DELAY_MS = 3000`), the firmware executes an automate
 - If neither source is available, transmits monotonic uptime timestamps with an explicit clock flag (`CLOCK_FLAG_MONOTONIC_UPTIME`) instead of blocking or discarding measurements.
 - Refreshes remote calibration at boot and approximately every 60 seconds with in-memory dirty checking (skips NVS writes and audio driver reinitialization when remote calibration is unchanged).
 - Receives timestamped results from `network_queue` and batches up to 24
-  measurements, flushing a partial batch after 200 ms.
+  measurements, flushing a partial batch after 30 ms (`NETWORK_BATCH_FLUSH_INTERVAL_MS = 30`).
 - Sends packed binary batches (12-byte header, 20-byte records, 4-byte hardware ROM CRC32 trailer) with HTTP keep-alive and a five-second timeout.
 - Targets at most five requests per second.
 - Retries each failed batch up to three times with increasing delays.
@@ -210,6 +210,7 @@ Configuration is loaded from ESP32 NVS namespace `acoustic`. It contains:
 - dB SPL offset.
 - Zero angle rotational offset (`ang_offset`, -180.0 to +180.0 deg).
 - Adaptive noise floor tracking state and SNR margin.
+- Sector tracker configuration: discrete sector width (`sec_width`, default 15.0 deg), Schmitt-trigger boundary hysteresis (`sec_hyst`, default 3.0 deg), and conversational speech-pause hold timeout (`trk_hold`, default 2500 ms).
 - Audio sample rate (the FFT window size is fixed to 1024 samples).
 
 The audio configuration is validated against the supported parameter whitelist:

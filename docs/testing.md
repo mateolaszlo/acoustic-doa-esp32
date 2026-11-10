@@ -69,7 +69,7 @@ The test harness in [`test/test_adaptive_and_smoothing.cpp`](../test/test_adapti
     - Confirms 2-frame outlier candidate rejection across the boundary.
 12. **`test_rest_binary_batch_serialization`**:
     - Verifies 12-byte header Little-Endian byte packing (version `1`, measurement count, base timestamp, and clock flags).
-    - Verifies 20-byte per-record Little-Endian float encoding (`angle_deg`, `delay_us`, calibrated dB, and confidence).
+    - Verifies 20-byte per-record Little-Endian encoding (`angle_deg`, `slot_id`, `sector_id`, `event_type`, `active_sources`, calibrated dB, and confidence).
     - Verifies IEEE 802.3 CRC32 calculation with test vector validation (`"123456789"` -> `0xCBF43926`).
     - Validates 4-byte CRC32 trailer appending, full 24-record batch capacity (496 bytes), and single-bit tamper detection across header, records, and trailer.
     - Validates buffer overflow protection, homogeneous clock flag validation, and timestamp sequence constraints.
@@ -120,8 +120,8 @@ The test harness in [`test/test_adaptive_and_smoothing.cpp`](../test/test_adapti
     - Validates HTTP 404 (device/route not found), HTTP 500, and network timeout classification.
     - Validates measurement batch streaming anti-spam throttling (immediate initial active print, suppressed intermediate 5 Hz batches, milestone summary at batch 50, and 15-second error throttling).
 25. **`test_nvs_dirty_checking_and_flash_wear_prevention`**:
-    - Validates `DeviceConfig` equality (`operator==`, `operator!=`, `configs_equal`) across all 14 parameters with float epsilon tolerances.
-    - Validates NVS flash write tracking with mock `Preferences`: cold save writes all 14 keys, re-saving identical config writes 0 keys, and single-field delta saves write exactly 1 key.
+    - Validates `DeviceConfig` equality (`operator==`, `operator!=`, `configs_equal`) across all 17 parameters with float epsilon tolerances.
+    - Validates NVS flash write tracking with mock `Preferences`: cold save writes all 17 keys, re-saving identical config writes 0 keys, and single-field delta saves write exactly 1 key.
     - Validates Tier-1 remote calibration synchronization dirty checking: identical remote payloads bypass NVS writes and avoid audio driver reinitialization.
 26. **`test_hybrid_periodic_time_synchronization`**:
     - Validates central time configuration constants: `NTP_OFFSET_REFRESH_INTERVAL_MS = 600000` (10 min), `MAX_PLAUSIBLE_SNTP_DRIFT_MS = 2000`, `MAX_CALIBRATION_RTT_MS = 100`.
@@ -132,6 +132,7 @@ The test harness in [`test/test_adaptive_and_smoothing.cpp`](../test/test_adapti
     - Validates 24-sector ($15^\circ$) circular quantization and $\pm 10.5^\circ$ Schmitt-trigger boundary hysteresis across all quadrants and the $\pm 180^\circ$ rear branch cut.
     - Validates transient impulse rejection (1–2 frame claps/echoes emit 0 network packets), 3-frame birth acquisition (`SECTOR_EVENT_ENTER`), and 3-frame transition confirmation (`SECTOR_EVENT_MOVE`).
     - Validates 2-speaker simultaneous tracking with persistent `slot_id` (`0` and `1`) across amplitude flips, $2500\text{ ms}$ conversational pause coasting, `SECTOR_EVENT_LEAVE` (`sector_id = 0xFF`), $5000\text{ ms}$ post-LEAVE slot affinity, $5000\text{ ms}$ `SECTOR_EVENT_HEARTBEAT`, and 20-byte binary REST serialization + CRC32 verification.
+    - Validates remote calibration and SoftAP Captive Portal parameter bounds (`sector_width_deg`, `sector_hysteresis_deg`, `tracker_hold_timeout_ms`), NVS persistence, live runtime sector grid remapping while speakers are active, and backwards-timestamp / `NaN` resilience.
 
 ---
 

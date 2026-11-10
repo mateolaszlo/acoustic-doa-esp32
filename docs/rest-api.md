@@ -92,6 +92,7 @@ The firmware validates:
 - A supported window size: 1024 samples (fixed; other sizes are rejected).
 - Non-negative, finite SNR margin ($0.0 \le \text{SNR}_{\text{margin}} \le 60.0\text{ dB}$, via `snr_margin_db`).
 - Finite zero-angle offset within full-circle bounds ($-180.0^\circ \le \phi_{\text{offset}} \le +180.0^\circ$, via `angle_offset_deg`).
+- Finite sector width within $[5.0^\circ, 90.0^\circ]$ (`sector_width_deg`), finite sector hysteresis within $[0.0^\circ, 15.0^\circ]$ and $\le \text{sector\_width\_deg}$ (`sector_hysteresis_deg`), and speech-pause hold timeout within $[200, 30000]\text{ ms}$ (`tracker_hold_timeout_ms`).
 
 Invalid responses are rejected and the previous local configuration remains active.
 Supported sample-rate changes update the audio and DSP path in-place. If
@@ -188,8 +189,11 @@ the binary record as follows:
 
 ```json
 {
-  "angle_deg": -34.8,
-  "delay_us": -132.4,
+  "angle_deg": -30.0,
+  "slot_id": 0,
+  "sector_id": 10,
+  "event_type": 1,
+  "active_sources": 1,
   "sound_level_db": 76.5,
   "confidence": 0.78
 }

@@ -127,8 +127,8 @@ measurement body is a versioned little-endian binary batch with a 12-byte
 header and one 20-byte record per measurement. It uses:
 
 - Unix UTC milliseconds in the batch header.
-- A per-record millisecond offset.
-- `angle_deg`, `delay_us`, calibrated dB, and confidence as float32 values.
+- A per-record millisecond offset (`uint32`).
+- `angle_deg` (`float32`), `slot_id` (`uint8`), `sector_id` (`uint8`), `event_type` (`uint8`), `active_sources` (`uint8`), calibrated dB (`float32`), and confidence (`float32`), followed by a 4-byte IEEE 802.3 CRC32 batch trailer.
 
 The endpoint must accept `Content-Type: application/octet-stream` and validate
 the body length against the record count.
